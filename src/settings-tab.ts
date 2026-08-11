@@ -1,0 +1,154 @@
+import { Notice, PluginSettingTab, Setting } from "obsidian";
+import type VaultSearchPlugin from "./main";
+import { MODEL_PROFILES } from "./constants";
+import { settingsImpact } from "./settings";
+
+export class VaultSearchSettingTab extends PluginSettingTab {
+  constructor(private readonly owner: VaultSearchPlugin) {
+    super(owner.app, owner);
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    const draft = this.owner.draftSettings;
+    containerEl.empty();
+    containerEl.createEl("h2", { text: "Vault Search Service" });
+    const status = this.owner.backend?.status || { state: "stopped" as const };
+    const statusEl = containerEl.createDiv({ cls: "vault-search-status" });
+    statusEl.setText([
+      `상태: ${status.state}`,
+      status.model_id ? `모델: ${status.model_id}` : "",
+      status.device ? `디바이스: ${status.device}` : "",
+      status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
+      status.files !== undefined ? `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개` : "",
+      status.model_load_seconds !== undefined ? `최근 모델 로딩: ${status.model_load_seconds}초` : "",
+      status.progress ? `진행: ${status.progress}` : "",
+      status.error ? `오류: ${status.error}` : ""
+    ].filter(Boolean).join("\n"));
+    if (status.error) statusEl.addClass("vault-search-error");
+
+    const impact = settingsImpact(this.owner.settings, draft);
+    new Setting(containerEl)
+      .setName("서비스 제어 및 설정 적용")
+      .setDesc(`모델은 이 볼트에서만 상주합니다. 대기 중인 설정 영향: ${impact}`)
+      .addButton(button => button.setButtonText("시작").onClick(async () => {
+        try { await this.owner.startBackend(); } catch (error) { this.showError(error); }
+      }))
+      .addButton(button => button.setButtonText("중지").onClick(async () => {
+        try { await this.owner.stopBackend(); } catch (error) { this.showError(error); }
+      }))
+      .addButton(button => button.setButtonText("설정 적용").setCta().onClick(async () => {
+        try { await this.owner.applyDraftSettings(); } catch (error) { this.showError(error); }
+      }))
+      .addButton(button => button.setButtonText("변경 취소").onClick(() => this.owner.resetDraftSettings()));
+
+    new Setting(containerEl).setName("시작 정책").addDropdown(dropdown => dropdown
+      .addOption("vault-open", "볼트를 열 때 모델 로드")
+      .addOption("first-search", "첫 검색 때 모델 로드")
+      .addOption("manual", "수동 시작")
+      .setValue(draft.loadPolicy)
+      .onChange(value => { draft.loadPolicy = value as typeof draft.loadPolicy; this.display(); }));
+
+    new Setting(containerEl).setName("Python 실행 파일")
+      .setDesc("전용 venv의 python.exe를 권장합니다.")
+      .addText(text => text.setValue(draft.pythonExecutable).setPlaceholder("python")
+        .onChange(value => { draft.pythonExecutable = value.trim() || "python"; }));
+
+    new Setting(containerEl).setName("임베딩 모델").addDropdown(dropdown => {
+      for (const [id, profile] of Object.entries(MODEL_PROFILES)) dropdown.addOption(id, profile.name);
+      dropdown.setValue(draft.modelProfile).onChange(id => {
+        const profile = MODEL_PROFILES[id];
+        draft.modelProfile = id;
+        if (id !== "custom" && profile) {
+          draft.modelId = profile.modelId;
+          draft.queryPrefix = profile.queryPrefix;
+          draft.documentPrefix = profile.documentPrefix;
+        }
+        this.display();
+      });
+    });
+
+    new Setting(containerEl).setName("모델 ID")
+      .setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers 모델 ID")
+      .addText(text => text.setValue(draft.modelId).onChange(value => { draft.modelId = value.trim(); }));
+    new Setting(containerEl).setName("디바이스").addDropdown(dropdown => dropdown
+      .addOption("auto", "자동").addOption("cpu", "CPU").addOption("cuda", "CUDA")
+      .setValue(draft.device).onChange(value => { draft.device = value as typeof draft.device; }));
+    new Setting(containerEl).setName("임베딩 정규화").addToggle(toggle => toggle
+      .setValue(draft.normalizeEmbeddings).onChange(value => { draft.normalizeEmbeddings = value; }));
+    new Setting(containerEl).setName("Query prefix").addText(text => text
+      .setValue(draft.queryPrefix).onChange(value => { draft.queryPrefix = value; }));
+    new Setting(containerEl).setName("Document prefix").addText(text => text
+      .setValue(draft.documentPrefix).onChange(value => { draft.documentPrefix = value; }));
+
+    new Setting(containerEl).setName("Include globs").setDesc("볼트 상대 경로, 한 줄에 하나")
+      .addTextArea(area => {
+        area.setValue(draft.includeGlobs.join("\n")); area.inputEl.rows = 7;
+        area.onChange(value => { draft.includeGlobs = this.lines(value); });
+      });
+    new Setting(containerEl).setName("Exclude globs").setDesc("볼트 상대 경로, 한 줄에 하나")
+      .addTextArea(area => {
+        area.setValue(draft.excludeGlobs.join("\n")); area.inputEl.rows = 7;
+        area.onChange(value => { draft.excludeGlobs = this.lines(value); });
+      });
+
+    new Setting(containerEl).setName("인덱스 관리")
+      .setDesc("설정 적용 후 범위를 확인하세요. 재구축은 임시 파일 검증 후 원자적으로 교체됩니다.")
+      .addButton(button => button.setButtonText("범위 미리보기").onClick(async () => {
+        try { const result = await this.owner.previewScope(); new Notice(`검색 대상: ${result.count}개 파일`); }
+        catch (error) { this.showError(error); }
+      }))
+      .addButton(button => button.setButtonText("증분 대조").onClick(async () => {
+        try { await this.owner.reconcile(); } catch (error) { this.showError(error); }
+      }))
+      .addButton(button => button.setButtonText("벡터 재구축").onClick(async () => {
+        try { await this.owner.rebuildVectors(); } catch (error) { this.showError(error); }
+      }))
+      .addButton(button => button.setButtonText("전체 재구축").setWarning().onClick(async () => {
+        try { await this.owner.rebuildAll(); } catch (error) { this.showError(error); }
+      }));
+
+    new Setting(containerEl).setName("청크 크기 / 오버랩")
+      .addText(text => text.setValue(String(draft.chunkChars)).onChange(value => {
+        draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
+      })).addText(text => text.setValue(String(draft.chunkOverlap)).onChange(value => {
+        draft.chunkOverlap = this.nonnegativeNumber(value, draft.chunkOverlap);
+      }));
+    new Setting(containerEl).setName("BM25 / 벡터 / 최종 후보 / RRF k")
+      .setDesc("최종 후보는 16~40개를 권장합니다.")
+      .addText(text => text.setValue(String(draft.bm25TopK)).onChange(value => {
+        draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);
+      })).addText(text => text.setValue(String(draft.vectorTopK)).onChange(value => {
+        draft.vectorTopK = this.positiveNumber(value, draft.vectorTopK);
+      })).addText(text => text.setValue(String(draft.finalTopK)).onChange(value => {
+        draft.finalTopK = this.positiveNumber(value, draft.finalTopK);
+      })).addText(text => text.setValue(String(draft.rrfK)).onChange(value => {
+        draft.rrfK = this.positiveNumber(value, draft.rrfK);
+      }));
+    new Setting(containerEl).setName("동기화 debounce (ms)").addText(text => text
+      .setValue(String(draft.syncDebounceMs)).onChange(value => {
+        draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);
+      }));
+    new Setting(containerEl).setName("자동 증분 동기화").addToggle(toggle => toggle
+      .setValue(draft.autoSync).onChange(value => { draft.autoSync = value; }));
+    new Setting(containerEl).setName("시작 시 전체 대조").addToggle(toggle => toggle
+      .setValue(draft.startupReconcile).onChange(value => { draft.startupReconcile = value; }));
+  }
+
+  private lines(value: string): string[] {
+    return value.split(/\r?\n/).map(line => line.trim().replace(/\\/g, "/")).filter(Boolean);
+  }
+
+  private positiveNumber(value: string, fallback: number): number {
+    const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  private nonnegativeNumber(value: string, fallback: number): number {
+    const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+  }
+
+  private showError(error: unknown): void {
+    new Notice(`Vault Search 오류: ${error instanceof Error ? error.message : String(error)}`, 8000);
+    this.display();
+  }
+}

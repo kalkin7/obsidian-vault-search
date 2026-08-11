@@ -1,0 +1,12 @@
+.vault-search-status {
+  padding: 8px 10px;
+  margin-bottom: 12px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  white-space: pre-wrap;
+}
+
+.vault-search-error {
+  color: var(--text-error);
+}

@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+import hashlib
+from typing import Any
+
+import numpy as np
+
+from .config import SearchConfig
+
+
+class ModelManager:
+    def __init__(self, config: SearchConfig):
+        self.config = config
+        self.model: Any | None = None
+        self.device = "cpu"
+        self.dimension: int | None = None
+
+    def load(self) -> None:
+        if self.config.model_id == "__fake__":
+            self.model = _FakeSentenceTransformer(32)
+            self.device = "cpu"
+            self.dimension = 32
+            return
+
+        import torch
+        from sentence_transformers import SentenceTransformer
+
+        requested = self.config.device
+        if requested == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is not available")
+        self.device = "cuda" if requested == "cuda" or (
+            requested == "auto" and torch.cuda.is_available()) else "cpu"
+        self.model = SentenceTransformer(self.config.model_id, device=self.device)
+        getter = getattr(self.model, "get_embedding_dimension", None)
+        dimension = getter() if getter else self.model.get_sentence_embedding_dimension()
+        if dimension is None:
+            probe = self.encode_query("dimension probe")
+            dimension = int(probe.shape[-1])
+        self.dimension = int(dimension)
+
+    def ensure_loaded(self) -> Any:
+        if self.model is None:
+            raise RuntimeError("Embedding model is not loaded")
+        return self.model
+
+    def encode_query(self, query: str) -> np.ndarray:
+        model = self.ensure_loaded()
+        vector = model.encode(
+            self.config.query_prefix + query,
+            normalize_embeddings=self.config.normalize_embeddings,
+            convert_to_numpy=True,
+        )
+        return np.atleast_2d(np.asarray(vector, dtype=np.float32))
+
+    def encode_documents(self, texts: list[str], show_progress: bool = False) -> np.ndarray:
+        model = self.ensure_loaded()
+        prepared = [self.config.document_prefix + text for text in texts]
+        batch_size = (self.config.embedding_batch_size_gpu if self.device == "cuda"
+                      else self.config.embedding_batch_size_cpu)
+        vectors = model.encode(
+            prepared,
+            batch_size=batch_size,
+            normalize_embeddings=self.config.normalize_embeddings,
+            show_progress_bar=False,
+            convert_to_numpy=True,
+        )
+        return np.asarray(vectors, dtype=np.float32)
+
+
+class _FakeSentenceTransformer:
+    """Deterministic dependency-free model used only by tests and smoke checks."""
+
+    def __init__(self, dimension: int):
+        self.dimension = dimension
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return self.dimension
+
+    def encode(self, texts: str | list[str], **_kwargs: Any) -> np.ndarray:
+        single = isinstance(texts, str)
+        values = [texts] if single else texts
+        vectors = np.vstack([self._vector(value) for value in values]).astype(np.float32)
+        return vectors[0] if single else vectors
+
+    def _vector(self, text: str) -> np.ndarray:
+        vector = np.zeros(self.dimension, dtype=np.float32)
+        for token in text.lower().split():
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            vector[int.from_bytes(digest[:2], "little") % self.dimension] += 1.0
+        norm = float(np.linalg.norm(vector))
+        if norm:
+            vector /= norm
+        return vector
