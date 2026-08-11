@@ -11,6 +11,14 @@ python -X utf8 -m pytest backend/tests
 
 Unit and integration tests use the deterministic `__fake__` embedding model and do not download a model. Real-model smoke tests are Windows-only manual checks.
 
+Lexical matching defaults to OR semantics. Use `--match all` to require every Kiwi token or
+`--match phrase` to require adjacent tokens in order. `--verbose --json` includes channel ranks and
+RRF contributions.
+
+```powershell
+vault-search --vault "C:\path\to\vault" search --match all --verbose --json "전기차 충전시설"
+```
+
 ## Omnisearch live comparison — critical safety rule
 
 **Do not enable the Omnisearch HTTP API, edit its `data.json`, or run `obsidian plugin:reload id=omnisearch` merely to compare search results.**

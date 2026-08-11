@@ -23,6 +23,7 @@ from vault_search.model_manager import ModelManager
 from vault_search.search import (
     SearchEngine,
     _coalesce_file_candidates,
+    _fts_expression,
     _title_candidate_ids,
     select_diverse,
     weighted_rrf,
@@ -94,6 +95,36 @@ def test_prefix_fallback_finds_partial_token(tmp_path: Path):
         engine = SearchEngine(cfg, model=None, kiwi=None)  # type: ignore[arg-type]
         rows = engine._bm25(connection, ["충전"])
         assert [row[0] for row in rows] == [chunk_id]
+    finally:
+        connection.close()
+
+
+def test_fts_match_mode_expressions():
+    tokens = ["전기차", "충전", "시설"]
+    assert _fts_expression(tokens, "any") == '"전기차" OR "충전" OR "시설"'
+    assert _fts_expression(tokens, "all") == '"전기차" AND "충전" AND "시설"'
+    assert _fts_expression(tokens, "phrase") == '"전기차 충전 시설"'
+    assert _fts_expression(tokens, "all", prefix_last=True) == (
+        '"전기차" AND "충전" AND "시설"*')
+    assert _fts_expression([], "any") == ""
+
+
+def test_any_all_and_phrase_match_modes(tmp_path: Path):
+    cfg = config(tmp_path, prefix_fallback=False)
+    connection = init_db(tmp_path / "modes.db")
+    try:
+        both = insert_chunk(connection, "both.md", 0, "alpha beta", ["alpha", "beta"])
+        alpha = insert_chunk(connection, "alpha.md", 0, "alpha only", ["alpha", "only"])
+        reverse = insert_chunk(connection, "reverse.md", 0, "beta alpha", ["beta", "alpha"])
+        connection.commit()
+        engine = SearchEngine(cfg, model=None, kiwi=None)  # type: ignore[arg-type]
+        any_ids = {row[0] for row in engine._bm25(connection, ["alpha", "beta"], "any")}
+        all_ids = {row[0] for row in engine._bm25(connection, ["alpha", "beta"], "all")}
+        phrase_ids = {row[0] for row in engine._bm25(
+            connection, ["alpha", "beta"], "phrase")}
+        assert any_ids == {both, alpha, reverse}
+        assert all_ids == {both, reverse}
+        assert phrase_ids == {both}
     finally:
         connection.close()
 
@@ -182,6 +213,7 @@ def test_title_channel_can_add_file_outside_body_vector(tmp_path: Path):
     engine.config.title_rrf_weight = 0.0
     results_zero = engine.search("타이틀검색어", top_k=10)
     assert "title-only.md" not in [item["file_path"] for item in results_zero]
+    assert all("query_tokens" not in item for item in results_zero)
 
     engine.config.title_rrf_weight = 1.0
     results_on = engine.search("타이틀검색어", top_k=10, verbose=True)
@@ -190,6 +222,9 @@ def test_title_channel_can_add_file_outside_body_vector(tmp_path: Path):
     entry = next(item for item in results_on if item["file_path"] == "title-only.md")
     assert entry["channels"] == ["title"]
     assert entry["title_rank"] >= 1
+    assert entry["query_tokens"] == ["타이틀검색어"]
+    assert entry["match_mode"] == "any"
+    assert entry["rrf_contributions"]["title"] > 0
 
 
 def test_title_and_body_share_no_duplicate_chunk(tmp_path: Path):

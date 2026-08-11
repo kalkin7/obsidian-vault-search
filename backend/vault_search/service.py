@@ -100,11 +100,16 @@ class SearchService:
                 query = str(params.get("query", "")).strip()
                 if not query:
                     raise ServiceError("INVALID_QUERY", "Query must not be empty")
+                match_mode = str(params.get("match_mode", "any"))
+                if match_mode not in {"any", "all", "phrase"}:
+                    raise ServiceError(
+                        "INVALID_PARAMS", "match_mode must be any, all, or phrase")
                 try:
                     results = self.search_engine.search(
                         query,
                         top_k=int(params.get("top_k") or self.config.final_top_k),
                         verbose=bool(params.get("verbose", False)),
+                        match_mode=match_mode,
                     )
                 except FileNotFoundError as exc:
                     raise ServiceError("INDEX_MISSING", str(exc)) from exc

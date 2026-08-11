@@ -6,8 +6,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+
+from vault_search.config import SearchConfig
 from vault_search.protocol import request
+from vault_search.service import SearchService, ServiceError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -83,3 +88,14 @@ def test_lazy_model_and_parent_eof(tmp_path: Path):
     process.stdin.close()
     process.wait(timeout=5)
     assert not runtime_path.exists()
+
+
+def test_invalid_match_mode_is_invalid_params(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.state = "ready"
+    service.index = SimpleNamespace()  # type: ignore[assignment]
+    service.search_engine = SimpleNamespace()  # type: ignore[assignment]
+    with pytest.raises(ServiceError) as error:
+        service.call("search", {"query": "test", "match_mode": "invalid"})
+    assert error.value.code == "INVALID_PARAMS"

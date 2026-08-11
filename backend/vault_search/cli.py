@@ -90,6 +90,7 @@ def make_parser() -> argparse.ArgumentParser:
     search.add_argument("query")
     search.add_argument("--top", type=int, default=20)
     search.add_argument("--verbose", action="store_true")
+    search.add_argument("--match", choices=("any", "all", "phrase"), default="any")
     search.add_argument("--json", action="store_true", dest="json_output")
     sub.add_parser("status")
     return parser
@@ -104,6 +105,7 @@ def main() -> None:
                 "query": args.query,
                 "top_k": args.top,
                 "verbose": args.verbose,
+                "match_mode": args.match,
             }
             response = call_runtime(vault, "search", params, args.timeout)
             error = response.get("error") or {}

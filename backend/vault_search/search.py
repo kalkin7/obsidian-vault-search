@@ -61,12 +61,22 @@ def select_diverse(ranked: list[tuple[int, float]],
     return selected
 
 
-def _fts_expression(tokens: list[str], prefix: bool = False) -> str:
-    terms: list[str] = []
-    for token in tokens:
-        escaped = token.replace('"', '""')
-        terms.append(f'"{escaped}"*' if prefix else f'"{escaped}"')
-    return " OR ".join(terms)
+def _fts_expression(
+    tokens: list[str],
+    match_mode: str,
+    prefix_last: bool = False,
+) -> str:
+    if not tokens:
+        return ""
+    if match_mode not in {"any", "all", "phrase"}:
+        raise ValueError(f"Invalid match mode: {match_mode}")
+    escaped = [token.replace('"', '""') for token in tokens]
+    if match_mode == "phrase":
+        return f'"{" ".join(escaped)}"'
+    terms = [f'"{token}"' for token in escaped]
+    if prefix_last:
+        terms[-1] += "*"
+    return (" OR " if match_mode == "any" else " AND ").join(terms)
 
 
 class SearchEngine:
@@ -76,7 +86,7 @@ class SearchEngine:
         self.kiwi = kiwi
 
     def search(self, query: str, top_k: int | None = None,
-               verbose: bool = False) -> list[dict[str, Any]]:
+               verbose: bool = False, match_mode: str = "any") -> list[dict[str, Any]]:
         if not self.config.db_path.exists() or not self.config.vector_path.exists():
             raise FileNotFoundError("Search index is missing; run rebuild_all")
         if self.model.dimension is None:
@@ -88,11 +98,11 @@ class SearchEngine:
         query_tokens = tokenize(query, self.kiwi) or query.lower().split()
         connection = sqlite3.connect(str(self.config.db_path))
         try:
-            bm25_results = self._bm25(connection, query_tokens)
+            bm25_results = self._bm25(connection, query_tokens, match_mode)
             bm25_ids = [row[0] for row in bm25_results]
             bm25_rank = {chunk_id: rank for rank, chunk_id in enumerate(bm25_ids, 1)}
 
-            title_rows = self._title_rows(connection, query_tokens)
+            title_rows = self._title_rows(connection, query_tokens, match_mode)
             title_ids = _title_candidate_ids(connection, title_rows, bm25_ids)
             title_rank = {chunk_id: rank for rank, chunk_id in enumerate(title_ids, 1)}
 
@@ -144,23 +154,37 @@ class SearchEngine:
                 }
                 if verbose:
                     entry["channels"] = sorted(sources.get(chunk_id, set()))
+                    entry["query_tokens"] = query_tokens
+                    entry["match_mode"] = match_mode
                     entry["bm25_rank"] = bm25_rank.get(chunk_id, -1)
                     entry["vector_rank"] = vector_rank.get(chunk_id, -1)
                     entry["title_rank"] = title_rank.get(chunk_id, -1)
+                    contributions: dict[str, float] = {}
+                    if chunk_id in bm25_rank:
+                        contributions["body"] = round(
+                            1.0 / (self.config.rrf_k + bm25_rank[chunk_id]), 6)
+                    if chunk_id in title_rank and self.config.title_rrf_weight > 0:
+                        contributions["title"] = round(
+                            self.config.title_rrf_weight
+                            / (self.config.rrf_k + title_rank[chunk_id]), 6)
+                    if chunk_id in vector_rank:
+                        contributions["vector"] = round(
+                            1.0 / (self.config.rrf_k + vector_rank[chunk_id]), 6)
+                    entry["rrf_contributions"] = contributions
                 results.append(entry)
             return results
         finally:
             connection.close()
 
     def _bm25(self, connection: sqlite3.Connection,
-              query_tokens: list[str]) -> list[tuple[int, float]]:
+              query_tokens: list[str], match_mode: str = "any") -> list[tuple[int, float]]:
         if not query_tokens:
             return []
         rows = self._query_chunk_fts(
-            connection, _fts_expression(query_tokens), self.config.bm25_top_k)
-        if not rows and self.config.prefix_fallback:
+            connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
+        if not rows and self.config.prefix_fallback and match_mode != "phrase":
             rows = self._query_chunk_fts(
-                connection, _fts_expression(query_tokens, prefix=True),
+                connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
                 self.config.bm25_top_k)
         return rows
 
@@ -178,14 +202,14 @@ class SearchEngine:
             return []
 
     def _title_rows(self, connection: sqlite3.Connection,
-                    query_tokens: list[str]) -> list[tuple[str, float]]:
+                    query_tokens: list[str], match_mode: str = "any") -> list[tuple[str, float]]:
         if not query_tokens:
             return []
         rows = self._query_title_fts(
-            connection, _fts_expression(query_tokens), self.config.bm25_top_k)
-        if not rows and self.config.prefix_fallback:
+            connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
+        if not rows and self.config.prefix_fallback and match_mode != "phrase":
             rows = self._query_title_fts(
-                connection, _fts_expression(query_tokens, prefix=True),
+                connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
                 self.config.bm25_top_k)
         return rows
 
