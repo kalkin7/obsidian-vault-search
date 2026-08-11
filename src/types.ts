@@ -21,6 +21,9 @@ export interface VaultSearchSettings {
   vectorTopK: number;
   finalTopK: number;
   rrfK: number;
+  maxChunksPerFile: number;
+  titleRrfWeight: number;
+  prefixFallback: boolean;
   syncDebounceMs: number;
   autoSync: boolean;
   startupReconcile: boolean;

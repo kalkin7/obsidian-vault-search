@@ -29,6 +29,9 @@ class SearchConfig:
     vector_top_k: int = 30
     final_top_k: int = 20
     rrf_k: int = 60
+    max_chunks_per_file: int = 1
+    title_rrf_weight: float = 1.0
+    prefix_fallback: bool = True
     embedding_batch_size_cpu: int = 32
     embedding_batch_size_gpu: int = 64
     lazy_model: bool = False
@@ -125,6 +128,9 @@ def load_config(path: str | Path, vault_override: str | None = None,
         vector_top_k=max(1, int(raw.get("vectorTopK", 30))),
         final_top_k=max(1, int(raw.get("finalTopK", 20))),
         rrf_k=max(1, int(raw.get("rrfK", 60))),
+        max_chunks_per_file=max(1, int(raw.get("maxChunksPerFile", 1))),
+        title_rrf_weight=max(0.0, float(raw.get("titleRrfWeight", 1.0))),
+        prefix_fallback=bool(raw.get("prefixFallback", True)),
         embedding_batch_size_cpu=max(1, int(raw.get("embeddingBatchSizeCpu", 32))),
         embedding_batch_size_gpu=max(1, int(raw.get("embeddingBatchSizeGpu", 64))),
         lazy_model=bool(raw.get("lazyModel", raw.get("loadPolicy") == "first-search")),

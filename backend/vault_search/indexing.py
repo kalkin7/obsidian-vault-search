@@ -11,9 +11,11 @@ import numpy as np
 from .chunking import chunk_text
 from .config import SearchConfig
 from .database import (
-    compute_hash, delete_files, index_counts, init_db, insert_chunk,
-    upsert_file_state, write_index_metadata,
+    clear_title_index, compute_hash, delete_files, index_counts, init_db, insert_chunk,
+    mark_title_index_current, title_index_needs_rebuild, upsert_file_state,
+    upsert_file_title, write_index_metadata,
 )
+from .document_fields import title_tokens
 from .index_metadata import (
     build_metadata, load_metadata, validate_index_files, write_metadata,
 )
@@ -42,6 +44,40 @@ class IndexManager:
             "vector_bytes": self.config.vector_path.stat().st_size if self.config.vector_path.exists() else 0,
         })
         return counts
+
+    def ensure_title_index(self) -> dict[str, Any]:
+        if not self.config.db_path.exists():
+            return {"rebuilt": False, "files": 0}
+        connection = sqlite3.connect(str(self.config.db_path))
+        try:
+            if not title_index_needs_rebuild(connection):
+                count = int(connection.execute(
+                    "SELECT COUNT(*) FROM file_titles").fetchone()[0])
+                return {"rebuilt": False, "files": count}
+            rows = [str(row[0]) for row in connection.execute(
+                "SELECT file_path FROM file_state ORDER BY file_path").fetchall()]
+            self.progress("title_index_started", {"files": len(rows)})
+            clear_title_index(connection)
+            for number, relative in enumerate(rows, 1):
+                target = resolve_inside_vault(self.config.vault_path, relative)
+                text = target.read_text(encoding="utf-8", errors="replace") \
+                    if target.exists() else ""
+                basename, directory, headings = title_tokens(relative, text, self.kiwi)
+                upsert_file_title(connection, relative, basename, directory, headings)
+                if number % 500 == 0:
+                    self.progress("title_index_progress", {
+                        "processed_files": number, "total_files": len(rows),
+                    })
+            mark_title_index_current(connection)
+            connection.commit()
+            result = {"rebuilt": True, "files": len(rows)}
+            self.progress("title_index_finished", result)
+            return result
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
 
     def preview_scope(self) -> dict[str, Any]:
         files = iter_vault_files(
@@ -72,12 +108,15 @@ class IndexManager:
                     chunk_ids.append(row_id)
                     chunk_contents.append(content)
                 upsert_file_state(connection, relative, compute_hash(text), len(chunks))
+                basename, directory, headings = title_tokens(relative, text, self.kiwi)
+                upsert_file_title(connection, relative, basename, directory, headings)
                 if number % 100 == 0:
                     connection.commit()
                     self.progress("rebuild_progress", {
                         "processed_files": number, "total_files": len(files),
                         "chunks": len(chunk_ids),
                     })
+            mark_title_index_current(connection)
             connection.commit()
         finally:
             connection.close()
@@ -231,6 +270,9 @@ class IndexManager:
                     new_ids.append(row_id)
                     new_contents.append(content)
                 upsert_file_state(connection, relative, compute_hash(text), len(chunks))
+                basename, directory, headings = title_tokens(relative, text, self.kiwi)
+                upsert_file_title(connection, relative, basename, directory, headings)
+            mark_title_index_current(connection)
             connection.commit()
         finally:
             connection.close()

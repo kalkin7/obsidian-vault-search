@@ -58,6 +58,9 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   vectorTopK: 30,
   finalTopK: 20,
   rrfK: 60,
+  maxChunksPerFile: 1,
+  titleRrfWeight: 1,
+  prefixFallback: true,
   syncDebounceMs: 1500,
   autoSync: true,
   startupReconcile: true

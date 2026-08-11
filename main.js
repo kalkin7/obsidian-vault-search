@@ -94,6 +94,9 @@ var DEFAULT_SETTINGS = {
   vectorTopK: 30,
   finalTopK: 20,
   rrfK: 60,
+  maxChunksPerFile: 1,
+  titleRrfWeight: 1,
+  prefixFallback: true,
   syncDebounceMs: 1500,
   autoSync: true,
   startupReconcile: true
@@ -311,6 +314,7 @@ var BackendManager = class {
     const child = this.child;
     if (child?.stdin.writable) child.stdin.end();
     const runtime = this.runtime || await this.readRuntime();
+    const ownedPid = runtime?.pid ?? child?.pid;
     if (runtime) {
       try {
         await requestBackend(runtime, "shutdown", {}, 2e3);
@@ -329,7 +333,8 @@ var BackendManager = class {
       }
     }
     try {
-      await (0, import_promises.rm)(this.runtimePath, { force: true });
+      const current = await this.readRuntime();
+      if (!current || current.pid === ownedPid) await (0, import_promises.rm)(this.runtimePath, { force: true });
     } catch {
     }
     this.runtime = null;
@@ -523,7 +528,15 @@ var VECTOR_KEYS = [
 ];
 var SCOPE_KEYS = ["includeGlobs", "excludeGlobs"];
 var RESTART_KEYS = ["pythonExecutable"];
-var HOT_KEYS = ["bm25TopK", "vectorTopK", "finalTopK", "rrfK"];
+var HOT_KEYS = [
+  "bm25TopK",
+  "vectorTopK",
+  "finalTopK",
+  "rrfK",
+  "maxChunksPerFile",
+  "titleRrfWeight",
+  "prefixFallback"
+];
 function equal(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -548,6 +561,9 @@ function hotConfig(settings) {
     vectorTopK: settings.vectorTopK,
     finalTopK: settings.finalTopK,
     rrfK: settings.rrfK,
+    maxChunksPerFile: settings.maxChunksPerFile,
+    titleRrfWeight: settings.titleRrfWeight,
+    prefixFallback: settings.prefixFallback,
     includeGlobs: settings.includeGlobs,
     excludeGlobs: settings.excludeGlobs
   };
@@ -685,6 +701,14 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
       draft.finalTopK = this.positiveNumber(value, draft.finalTopK);
     })).addText((text) => text.setValue(String(draft.rrfK)).onChange((value) => {
       draft.rrfK = this.positiveNumber(value, draft.rrfK);
+    }));
+    new import_obsidian.Setting(containerEl).setName("\uAC80\uC0C9 \uB2E4\uC591\uC131 / \uC81C\uBAA9 \uAC00\uC911\uCE58").setDesc("\uD30C\uC77C\uB2F9 \uCD5C\uB300 \uCCAD\uD06C \uC218\uC640 \uD30C\uC77C\uBA85\xB7\uACBD\uB85C\xB7\uD5E4\uB529 RRF \uAC00\uC911\uCE58\uC785\uB2C8\uB2E4. \uAE30\uBCF8\uAC12\uC740 1 / 1.0\uC785\uB2C8\uB2E4.").addText((text) => text.setValue(String(draft.maxChunksPerFile)).onChange((value) => {
+      draft.maxChunksPerFile = this.positiveNumber(value, draft.maxChunksPerFile);
+    })).addText((text) => text.setValue(String(draft.titleRrfWeight)).onChange((value) => {
+      draft.titleRrfWeight = this.nonnegativeNumber(value, draft.titleRrfWeight);
+    }));
+    new import_obsidian.Setting(containerEl).setName("\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31").setDesc("\uC815\uD655 BM25 \uACB0\uACFC\uAC00 \uC5C6\uC744 \uB54C \uD1A0\uD070 \uC811\uB450\uC0AC \uAC80\uC0C9\uC73C\uB85C \uD55C \uBC88 \uB354 \uCC3E\uC2B5\uB2C8\uB2E4.").addToggle((toggle) => toggle.setValue(draft.prefixFallback).onChange((value) => {
+      draft.prefixFallback = value;
     }));
     new import_obsidian.Setting(containerEl).setName("\uB3D9\uAE30\uD654 debounce (ms)").addText((text) => text.setValue(String(draft.syncDebounceMs)).onChange((value) => {
       draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);

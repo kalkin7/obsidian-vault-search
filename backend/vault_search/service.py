@@ -46,6 +46,7 @@ class SearchService:
             self.model.load()
             self.event_sink("model_stage", {"stage": "model_loaded"})
             self.index = IndexManager(self.config, self.model, self.kiwi, self._index_event)
+            self.index.ensure_title_index()
             self.search_engine = SearchEngine(self.config, self.model, self.kiwi)
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
@@ -139,10 +140,15 @@ class SearchService:
         integer_fields = {
             "bm25_top_k": "bm25TopK", "vector_top_k": "vectorTopK",
             "final_top_k": "finalTopK", "rrf_k": "rrfK",
+            "max_chunks_per_file": "maxChunksPerFile",
         }
         for attribute, key in integer_fields.items():
             if key in params:
                 setattr(self.config, attribute, max(1, int(params[key])))
+        if "titleRrfWeight" in params:
+            self.config.title_rrf_weight = max(0.0, float(params["titleRrfWeight"]))
+        if "prefixFallback" in params:
+            self.config.prefix_fallback = bool(params["prefixFallback"])
         if "includeGlobs" in params:
             self.config.include_globs = [str(value) for value in params["includeGlobs"]]
         if "excludeGlobs" in params:

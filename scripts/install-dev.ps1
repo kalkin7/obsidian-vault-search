@@ -51,6 +51,9 @@ if (Test-Path $DataPath) {
         vectorTopK = 30
         finalTopK = 20
         rrfK = 60
+        maxChunksPerFile = 1
+        titleRrfWeight = 1.0
+        prefixFallback = $true
         syncDebounceMs = 1500
         autoSync = $true
         startupReconcile = $true

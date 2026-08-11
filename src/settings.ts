@@ -8,7 +8,10 @@ const VECTOR_KEYS: (keyof VaultSearchSettings)[] = [
 ];
 const SCOPE_KEYS: (keyof VaultSearchSettings)[] = ["includeGlobs", "excludeGlobs"];
 const RESTART_KEYS: (keyof VaultSearchSettings)[] = ["pythonExecutable"];
-const HOT_KEYS: (keyof VaultSearchSettings)[] = ["bm25TopK", "vectorTopK", "finalTopK", "rrfK"];
+const HOT_KEYS: (keyof VaultSearchSettings)[] = [
+  "bm25TopK", "vectorTopK", "finalTopK", "rrfK",
+  "maxChunksPerFile", "titleRrfWeight", "prefixFallback"
+];
 
 function equal(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
@@ -37,6 +40,9 @@ export function hotConfig(settings: VaultSearchSettings): Record<string, unknown
     vectorTopK: settings.vectorTopK,
     finalTopK: settings.finalTopK,
     rrfK: settings.rrfK,
+    maxChunksPerFile: settings.maxChunksPerFile,
+    titleRrfWeight: settings.titleRrfWeight,
+    prefixFallback: settings.prefixFallback,
     includeGlobs: settings.includeGlobs,
     excludeGlobs: settings.excludeGlobs,
   };

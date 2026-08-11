@@ -125,6 +125,17 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       })).addText(text => text.setValue(String(draft.rrfK)).onChange(value => {
         draft.rrfK = this.positiveNumber(value, draft.rrfK);
       }));
+    new Setting(containerEl).setName("검색 다양성 / 제목 가중치")
+      .setDesc("파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.")
+      .addText(text => text.setValue(String(draft.maxChunksPerFile)).onChange(value => {
+        draft.maxChunksPerFile = this.positiveNumber(value, draft.maxChunksPerFile);
+      })).addText(text => text.setValue(String(draft.titleRrfWeight)).onChange(value => {
+        draft.titleRrfWeight = this.nonnegativeNumber(value, draft.titleRrfWeight);
+      }));
+    new Setting(containerEl).setName("접두사 검색 폴백")
+      .setDesc("정확 BM25 결과가 없을 때 토큰 접두사 검색으로 한 번 더 찾습니다.")
+      .addToggle(toggle => toggle.setValue(draft.prefixFallback)
+        .onChange(value => { draft.prefixFallback = value; }));
     new Setting(containerEl).setName("동기화 debounce (ms)").addText(text => text
       .setValue(String(draft.syncDebounceMs)).onChange(value => {
         draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);

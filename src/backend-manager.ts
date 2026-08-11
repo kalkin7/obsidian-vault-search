@@ -142,6 +142,7 @@ export class BackendManager {
     const child = this.child;
     if (child?.stdin.writable) child.stdin.end();
     const runtime = this.runtime || await this.readRuntime();
+    const ownedPid = runtime?.pid ?? child?.pid;
     if (runtime) {
       try { await requestBackend(runtime, "shutdown", {}, 2000); } catch { /* force below */ }
     }
@@ -156,7 +157,10 @@ export class BackendManager {
         }
       }
     }
-    try { await rm(this.runtimePath, { force: true }); } catch { /* ignore */ }
+    try {
+      const current = await this.readRuntime();
+      if (!current || current.pid === ownedPid) await rm(this.runtimePath, { force: true });
+    } catch { /* ignore */ }
     this.runtime = null;
     this.child = null;
     this.setStatus({ state: "stopped" });
