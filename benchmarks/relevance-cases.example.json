@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "vault": "K_Notes",
+  "cases": [
+    {
+      "id": "ev-charger-timeline",
+      "query": "전기차 충전기 설치 경과",
+      "intent": "timeline",
+      "expected_paths": [
+        "5_Wiki/issues/apt/전기차_충전시설_설치_및_관리.md"
+      ],
+      "acceptable_paths": [
+        "2_Area/apt/시설/전기차충전소 증설.md"
+      ],
+      "forbidden_paths": [],
+      "top_k": 40
+    },
+    {
+      "id": "noise-complaint-procedure",
+      "query": "층간소음 처리 절차",
+      "intent": "topic",
+      "expected_paths": [
+        "2_Area/apt/민원/층간소음 이웃사이센터 공문 접수 시 대응.md"
+      ],
+      "acceptable_paths": [],
+      "forbidden_paths": [],
+      "top_k": 40
+    },
+    {
+      "id": "wiki-action-permit-overview",
+      "query": "행위허가 및 신고 절차 개요",
+      "intent": "known-item",
+      "expected_paths": [
+        "5_Wiki/issues/apt/행위허가_및_신고_절차.md"
+      ],
+      "acceptable_paths": [],
+      "forbidden_paths": [],
+      "top_k": 40
+    }
+  ]
+}

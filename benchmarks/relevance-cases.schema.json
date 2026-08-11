@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://obsidian-vault-search.local/relevance-cases.schema.json",
+  "title": "Search relevance case set",
+  "description": "Schema for the reproducible search quality benchmark case files.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "vault", "cases"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "vault": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/definitions/case"
+      }
+    }
+  },
+  "definitions": {
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "query", "intent"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "intent": {
+          "type": "string",
+          "enum": ["exact", "known-item", "topic", "timeline", "value", "korean-morphology"]
+        },
+        "expected_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "acceptable_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbidden_paths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200,
+          "default": 40
+        }
+      }
+    }
+  }
+}
