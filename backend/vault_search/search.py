@@ -12,13 +12,33 @@ from .tokenizer import tokenize
 TITLE_FIELD_WEIGHTS = (10.0, 7.0, 5.0)
 
 
-def rrf_fusion(bm25_ids: list[int], vector_ids: list[int], k: int = 60) -> list[tuple[int, float]]:
+def weighted_rrf(
+    channels: list[tuple[str, list[int], float]],
+    k: int,
+) -> tuple[list[tuple[int, float]], dict[int, set[str]]]:
+    """Merge independent candidate channels with weighted reciprocal rank fusion.
+
+    Each channel is ``(name, ranked_ids, weight)``. Within a channel only the
+    first occurrence of a chunk ID contributes. Contribution is
+    ``weight / (k + rank)`` with rank starting at 1. The result is sorted by
+    score descending, then chunk ID ascending. Sources records which channels
+    contributed to each chunk.
+    """
     scores: dict[int, float] = {}
-    for rank, chunk_id in enumerate(bm25_ids):
-        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
-    for rank, chunk_id in enumerate(vector_ids):
-        scores[chunk_id] = scores.get(chunk_id, 0.0) + 1.0 / (k + rank + 1)
-    return sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    sources: dict[int, set[str]] = defaultdict(set)
+    for name, ranked_ids, weight in channels:
+        seen: set[int] = set()
+        rank = 0
+        for chunk_id in ranked_ids:
+            chunk_id = int(chunk_id)
+            if chunk_id in seen:
+                continue
+            seen.add(chunk_id)
+            rank += 1
+            scores[chunk_id] = scores.get(chunk_id, 0.0) + weight / (k + rank)
+            sources[chunk_id].add(name)
+    ranked = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return ranked, dict(sources)
 
 
 def select_diverse(ranked: list[tuple[int, float]],
@@ -72,6 +92,10 @@ class SearchEngine:
             bm25_ids = [row[0] for row in bm25_results]
             bm25_rank = {chunk_id: rank for rank, chunk_id in enumerate(bm25_ids, 1)}
 
+            title_rows = self._title_rows(connection, query_tokens)
+            title_ids = _title_candidate_ids(connection, title_rows, bm25_ids)
+            title_rank = {chunk_id: rank for rank, chunk_id in enumerate(title_ids, 1)}
+
             from usearch.index import Index
             vector = self.model.encode_query(query)
             vector_index = Index.restore(str(self.config.vector_path))
@@ -80,8 +104,19 @@ class SearchEngine:
             if getattr(keys, "ndim", 1) > 1:
                 keys = keys[0]
             vector_ids = [int(key) for key in keys]
-            vector_rank = {chunk_id: rank for rank, chunk_id in enumerate(vector_ids, 1)}
-            ranked = rrf_fusion(bm25_ids, vector_ids, self.config.rrf_k)
+
+            channels: list[tuple[str, list[int], float]] = [
+                ("body", bm25_ids, 1.0),
+            ]
+            if self.config.title_rrf_weight > 0:
+                vector_ids = _coalesce_file_candidates(connection, title_ids, vector_ids)
+                channels.append(("title", title_ids, self.config.title_rrf_weight))
+            vector_rank = {
+                chunk_id: rank
+                for rank, chunk_id in enumerate(dict.fromkeys(vector_ids), 1)
+            }
+            channels.append(("vector", vector_ids, 1.0))
+            ranked, sources = weighted_rrf(channels, self.config.rrf_k)
             if not ranked:
                 return []
 
@@ -95,21 +130,9 @@ class SearchEngine:
                 ).fetchall()
             }
 
-            title_rank = self._title_ranks(connection, query_tokens)
-            boosted: list[tuple[int, float]] = []
-            for chunk_id, score in ranked:
-                row = rows.get(chunk_id)
-                if row is None:
-                    continue
-                rank = title_rank.get(row[0])
-                if rank is not None and self.config.title_rrf_weight > 0:
-                    score += self.config.title_rrf_weight / (self.config.rrf_k + rank)
-                boosted.append((chunk_id, score))
-            boosted.sort(key=lambda item: item[1], reverse=True)
-
             requested = max(1, int(top_k or self.config.final_top_k))
             selected = select_diverse(
-                boosted, rows, requested, self.config.max_chunks_per_file)
+                ranked, rows, requested, self.config.max_chunks_per_file)
             results: list[dict[str, Any]] = []
             for chunk_id, score in selected:
                 file_path, content = rows[chunk_id]
@@ -120,9 +143,10 @@ class SearchEngine:
                     "content": content,
                 }
                 if verbose:
+                    entry["channels"] = sorted(sources.get(chunk_id, set()))
                     entry["bm25_rank"] = bm25_rank.get(chunk_id, -1)
                     entry["vector_rank"] = vector_rank.get(chunk_id, -1)
-                    entry["title_rank"] = title_rank.get(file_path, -1)
+                    entry["title_rank"] = title_rank.get(chunk_id, -1)
                 results.append(entry)
             return results
         finally:
@@ -153,17 +177,17 @@ class SearchEngine:
         except sqlite3.Error:
             return []
 
-    def _title_ranks(self, connection: sqlite3.Connection,
-                     query_tokens: list[str]) -> dict[str, int]:
+    def _title_rows(self, connection: sqlite3.Connection,
+                    query_tokens: list[str]) -> list[tuple[str, float]]:
         if not query_tokens:
-            return {}
+            return []
         rows = self._query_title_fts(
             connection, _fts_expression(query_tokens), self.config.bm25_top_k)
         if not rows and self.config.prefix_fallback:
             rows = self._query_title_fts(
                 connection, _fts_expression(query_tokens, prefix=True),
                 self.config.bm25_top_k)
-        return {file_path: rank for rank, (file_path, _score) in enumerate(rows, 1)}
+        return rows
 
     @staticmethod
     def _query_title_fts(connection: sqlite3.Connection, expression: str,
@@ -180,6 +204,91 @@ class SearchEngine:
             return [(str(row[0]), float(row[1])) for row in rows]
         except sqlite3.Error:
             return []
+
+
+def _title_candidate_ids(
+    connection: sqlite3.Connection,
+    title_rows: list[tuple[str, float]],
+    body_ids: list[int],
+) -> list[int]:
+    """Map title-ranked file paths to representative chunk IDs.
+
+    For each title row (in order):
+    - if the file already has body BM25 candidates, pick the chunk with the
+      best body rank (earliest position in ``body_ids``);
+    - otherwise pick the chunk with the smallest ``chunk_index``;
+    - files with no chunks are skipped.
+    Chunk IDs are never returned twice.
+    """
+    if not title_rows:
+        return []
+    paths = [file_path for file_path, _score in title_rows]
+
+    body_file: dict[str, list[int]] = {}
+    if body_ids:
+        placeholders = ",".join("?" for _ in body_ids)
+        rows = connection.execute(
+            f"SELECT id, file_path FROM chunks WHERE id IN ({placeholders})",
+            body_ids,
+        ).fetchall()
+        for chunk_id, file_path in rows:
+            body_file.setdefault(str(file_path), []).append(int(chunk_id))
+
+    placeholders = ",".join("?" for _ in paths)
+    chunks = connection.execute(
+        f"SELECT id, file_path, chunk_index FROM chunks "
+        f"WHERE file_path IN ({placeholders}) "
+        f"ORDER BY file_path, chunk_index",
+        paths,
+    ).fetchall()
+    by_file: dict[str, list[tuple[int, int]]] = {}
+    for chunk_id, file_path, chunk_index in chunks:
+        by_file.setdefault(str(file_path), []).append((int(chunk_id), int(chunk_index)))
+
+    result: list[int] = []
+    seen: set[int] = set()
+    for file_path, _score in title_rows:
+        if file_path not in by_file:
+            continue
+        body_chunks = body_file.get(file_path, [])
+        if body_chunks:
+            body_order = {chunk_id: rank for rank, chunk_id in enumerate(body_ids)}
+            chosen = min(body_chunks, key=lambda chunk_id: body_order.get(chunk_id, 10**9))
+        else:
+            chosen = min(by_file[file_path], key=lambda item: item[1])[0]
+        if chosen in seen:
+            continue
+        seen.add(chosen)
+        result.append(chosen)
+    return result
+
+
+def _coalesce_file_candidates(
+    connection: sqlite3.Connection,
+    representative_ids: list[int],
+    ranked_ids: list[int],
+) -> list[int]:
+    """Move same-file channel contributions onto the title representative chunk."""
+    ids = list(dict.fromkeys([*representative_ids, *ranked_ids]))
+    if not representative_ids or not ranked_ids or not ids:
+        return ranked_ids
+    placeholders = ",".join("?" for _ in ids)
+    file_by_id = {
+        int(row[0]): str(row[1])
+        for row in connection.execute(
+            f"SELECT id, file_path FROM chunks WHERE id IN ({placeholders})",
+            ids,
+        ).fetchall()
+    }
+    representative_by_file = {
+        file_by_id[chunk_id]: chunk_id
+        for chunk_id in representative_ids
+        if chunk_id in file_by_id
+    }
+    return [
+        representative_by_file.get(file_by_id.get(chunk_id, ""), chunk_id)
+        for chunk_id in ranked_ids
+    ]
 
 
 class IndexCompatibilityError(RuntimeError):
