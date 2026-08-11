@@ -48,4 +48,5 @@ The CLI does not start an orphan service. With `first-search`, it asks the alrea
 - [Settings](docs/settings.md)
 - [Development](docs/development.md)
 - [K_Notes migration and rollback](docs/migration-from-knotes.md)
+- [2026-08-11 implementation report](docs/implementation-report-2026-08-11.md)
 - [Original implementation plan](plan.md)

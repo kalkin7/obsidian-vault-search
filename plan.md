@@ -2,7 +2,7 @@
 
 > 이 문서는 다른 구현 모델이 추가 설계 판단을 최소화하고 그대로 단계별 구현할 수 있도록 작성한 실행 계획서입니다.
 >
-> **구현 상태 (2026-08-11):** v0.1.0 코어 구현, K_Notes 개발 설치, LocalAppData 전체 인덱스 구축, lifecycle·증분 동기화·CLI·성능 smoke test까지 완료했습니다. 로컬 Git 태그와 release ZIP을 생성했습니다. GitHub CLI가 설치되어 있지 않아 private remote 생성과 release 업로드만 외부 후속 작업으로 남아 있습니다.
+> **구현 상태 (2026-08-11):** v0.1.0 코어 구현, K_Notes 개발 설치, LocalAppData 전체 인덱스 구축, lifecycle·증분 동기화·CLI·성능 smoke test, private GitHub 저장소·CI·release 게시까지 완료했습니다. 실제 결과는 [`docs/implementation-report-2026-08-11.md`](docs/implementation-report-2026-08-11.md)에 정리했습니다.
 
 ---
 
@@ -1153,18 +1153,18 @@ MVP는 **모델 lifecycle + 설정 + 인덱싱 + CLI 하이브리드 검색**에
 
 다음이 모두 참일 때 v0.1.0 MVP가 완료된 것입니다.
 
-- [ ] K_Notes 볼트를 열면 설정에 따라 Python backend와 모델이 비동기로 로드됩니다.
-- [ ] 다른 볼트를 열었거나 K_Notes가 닫혀 있으면 K_Notes 모델이 로드되지 않습니다.
-- [ ] 플러그인을 끄거나 Obsidian을 종료하면 Python 프로세스가 종료되고 모델 메모리가 해제됩니다.
-- [ ] Obsidian 비정상 종료에도 orphan backend가 자동 종료됩니다.
-- [ ] 모델·device·include·exclude를 설정 화면에서 변경할 수 있습니다.
-- [ ] 모델/청킹 설정과 인덱스가 불일치하면 재구축을 요구합니다.
-- [ ] 파일 생성·수정·삭제·rename이 증분 반영됩니다.
-- [ ] CLI가 실행 중인 플러그인 백엔드를 통해 JSON 하이브리드 검색을 수행합니다.
-- [ ] 플러그인이 꺼져 있을 때 CLI가 모델을 자동 상주시작하지 않습니다.
-- [ ] 검색과 증분 인덱싱에서 모델이 한 프로세스에 한 번만 로드됩니다.
-- [ ] Windows 한글 경로·내용이 깨지지 않습니다.
-- [ ] 전용 venv로 전역 Python 패키지 충돌을 차단합니다.
-- [ ] 단위·통합 테스트와 Windows 실제 모델 smoke test가 통과합니다.
-- [ ] GitHub private 저장소와 v0.1.0 release가 만들어집니다.
-- [ ] 기존 검색 시스템으로 되돌리는 rollback 절차가 문서화되어 있습니다.
+- [x] K_Notes 볼트를 열면 설정에 따라 Python backend와 모델이 비동기로 로드됩니다.
+- [x] 다른 볼트를 열었거나 K_Notes가 닫혀 있으면 K_Notes 모델이 로드되지 않습니다.
+- [x] 플러그인을 끄거나 Obsidian을 종료하면 Python 프로세스가 종료되고 모델 메모리가 해제됩니다.
+- [x] Obsidian 비정상 종료에도 orphan backend가 자동 종료됩니다.
+- [x] 모델·device·include·exclude를 설정 화면에서 변경할 수 있습니다.
+- [x] 모델/청킹 설정과 인덱스가 불일치하면 재구축을 요구합니다.
+- [x] 파일 생성·수정·삭제·rename이 증분 반영됩니다.
+- [x] CLI가 실행 중인 플러그인 백엔드를 통해 JSON 하이브리드 검색을 수행합니다.
+- [x] 플러그인이 꺼져 있을 때 CLI가 모델을 자동 상주시작하지 않습니다.
+- [x] 검색과 증분 인덱싱에서 모델이 한 프로세스에 한 번만 로드됩니다.
+- [x] Windows 한글 경로·내용이 깨지지 않습니다.
+- [x] 전용 venv로 전역 Python 패키지 충돌을 차단합니다.
+- [x] 단위·통합 테스트와 Windows 실제 모델 smoke test가 통과합니다.
+- [x] GitHub private 저장소와 v0.1.0 release가 만들어집니다.
+- [x] 기존 검색 시스템으로 되돌리는 rollback 절차가 문서화되어 있습니다.
