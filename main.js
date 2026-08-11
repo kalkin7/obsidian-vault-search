@@ -90,6 +90,7 @@ var DEFAULT_SETTINGS = {
   excludeGlobs: [".obsidian/**", "9_System/**", "**/node_modules/**"],
   chunkChars: 400,
   chunkOverlap: 60,
+  chunkingStrategy: "paragraph-v1",
   bm25TopK: 30,
   vectorTopK: 30,
   finalTopK: 20,
@@ -517,7 +518,11 @@ var BackendCallError = class extends Error {
 var import_obsidian = require("obsidian");
 
 // src/settings.ts
-var ALL_KEYS = ["chunkChars", "chunkOverlap"];
+var ALL_KEYS = [
+  "chunkChars",
+  "chunkOverlap",
+  "chunkingStrategy"
+];
 var VECTOR_KEYS = [
   "modelProfile",
   "modelId",
@@ -688,10 +693,14 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
         this.showError(error);
       }
     }));
-    new import_obsidian.Setting(containerEl).setName("\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9").addText((text) => text.setValue(String(draft.chunkChars)).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9").setDesc("\uAC12\uC744 \uBCC0\uACBD\uD558\uBA74 \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.").addText((text) => text.setValue(String(draft.chunkChars)).onChange((value) => {
       draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
     })).addText((text) => text.setValue(String(draft.chunkOverlap)).onChange((value) => {
       draft.chunkOverlap = this.nonnegativeNumber(value, draft.chunkOverlap);
+    }));
+    new import_obsidian.Setting(containerEl).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc("Markdown \uAD6C\uC870 \uC778\uC2DD \uC804\uB7B5\uC744 \uD3EC\uD568\uD574 \uBCC0\uACBD \uC2DC \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("paragraph-v1", "\uBB38\uB2E8 \uAE30\uBC18 (\uAE30\uBCF8\uAC12)").addOption("markdown-v2", "Markdown \uAD6C\uC870 \uC778\uC2DD").setValue(draft.chunkingStrategy).onChange((value) => {
+      draft.chunkingStrategy = value;
+      this.display();
     }));
     new import_obsidian.Setting(containerEl).setName("BM25 / \uBCA1\uD130 / \uCD5C\uC885 \uD6C4\uBCF4 / RRF k").setDesc("\uCD5C\uC885 \uD6C4\uBCF4\uB294 16~40\uAC1C\uB97C \uAD8C\uC7A5\uD569\uB2C8\uB2E4.").addText((text) => text.setValue(String(draft.bm25TopK)).onChange((value) => {
       draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);

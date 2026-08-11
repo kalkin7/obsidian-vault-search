@@ -13,6 +13,8 @@ describe("settings impact", () => {
     expect(settingsImpact(current, vector)).toBe("vectors");
     const all = cloneSettings(current); all.chunkChars = 500;
     expect(settingsImpact(current, all)).toBe("all");
+    const strategy = cloneSettings(current); strategy.chunkingStrategy = "markdown-v2";
+    expect(settingsImpact(current, strategy)).toBe("all");
   });
 
   it("does not alias glob arrays", () => {

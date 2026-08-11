@@ -109,11 +109,22 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       }));
 
     new Setting(containerEl).setName("청크 크기 / 오버랩")
+      .setDesc("값을 변경하면 전체 인덱스 재구축이 필요합니다.")
       .addText(text => text.setValue(String(draft.chunkChars)).onChange(value => {
         draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
       })).addText(text => text.setValue(String(draft.chunkOverlap)).onChange(value => {
         draft.chunkOverlap = this.nonnegativeNumber(value, draft.chunkOverlap);
       }));
+    new Setting(containerEl).setName("청킹 전략")
+      .setDesc("Markdown 구조 인식 전략을 포함해 변경 시 전체 인덱스 재구축이 필요합니다.")
+      .addDropdown(dropdown => dropdown
+        .addOption("paragraph-v1", "문단 기반 (기본값)")
+        .addOption("markdown-v2", "Markdown 구조 인식")
+        .setValue(draft.chunkingStrategy)
+        .onChange(value => {
+          draft.chunkingStrategy = value as typeof draft.chunkingStrategy;
+          this.display();
+        }));
     new Setting(containerEl).setName("BM25 / 벡터 / 최종 후보 / RRF k")
       .setDesc("최종 후보는 16~40개를 권장합니다.")
       .addText(text => text.setValue(String(draft.bm25TopK)).onChange(value => {

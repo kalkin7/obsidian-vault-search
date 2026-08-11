@@ -54,6 +54,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   excludeGlobs: [".obsidian/**", "9_System/**", "**/node_modules/**"],
   chunkChars: 400,
   chunkOverlap: 60,
+  chunkingStrategy: "paragraph-v1",
   bm25TopK: 30,
   vectorTopK: 30,
   finalTopK: 20,

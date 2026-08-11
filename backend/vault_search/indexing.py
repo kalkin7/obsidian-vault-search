@@ -8,16 +8,17 @@ from typing import Any, Callable
 
 import numpy as np
 
-from .chunking import chunk_text
+from .chunking import DocumentChunk, chunk_document
 from .config import SearchConfig
 from .database import (
     clear_title_index, compute_hash, delete_files, index_counts, init_db, insert_chunk,
-    mark_title_index_current, title_index_needs_rebuild, upsert_file_state,
+    mark_title_index_current, read_index_metadata, title_index_needs_rebuild, upsert_file_state,
     upsert_file_title, write_index_metadata,
 )
 from .document_fields import title_tokens
 from .index_metadata import (
-    build_metadata, load_metadata, validate_index_files, write_metadata,
+    build_metadata, expected_metadata, load_metadata, validate_index_files,
+    validate_metadata, write_metadata,
 )
 from .model_manager import ModelManager
 from .scope import is_in_scope, iter_vault_files, normalize_relative, resolve_inside_vault
@@ -101,12 +102,16 @@ class IndexManager:
             for number, relative in enumerate(files, 1):
                 text = resolve_inside_vault(self.config.vault_path, relative).read_text(
                     encoding="utf-8", errors="replace")
-                chunks = chunk_text(text, self.config.chunk_chars, self.config.chunk_overlap)
-                for chunk_index, content in enumerate(chunks):
+                chunks = self._chunks(text, relative)
+                for chunk_index, chunk in enumerate(chunks):
+                    lexical_only = chunk.lexical_only
                     row_id = insert_chunk(
-                        connection, relative, chunk_index, content, tokenize(content, self.kiwi))
-                    chunk_ids.append(row_id)
-                    chunk_contents.append(content)
+                        connection, relative, chunk_index, chunk.content,
+                        tokenize(self._lexical_text(chunk), self.kiwi), chunk.heading_path,
+                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only)
+                    if not lexical_only:
+                        chunk_ids.append(row_id)
+                        chunk_contents.append(chunk.embedding_text)
                 upsert_file_state(connection, relative, compute_hash(text), len(chunks))
                 basename, directory, headings = title_tokens(relative, text, self.kiwi)
                 upsert_file_title(connection, relative, basename, directory, headings)
@@ -151,9 +156,32 @@ class IndexManager:
         dimension = self._dimension()
         if not self.config.db_path.exists():
             raise FileNotFoundError("chunks.db is missing; run rebuild_all")
+        expected = expected_metadata(self.config, dimension)
+        structural_keys = {
+            "schema_version", "chunking_strategy", "chunker_version",
+            "chunk_chars", "chunk_overlap",
+        }
+        structural_problems: list[str] = []
+        for source, metadata in (
+            ("metadata.json", load_metadata(self.config.metadata_path)),
+            ("SQLite", read_index_metadata(self.config.db_path)),
+        ):
+            if metadata is None:
+                structural_problems.append(f"{source} metadata missing")
+                continue
+            structural_problems.extend(
+                f"{source} {problem}"
+                for problem in validate_metadata(metadata, expected)
+                if problem.split(":", 1)[0] in structural_keys
+            )
+        if structural_problems:
+            raise RuntimeError(
+                "Index structure mismatch; run rebuild_all: " + "; ".join(structural_problems))
         connection = sqlite3.connect(str(self.config.db_path))
         try:
-            rows = connection.execute("SELECT id, content FROM chunks ORDER BY id").fetchall()
+            rows = connection.execute(
+                "SELECT id, embedding_text FROM chunks WHERE lexical_only = 0 ORDER BY id"
+            ).fetchall()
         finally:
             connection.close()
         ids = [int(row[0]) for row in rows]
@@ -263,12 +291,16 @@ class IndexManager:
                 if not target.exists():
                     continue
                 text = target.read_text(encoding="utf-8", errors="replace")
-                chunks = chunk_text(text, self.config.chunk_chars, self.config.chunk_overlap)
-                for chunk_index, content in enumerate(chunks):
+                chunks = self._chunks(text, relative)
+                for chunk_index, chunk in enumerate(chunks):
+                    lexical_only = chunk.lexical_only
                     row_id = insert_chunk(
-                        connection, relative, chunk_index, content, tokenize(content, self.kiwi))
-                    new_ids.append(row_id)
-                    new_contents.append(content)
+                        connection, relative, chunk_index, chunk.content,
+                        tokenize(self._lexical_text(chunk), self.kiwi), chunk.heading_path,
+                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only)
+                    if not lexical_only:
+                        new_ids.append(row_id)
+                        new_contents.append(chunk.embedding_text)
                 upsert_file_state(connection, relative, compute_hash(text), len(chunks))
                 basename, directory, headings = title_tokens(relative, text, self.kiwi)
                 upsert_file_title(connection, relative, basename, directory, headings)
@@ -286,7 +318,7 @@ class IndexManager:
                 vectors = self._encode_documents(new_contents, dimension)
                 vector_index.add(np.asarray(new_ids, dtype=np.int64), vectors)
             vector_index.save(str(vector_temp))
-            expected_count = index_counts(db_temp)["chunks"]
+            expected_count = index_counts(db_temp)["vector_chunks"]
             if len(vector_index) != expected_count or int(vector_index.ndim) != dimension:
                 raise RuntimeError("Incremental vector validation failed")
             metadata = build_metadata(
@@ -314,6 +346,15 @@ class IndexManager:
         if self.model.dimension is None:
             raise RuntimeError("Model must be loaded before indexing")
         return int(self.model.dimension)
+
+    def _chunks(self, text: str, relative: str) -> list[DocumentChunk]:
+        return chunk_document(
+            text, relative, self.config.chunk_chars, self.config.chunk_overlap,
+            self.config.chunking_strategy)
+
+    @staticmethod
+    def _lexical_text(chunk: DocumentChunk) -> str:
+        return "\n".join((*chunk.heading_path, chunk.content))
 
     def _encode_documents(self, contents: list[str], dimension: int) -> np.ndarray:
         if not contents:

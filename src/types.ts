@@ -1,5 +1,6 @@
 export type LoadPolicy = "vault-open" | "first-search" | "manual";
 export type DevicePreference = "auto" | "cpu" | "cuda";
+export type ChunkingStrategy = "paragraph-v1" | "markdown-v2";
 export type BackendState =
   | "stopped" | "starting" | "idle" | "loading_model" | "ready" | "ready_no_index"
   | "syncing" | "reconciling" | "rebuilding" | "rebuilding_vectors" | "error";
@@ -17,6 +18,7 @@ export interface VaultSearchSettings {
   excludeGlobs: string[];
   chunkChars: number;
   chunkOverlap: number;
+  chunkingStrategy: ChunkingStrategy;
   bm25TopK: number;
   vectorTopK: number;
   finalTopK: number;

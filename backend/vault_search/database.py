@@ -24,6 +24,11 @@ def init_db(path: Path) -> sqlite3.Connection:
             file_path   TEXT NOT NULL,
             chunk_index INTEGER NOT NULL,
             content     TEXT NOT NULL,
+            heading_path TEXT NOT NULL,
+            start_line  INTEGER NOT NULL,
+            end_line    INTEGER NOT NULL,
+            embedding_text TEXT NOT NULL,
+            lexical_only INTEGER NOT NULL DEFAULT 0,
             UNIQUE(file_path, chunk_index)
         );
         CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
@@ -59,10 +64,15 @@ def init_db(path: Path) -> sqlite3.Connection:
 
 
 def insert_chunk(connection: sqlite3.Connection, file_path: str, chunk_index: int,
-                 content: str, tokens: list[str]) -> int:
+                 content: str, tokens: list[str], heading_path: tuple[str, ...] = (),
+                 start_line: int = 1, end_line: int = 1,
+                 embedding_text: str | None = None, lexical_only: bool = False) -> int:
     cursor = connection.execute(
-        "INSERT INTO chunks (file_path, chunk_index, content) VALUES (?, ?, ?)",
-        (file_path, chunk_index, content),
+        "INSERT INTO chunks (file_path, chunk_index, content, heading_path, start_line,"
+        " end_line, embedding_text, lexical_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (file_path, chunk_index, content, json.dumps(heading_path, ensure_ascii=False),
+         start_line, end_line, embedding_text if embedding_text is not None else content,
+         int(lexical_only)),
     )
     row_id = int(cursor.lastrowid)
     connection.execute(
@@ -168,16 +178,18 @@ def delete_files(connection: sqlite3.Connection, file_paths: list[str]) -> list[
     if not file_paths:
         return []
     placeholders = ",".join("?" for _ in file_paths)
-    ids = [int(row[0]) for row in connection.execute(
-        f"SELECT id FROM chunks WHERE file_path IN ({placeholders})", file_paths
-    ).fetchall()]
-    if ids:
-        id_placeholders = ",".join("?" for _ in ids)
-        connection.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({id_placeholders})", ids)
-        connection.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", ids)
+    rows = connection.execute(
+        f"SELECT id, lexical_only FROM chunks WHERE file_path IN ({placeholders})", file_paths
+    ).fetchall()
+    all_ids = [int(row[0]) for row in rows]
+    vector_ids = [int(row[0]) for row in rows if not bool(row[1])]
+    if all_ids:
+        id_placeholders = ",".join("?" for _ in all_ids)
+        connection.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({id_placeholders})", all_ids)
+        connection.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", all_ids)
     delete_file_titles(connection, file_paths)
     connection.execute(f"DELETE FROM file_state WHERE file_path IN ({placeholders})", file_paths)
-    return ids
+    return vector_ids
 
 
 def upsert_file_state(connection: sqlite3.Connection, file_path: str,
@@ -216,9 +228,12 @@ def index_counts(path: Path) -> dict[str, Any]:
         return {"files": 0, "chunks": 0}
     connection = sqlite3.connect(str(path))
     try:
-        return {
-            "files": int(connection.execute("SELECT COUNT(*) FROM file_state").fetchone()[0]),
-            "chunks": int(connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]),
-        }
+        files = int(connection.execute("SELECT COUNT(*) FROM file_state").fetchone()[0])
+        chunks = int(connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(chunks)")}
+        vector_chunks = int(connection.execute(
+            "SELECT COUNT(*) FROM chunks WHERE lexical_only = 0").fetchone()[0]) \
+            if "lexical_only" in columns else chunks
+        return {"files": files, "chunks": chunks, "vector_chunks": vector_chunks}
     finally:
         connection.close()

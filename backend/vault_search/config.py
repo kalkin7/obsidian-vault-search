@@ -25,6 +25,7 @@ class SearchConfig:
     exclude_globs: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     chunk_chars: int = 400
     chunk_overlap: int = 60
+    chunking_strategy: str = "paragraph-v1"
     bm25_top_k: int = 30
     vector_top_k: int = 30
     final_top_k: int = 20
@@ -124,6 +125,7 @@ def load_config(path: str | Path, vault_override: str | None = None,
         exclude_globs=_as_nonempty_lines(raw.get("excludeGlobs"), DEFAULT_EXCLUDES),
         chunk_chars=max(100, int(raw.get("chunkChars", 400))),
         chunk_overlap=max(0, int(raw.get("chunkOverlap", 60))),
+        chunking_strategy=str(raw.get("chunkingStrategy", "paragraph-v1")),
         bm25_top_k=max(1, int(raw.get("bm25TopK", 30))),
         vector_top_k=max(1, int(raw.get("vectorTopK", 30))),
         final_top_k=max(1, int(raw.get("finalTopK", 20))),
@@ -138,6 +140,8 @@ def load_config(path: str | Path, vault_override: str | None = None,
     )
     if cfg.chunk_overlap >= cfg.chunk_chars:
         raise ValueError("chunkOverlap must be smaller than chunkChars")
+    if cfg.chunking_strategy not in {"paragraph-v1", "markdown-v2"}:
+        raise ValueError("chunkingStrategy must be paragraph-v1 or markdown-v2")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     cfg.index_dir.mkdir(parents=True, exist_ok=True)
     return cfg

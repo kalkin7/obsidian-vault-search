@@ -2,7 +2,9 @@ import type { VaultSearchSettings } from "./types";
 
 export type SettingsImpact = "none" | "hot" | "scope" | "restart" | "vectors" | "all";
 
-const ALL_KEYS: (keyof VaultSearchSettings)[] = ["chunkChars", "chunkOverlap"];
+const ALL_KEYS: (keyof VaultSearchSettings)[] = [
+  "chunkChars", "chunkOverlap", "chunkingStrategy"
+];
 const VECTOR_KEYS: (keyof VaultSearchSettings)[] = [
   "modelProfile", "modelId", "device", "queryPrefix", "documentPrefix", "normalizeEmbeddings"
 ];

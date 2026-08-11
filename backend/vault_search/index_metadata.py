@@ -11,7 +11,7 @@ from . import __version__
 from .config import SearchConfig
 from .database import index_counts, read_index_metadata
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def expected_metadata(config: SearchConfig, dimension: int) -> dict[str, Any]:
@@ -25,6 +25,8 @@ def expected_metadata(config: SearchConfig, dimension: int) -> dict[str, Any]:
         "document_prefix": config.document_prefix,
         "chunk_chars": config.chunk_chars,
         "chunk_overlap": config.chunk_overlap,
+        "chunking_strategy": config.chunking_strategy,
+        "chunker_version": 1 if config.chunking_strategy == "paragraph-v1" else 2,
         "tokenizer_version": "kiwi-pos-v1",
         "scope_config_hash": config.scope_hash(),
     }
@@ -58,7 +60,8 @@ def validate_metadata(actual: dict[str, Any] | None, expected: dict[str, Any],
     keys = [
         "schema_version", "model_id", "embedding_dimension",
         "normalize_embeddings", "query_prefix", "document_prefix",
-        "chunk_chars", "chunk_overlap", "tokenizer_version",
+        "chunk_chars", "chunk_overlap", "chunking_strategy", "chunker_version",
+        "tokenizer_version",
     ]
     if check_scope:
         keys.append("scope_config_hash")
@@ -87,7 +90,7 @@ def validate_index_files(config: SearchConfig, dimension: int,
         actual_count = len(vector_index)
         if actual_dimension != int(dimension):
             problems.append(f"vector dimension: expected {dimension}, found {actual_dimension}")
-        db_count = index_counts(config.db_path)["chunks"]
+        db_count = index_counts(config.db_path)["vector_chunks"]
         if actual_count != db_count:
             problems.append(f"vector count: expected {db_count}, found {actual_count}")
         if actual.get("vector_count") != actual_count:
