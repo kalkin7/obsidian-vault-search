@@ -115,7 +115,8 @@ export default class VaultSearchPlugin extends Plugin {
     const next = cloneSettings(this.draftSettings);
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
-    if (previous.device !== next.device || previous.pythonExecutable !== next.pythonExecutable) {
+    if (previous.device !== next.device || previous.engine !== next.engine ||
+        previous.pythonExecutable !== next.pythonExecutable) {
       await this.prepareRuntime(next, true);
     }
     const previousWasRunning = this.backend.status.state !== "stopped";

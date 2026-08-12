@@ -823,8 +823,10 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9\uC740 NVIDIA GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC544\uB2C8\uBA74 \uC0AC\uC720\uB97C \uD45C\uC2DC\uD558\uACE0 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
       draft.device = value;
     }));
-    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC5D4\uC9C4").setDesc("ONNX\uB294 GPU\uC5D0\uC11C \uD480\uB9C1\uC744 \uC218\uD589\uD574 \uCF5C\uB4DC \uC2DC\uC791\uACFC \uC6DC \uAC80\uC0C9\uC774 \uBE60\uB974\uACE0 VRAM \uBC18\uD658\uC774 \uAC00\uB2A5\uD558\uC9C0\uB9CC, \uBC8C\uD06C \uC778\uCF54\uB529\uC740 PyTorch\uBCF4\uB2E4 \uB290\uB9BD\uB2C8\uB2E4. ONNX\uB294 device=cuda\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("pytorch", "PyTorch (\uAE30\uBCF8)").addOption("onnx", "ONNX Runtime (CUDA)").setValue(draft.engine).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC5D4\uC9C4").setDesc("ONNX\uB294 GPU\uC5D0\uC11C \uD480\uB9C1\uC744 \uC218\uD589\uD574 \uCF5C\uB4DC \uC2DC\uC791\uACFC \uC6DC \uAC80\uC0C9\uC774 \uBE60\uB974\uACE0 VRAM \uBC18\uD658\uC774 \uAC00\uB2A5\uD558\uC9C0\uB9CC, \uBC8C\uD06C \uC778\uCF54\uB529\uC740 PyTorch\uBCF4\uB2E4 \uB290\uB9BD\uB2C8\uB2E4. ONNX\uB97C \uC120\uD0DD\uD558\uBA74 \uB514\uBC14\uC774\uC2A4\uAC00 CUDA\uB85C \uACE0\uC815\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("pytorch", "PyTorch (\uAE30\uBCF8)").addOption("onnx", "ONNX Runtime (CUDA)").setValue(draft.engine).onChange((value) => {
       draft.engine = value;
+      if (draft.engine === "onnx") draft.device = "cuda";
+      this.display();
     }));
     new import_obsidian.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc("NVIDIA GPU\uC6A9 PyTorch\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => button.setButtonText("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58").onClick(async () => {
       try {
@@ -1124,6 +1126,17 @@ var VaultSearchModal = class extends import_obsidian2.Modal {
   }
   async search(query) {
     await this.owner.ensureSearchStarted();
+    try {
+      return await this.runSearch(query);
+    } catch (error) {
+      if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
+        await this.owner.ensureSearchStarted();
+        return await this.runSearch(query);
+      }
+      throw error;
+    }
+  }
+  async runSearch(query) {
     const response = await this.owner.backend.call(
       "search",
       { query, verbose: true },
@@ -1326,7 +1339,7 @@ var VaultSearchPlugin = class extends import_obsidian4.Plugin {
     const next = cloneSettings(this.draftSettings);
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
-    if (previous.device !== next.device || previous.pythonExecutable !== next.pythonExecutable) {
+    if (previous.device !== next.device || previous.engine !== next.engine || previous.pythonExecutable !== next.pythonExecutable) {
       await this.prepareRuntime(next, true);
     }
     const previousWasRunning = this.backend.status.state !== "stopped";

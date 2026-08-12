@@ -87,11 +87,15 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .addOption("auto", "자동").addOption("cpu", "CPU").addOption("cuda", "CUDA")
       .setValue(draft.device).onChange(value => { draft.device = value as typeof draft.device; }));
     new Setting(containerEl).setName("임베딩 엔진")
-      .setDesc("ONNX는 GPU에서 풀링을 수행해 콜드 시작과 웜 검색이 빠르고 VRAM 반환이 가능하지만, 벌크 인코딩은 PyTorch보다 느립니다. ONNX는 device=cuda에서만 사용할 수 있습니다.")
+      .setDesc("ONNX는 GPU에서 풀링을 수행해 콜드 시작과 웜 검색이 빠르고 VRAM 반환이 가능하지만, 벌크 인코딩은 PyTorch보다 느립니다. ONNX를 선택하면 디바이스가 CUDA로 고정됩니다.")
       .addDropdown(dropdown => dropdown
         .addOption("pytorch", "PyTorch (기본)")
         .addOption("onnx", "ONNX Runtime (CUDA)")
-        .setValue(draft.engine).onChange(value => { draft.engine = value as typeof draft.engine; }));
+        .setValue(draft.engine).onChange(value => {
+          draft.engine = value as typeof draft.engine;
+          if (draft.engine === "onnx") draft.device = "cuda";
+          this.display();
+        }));
     new Setting(containerEl).setName("CUDA 런타임")
       .setDesc("NVIDIA GPU용 PyTorch를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.")
       .addButton(button => button.setButtonText("CUDA 런타임 설치").onClick(async () => {

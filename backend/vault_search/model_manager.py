@@ -60,6 +60,10 @@ class ModelManager:
     def _load_onnx(self) -> None:
         from .direct_onnx import DirectE5Onnx
 
+        if self.config.model_id != "intfloat/multilingual-e5-base":
+            raise RuntimeError(
+                "engine=onnx currently supports only "
+                "intfloat/multilingual-e5-base (derived pooled graph)")
         if not _is_importable("onnxruntime"):
             raise RuntimeError("onnxruntime is not installed in this runtime")
         if self.config.device == "cpu":

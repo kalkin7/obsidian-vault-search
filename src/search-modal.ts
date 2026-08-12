@@ -1,6 +1,7 @@
 import { Modal } from "obsidian";
 import { SearchSession, type SearchSessionState } from "./search-session";
 import { SearchResultView, type SearchResultLocation } from "./search-result-view";
+import { BackendCallError } from "./backend-manager";
 import type { BackendStatus, SearchResult } from "./types";
 
 export interface SearchModalOwner {
@@ -60,6 +61,21 @@ export class VaultSearchModal extends Modal {
 
   private async search(query: string): Promise<SearchResult[]> {
     await this.owner.ensureSearchStarted();
+    try {
+      return await this.runSearch(query);
+    } catch (error) {
+      // The idle watchdog may have unloaded the model between ensureSearchStarted
+      // and this search. A MODEL_LOADING response means the backend just started
+      // re-initializing; retry once after waiting for ready.
+      if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
+        await this.owner.ensureSearchStarted();
+        return await this.runSearch(query);
+      }
+      throw error;
+    }
+  }
+
+  private async runSearch(query: string): Promise<SearchResult[]> {
     const response = await this.owner.backend.call<{ results: SearchResult[] }>(
       "search", { query, verbose: true }, 30_000);
     return response.results;

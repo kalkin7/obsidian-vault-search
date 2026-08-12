@@ -14,11 +14,11 @@ class LocalEntryNotFoundError(Exception):
     pass
 
 
-def _config(tmp_path: Path) -> SearchConfig:
+def _config(tmp_path: Path, *, model_id: str = "example/model") -> SearchConfig:
     return SearchConfig(
         vault_path=tmp_path / "vault",
         data_dir=tmp_path / "data",
-        model_id="example/model",
+        model_id=model_id,
         device="cpu",
     )
 
@@ -125,7 +125,7 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
         lambda model_id: tmp_path / "snap")
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
     manager = ModelManager(cfg)
@@ -142,7 +142,7 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_load_onnx_requires_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cpu"
     manager = ModelManager(cfg)
@@ -158,7 +158,7 @@ def test_load_onnx_requires_cuda_provider(monkeypatch: pytest.MonkeyPatch, tmp_p
     monkeypatch.setitem(
         sys.modules, "onnxruntime",
         SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
     manager = ModelManager(cfg)
@@ -171,7 +171,7 @@ def test_load_onnx_requires_onnxruntime(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setattr(
         "vault_search.model_manager._is_importable",
         lambda name: False)
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
     manager = ModelManager(cfg)
@@ -202,7 +202,7 @@ def test_release_unloads_onnx_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setitem(
         sys.modules, "vault_search.direct_onnx",
         SimpleNamespace(DirectE5Onnx=DirectLoader))
-    cfg = _config(tmp_path)
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
     manager = ModelManager(cfg)
@@ -229,3 +229,4 @@ def test_direct_onnx_rejects_non_normalized(monkeypatch: pytest.MonkeyPatch, tmp
 
     with pytest.raises(RuntimeError, match="normalize_embeddings must be true"):
         DirectE5Onnx(snapshot, normalize_embeddings=False)
+

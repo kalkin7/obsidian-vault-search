@@ -61,17 +61,25 @@ class SearchService:
             return
         if self.model.model is None:
             return
-        if self._index_operation_active:
-            return
         if time.monotonic() - self.last_activity <= timeout:
             return
         self._unload_model()
 
     def _unload_model(self) -> None:
         with self.operation_lock:
+            # Re-check under the lock: a long-running search/index operation may
+            # have refreshed last_activity or moved state since the watchdog's
+            # pre-checks above.
+            timeout = self.config.model_idle_timeout_seconds
+            if timeout <= 0:
+                return
             if self.state not in {"ready", "ready_no_index"}:
                 return
             if self.model.model is None:
+                return
+            if self._index_operation_active:
+                return
+            if time.monotonic() - self.last_activity <= timeout:
                 return
             self.event_sink("model_stage", {"stage": "unloading_model"})
             self.model.release()
