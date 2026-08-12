@@ -1,6 +1,6 @@
 param(
     [string]$PythonExecutable = "python",
-    [string]$Version = "0.1.0",
+    [string]$Version = "0.1.1",
     [ValidateSet("cpu", "cuda")][string]$Runtime,
     [switch]$Force
 )
@@ -15,10 +15,24 @@ $BackendRoot = $PSScriptRoot
 $LockPath = Join-Path $RuntimeRoot "$Runtime.install.lock"
 $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
 
+function Get-DepsHash([string]$Kind) {
+    $Reqs = if ($Kind -eq "cuda") { "requirements-runtime.txt" } else { "requirements.txt" }
+    $ReqsPath = Join-Path $BackendRoot $Reqs
+    if (-not (Test-Path $ReqsPath)) { return "" }
+    $Bytes = [IO.File]::ReadAllBytes($ReqsPath)
+    $Sha = [Security.Cryptography.SHA256]::Create()
+    return ([BitConverter]::ToString($Sha.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant()
+}
+
 function Test-Runtime([string]$Python, [string]$Kind) {
     if (-not (Test-Path $Python)) { return $false }
     $Marker = Join-Path (Split-Path -Parent (Split-Path -Parent $Python)) ".complete.json"
     if (-not (Test-Path $Marker)) { return $false }
+    try {
+        $MarkerJson = Get-Content -Raw $Marker | ConvertFrom-Json
+    } catch { return $false }
+    if ($MarkerJson.backend_version -ne $Version) { return $false }
+    if ($MarkerJson.deps_hash -ne (Get-DepsHash $Kind)) { return $false }
     if ($Kind -eq "cuda") {
         & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available(); assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()" 2>$null
     } else {
@@ -68,8 +82,9 @@ try {
         throw "Runtime validation failed. For CUDA, check the NVIDIA driver."
     }
     $MarkerTemp = Join-Path $Target ".complete.$PID.tmp"
+    $DepsHash = Get-DepsHash $Runtime
     [IO.File]::WriteAllText($MarkerTemp,
-        ('{"runtime":"' + $Runtime + '","backend_version":"' + $Version + '"}'),
+        ('{"runtime":"' + $Runtime + '","backend_version":"' + $Version + '","deps_hash":"' + $DepsHash + '"}'),
         [Text.UTF8Encoding]::new($false))
     [IO.File]::Move($MarkerTemp, (Join-Path $Target ".complete.json"))
 

@@ -33,3 +33,23 @@ def test_lexical_schema_version_is_separate_from_core_schema(tmp_path: Path):
     assert STATE_SCHEMA_VERSION == 2
     assert metadata["schema_version"] == 2
     assert metadata["lexical_schema_version"] == 2
+
+
+def test_expected_metadata_contains_engine_and_provider(tmp_path: Path):
+    metadata = expected_metadata(config(tmp_path), 768)
+    assert metadata["engine"] == "pytorch"
+    assert metadata["provider"] == "auto"
+
+
+def test_engine_change_requires_rebuild(tmp_path: Path):
+    expected = expected_metadata(config(tmp_path), 768)
+    actual = dict(expected)
+    actual["engine"] = "onnx"
+    assert validate_metadata(actual, expected)
+
+
+def test_provider_change_requires_rebuild(tmp_path: Path):
+    expected = expected_metadata(config(tmp_path), 768)
+    actual = dict(expected)
+    actual["provider"] = "tensorrt"
+    assert validate_metadata(actual, expected)

@@ -73,16 +73,6 @@ class SearchConfig:
         )
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
-    def embedding_fingerprint(self) -> dict[str, Any]:
-        return {
-            "model_id": self.model_id,
-            "engine": self.engine,
-            "provider": self.provider,
-            "query_prefix": self.query_prefix,
-            "document_prefix": self.document_prefix,
-            "normalize_embeddings": self.normalize_embeddings,
-        }
-
 
 def _as_nonempty_lines(value: Any, default: list[str]) -> list[str]:
     if isinstance(value, list):

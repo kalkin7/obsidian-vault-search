@@ -9,7 +9,7 @@ and restored to the original order afterwards.
 
 When provider="auto" (default) TensorRT is preferred when available because it
 is substantially faster than the CUDA EP for this encoder; the CUDA EP is used
-as a fallback. TRT engines are cached on disk under the model snapshot hash so
+as a fallback. TRT engines are cached on disk keyed by the ONNX path hash so
 the one-time engine build (~30 s) is not repeated.
 
 This is the production twin of the benchmark tool direct_e5_onnx.py. Unlike
@@ -56,6 +56,12 @@ def _find_trt_lib_dir() -> Path | None:
 
 
 def _prepare_trt_dll_path() -> None:
+    """Make the TensorRT DLLs resolvable for ORT's TensorrtExecutionProvider.
+
+    ORT loads nvinfer via LoadLibrary, whose standard search order does not
+    consult os.add_dll_directory, so PATH must be prepended for the session
+    process. The service is long-lived and the directory is only added once.
+    """
     if os.name != "nt":
         return
     lib_dir = _find_trt_lib_dir()
@@ -177,6 +183,7 @@ class DirectE5Onnx:
 
         self.dimension = POOLING_DIM
         self.provider = resolved
+        self.trt_max_batch = int(trt_max_batch)
         self.normalize = normalize_embeddings
         self.max_seq_length = max_seq_length
         self.model_dir = model_dir
@@ -198,6 +205,8 @@ class DirectE5Onnx:
             if cache_dir is None:
                 cache_dir = Path(os.environ.get(
                     "LOCALAPPDATA", Path.home())) / "ObsidianVaultSearch" / "trt-cache"
+            # Key the cache by the ONNX path so a different snapshot/revision
+            # builds a separate engine instead of reusing a stale one.
             cache_dir = cache_dir / hashlib.sha256(
                 str(onnx_path.resolve()).encode("utf-8")).hexdigest()[:16]
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -230,6 +239,11 @@ class DirectE5Onnx:
         count = len(values)
         if count == 0:
             return np.empty((0, POOLING_DIM), dtype=np.float32)
+        if self.provider == "TensorrtExecutionProvider" and batch_size > self.trt_max_batch:
+            raise ValueError(
+                f"batch_size {batch_size} exceeds the TensorRT engine profile max "
+                f"({self.trt_max_batch}); rebuild the engine with a larger "
+                "trt_max_batch or lower the batch size")
 
         order = np.argsort([len(v) for v in values])[::-1]
         restore = np.argsort(order)

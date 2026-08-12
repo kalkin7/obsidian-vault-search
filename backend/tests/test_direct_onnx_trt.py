@@ -42,3 +42,15 @@ def test_find_trt_lib_dir_detects_site_packages(tmp_path: Path, monkeypatch) -> 
     (tmp_path / "site").mkdir()
     monkeypatch.setattr("vault_search.direct_onnx.sys", type("S", (), {"path": [str(tmp_path)]})())
     assert _find_trt_lib_dir() == libs
+
+
+def test_encode_rejects_batch_over_trt_profile() -> None:
+    from vault_search.direct_onnx import DirectE5Onnx
+    obj = DirectE5Onnx.__new__(DirectE5Onnx)
+    obj.provider = "TensorrtExecutionProvider"
+    obj.trt_max_batch = 64
+    try:
+        obj.encode(["a"], batch_size=128)
+        raise AssertionError("expected ValueError for batch over TRT profile max")
+    except ValueError as exc:
+        assert "exceeds the TensorRT engine profile max" in str(exc)

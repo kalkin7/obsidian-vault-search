@@ -2,7 +2,7 @@ import type { VaultSearchSettings } from "./types";
 
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
-export const BACKEND_VERSION = "0.1.0";
+export const BACKEND_VERSION = "0.1.1";
 
 export const MODEL_PROFILES: Record<string, {
   name: string;

@@ -43,7 +43,7 @@ var path2 = __toESM(require("path"));
 
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
-var BACKEND_VERSION = "0.1.0";
+var BACKEND_VERSION = "0.1.1";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
     name: "Multilingual E5 Base (\uAD8C\uC7A5, \uC800\uC790\uC6D0)",
