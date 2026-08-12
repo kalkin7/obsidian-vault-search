@@ -82,6 +82,7 @@ def test_recall_at_k():
     assert recall_at(paths, expected, 2) == 0.5
     assert recall_at(paths, expected, 4) == 1.0
     assert recall_at(paths, set(), 4) == 0.0
+    assert recall_at(["b.md", "b.md"], {"b.md"}, 2) == 1.0
 
 
 def test_mrr_at():

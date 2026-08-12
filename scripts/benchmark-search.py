@@ -164,7 +164,7 @@ def metric_paths(results: list[dict[str, Any]], top_k: int) -> list[str]:
 def recall_at(paths: list[str], expected: set[str], k: int) -> float:
     if not expected:
         return 0.0
-    found = sum(1 for path in paths[:k] if path in expected)
+    found = len(set(paths[:k]) & expected)
     return found / len(expected)
 
 
@@ -182,6 +182,7 @@ def forbidden_count(paths: list[str], forbidden: set[str], k: int) -> int:
 def summarize_case(case: dict[str, Any], results: list[dict[str, Any]],
                    latencies: list[float]) -> dict[str, Any]:
     expected = {normalize_path(p) for p in case.get("expected_paths", [])}
+    acceptable = {normalize_path(p) for p in case.get("acceptable_paths", [])}
     forbidden = {normalize_path(p) for p in case.get("forbidden_paths", [])}
     paths_all = metric_paths(results, MAX_TOP_K)
     channels_present: set[str] = set()
@@ -211,8 +212,10 @@ def summarize_case(case: dict[str, Any], results: list[dict[str, Any]],
         "channels_present": sorted(channels_present),
         "recall@20": recall_at(paths_all, expected, 20),
         "recall@40": recall_at(paths_all, expected, 40),
-        "success": any(path in expected for path in paths_all[:40]),
-        "complete": expected.issubset(set(paths_all[:40])),
+        "has_expected": bool(expected),
+        "success": bool(expected) and any(path in expected for path in paths_all[:40]),
+        "complete": bool(expected) and expected.issubset(set(paths_all[:40])),
+        "acceptable_hit": any(path in acceptable for path in paths_all[:40]),
         "mrr@10": mrr_at(paths_all, expected, 10),
         "unique_path_count@20": len(set(metric_paths(results, 20))),
         "forbidden_count@20": forbidden_count(paths_all, forbidden, 20),
@@ -221,12 +224,24 @@ def summarize_case(case: dict[str, Any], results: list[dict[str, Any]],
 
 def aggregate_metrics(cases: list[dict[str, Any]], summaries: list[dict[str, Any]]) -> dict[str, Any]:
     latencies = [s["latency_median_ms"] for s in summaries if s["latency_median_ms"] is not None]
+    expected_summaries = [s for s in summaries if s["has_expected"]]
+    if not expected_summaries:
+        raise ValueError("At least one benchmark case must contain expected_paths")
     return {
-        "recall@20": round(sum(s["recall@20"] for s in summaries) / len(summaries), 6),
-        "recall@40": round(sum(s["recall@40"] for s in summaries) / len(summaries), 6),
-        "success_rate": round(sum(1 for s in summaries if s["success"]) / len(summaries), 6),
-        "complete_recall": round(sum(1 for s in summaries if s["complete"]) / len(summaries), 6),
-        "mrr@10": round(sum(s["mrr@10"] for s in summaries) / len(summaries), 6),
+        "recall@20": round(sum(s["recall@20"] for s in expected_summaries)
+                           / len(expected_summaries), 6),
+        "recall@40": round(sum(s["recall@40"] for s in expected_summaries)
+                           / len(expected_summaries), 6),
+        "success_rate": round(sum(1 for s in expected_summaries if s["success"])
+                              / len(expected_summaries), 6),
+        "complete_recall": round(sum(1 for s in expected_summaries if s["complete"])
+                                 / len(expected_summaries), 6),
+        "mrr@10": round(sum(s["mrr@10"] for s in expected_summaries)
+                        / len(expected_summaries), 6),
+        "acceptable_success_rate": round(
+            sum(1 for s in summaries if s["acceptable_hit"])
+            / sum(1 for case in cases if case.get("acceptable_paths")), 6
+        ) if any(case.get("acceptable_paths") for case in cases) else None,
         "unique_path_count@20": round(
             sum(s["unique_path_count@20"] for s in summaries) / len(summaries), 6),
         "forbidden_count@20": sum(s["forbidden_count@20"] for s in summaries),

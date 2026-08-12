@@ -189,17 +189,25 @@ def test_more_than_1000_pending_paths_are_recovered_in_real_batches(
     from vault_search import indexing
     original_delete = indexing.delete_files
     batch_sizes: list[int] = []
+    strict_calls: list[str] = []
+    original_reconcile = manager.reconcile
 
     def counted_delete(connection, paths):
         batch_sizes.append(len(paths))
         return original_delete(connection, paths)
 
     monkeypatch.setattr(indexing, "delete_files", counted_delete)
+    def counted_reconcile(mode="fast"):
+        strict_calls.append(mode)
+        return original_reconcile(mode)
+
+    monkeypatch.setattr(manager, "reconcile", counted_reconcile)
     result = manager.recover_pending_paths()
     assert result["pending_escalated"] == 1001
     assert result["recovered"] == 1001
     assert _pending(config) == []
     assert batch_sizes == [400, 400, 201]
+    assert strict_calls == ["strict"]
 
 
 def test_pending_path_survives_failure_and_restart_recovery(

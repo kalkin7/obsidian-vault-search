@@ -397,12 +397,17 @@ class IndexManager:
         pending_count = self._pending_count()
         if not pending_count:
             return {"recovered": 0}
+        if pending_count > PENDING_RECONCILE_LIMIT:
+            totals = self.reconcile(mode="strict")
+            if totals.get("rebuild_required"):
+                return totals
+            totals["recovered"] = pending_count
+            totals["pending_escalated"] = pending_count
+            return totals
         totals = self._drain_pending_paths([], [])
         if totals.get("rebuild_required"):
             return totals
         totals["recovered"] = pending_count
-        if pending_count > PENDING_RECONCILE_LIMIT:
-            totals["pending_escalated"] = pending_count
         return totals
 
     def sync_paths(self, changed_paths: list[str], deleted_paths: list[str]) -> dict[str, Any]:
