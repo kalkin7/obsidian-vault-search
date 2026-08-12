@@ -132,11 +132,11 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
 
     manager.load()
 
-    assert built == [{
-        "model_dir": str(tmp_path / "snap"),
-        "provider": "CUDAExecutionProvider",
-        "normalize_embeddings": True,
-    }]
+    assert built[0]["model_dir"] == str(tmp_path / "snap")
+    assert built[0]["provider"] == "auto"
+    assert built[0]["normalize_embeddings"] is True
+    assert str(built[0]["trt_cache_dir"]) == str(tmp_path / "data" / "trt-cache")
+    assert built[0]["trt_max_batch"] == 64
     assert manager.device == "cuda"
     assert manager.dimension == 768
 
@@ -163,7 +163,7 @@ def test_load_onnx_requires_cuda_provider(monkeypatch: pytest.MonkeyPatch, tmp_p
     cfg.device = "cuda"
     manager = ModelManager(cfg)
 
-    with pytest.raises(RuntimeError, match="requires CUDAExecutionProvider"):
+    with pytest.raises(RuntimeError, match="requires a CUDA-capable execution provider"):
         manager.load()
 
 

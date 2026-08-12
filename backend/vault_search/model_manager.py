@@ -69,9 +69,11 @@ class ModelManager:
         if self.config.device == "cpu":
             raise RuntimeError("engine=onnx requires device=cuda on this build")
         import onnxruntime as ort
-        if "CUDAExecutionProvider" not in ort.get_available_providers():
+        if "TensorrtExecutionProvider" not in ort.get_available_providers() and \
+                "CUDAExecutionProvider" not in ort.get_available_providers():
             raise RuntimeError(
-                "engine=onnx requires CUDAExecutionProvider, but it is not available")
+                "engine=onnx requires a CUDA-capable execution provider "
+                "(TensorRT or CUDA), but none is available")
         model_dir = _resolve_model_dir(self.config.model_id)
         if model_dir is None:
             raise RuntimeError(
@@ -80,8 +82,10 @@ class ModelManager:
         try:
             self.model = DirectE5Onnx(
                 model_dir,
-                provider="CUDAExecutionProvider",
+                provider=self.config.provider,
                 normalize_embeddings=self.config.normalize_embeddings,
+                trt_cache_dir=self.config.data_dir / "trt-cache",
+                trt_max_batch=self.config.embedding_batch_size_gpu,
             )
         except OSError:
             raise

@@ -19,6 +19,7 @@ class SearchConfig:
     model_profile: str = "multilingual-e5-base"
     engine: str = "pytorch"
     device: str = "auto"
+    provider: str = "auto"
     query_prefix: str = "query: "
     document_prefix: str = "passage: "
     normalize_embeddings: bool = True
@@ -75,6 +76,8 @@ class SearchConfig:
     def embedding_fingerprint(self) -> dict[str, Any]:
         return {
             "model_id": self.model_id,
+            "engine": self.engine,
+            "provider": self.provider,
             "query_prefix": self.query_prefix,
             "document_prefix": self.document_prefix,
             "normalize_embeddings": self.normalize_embeddings,
@@ -116,6 +119,9 @@ def load_config(path: str | Path, vault_override: str | None = None,
     device = str(raw.get("device", "auto")).lower()
     if device not in {"auto", "cpu", "cuda"}:
         device = "auto"
+    provider = str(raw.get("provider", "auto")).lower()
+    if provider not in {"auto", "cuda", "tensorrt"}:
+        provider = "auto"
 
     cfg = SearchConfig(
         vault_path=vault,
@@ -124,6 +130,7 @@ def load_config(path: str | Path, vault_override: str | None = None,
         model_profile=profile,
         engine=engine,
         device=device,
+        provider=provider,
         query_prefix=query_prefix,
         document_prefix=document_prefix,
         normalize_embeddings=bool(raw.get("normalizeEmbeddings", True)),
