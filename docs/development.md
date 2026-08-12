@@ -17,6 +17,13 @@ Runtime profiles are separate under `%LOCALAPPDATA%\ObsidianVaultSearch\runtime\
 shows why. Never replace the active CPU runtime before a CUDA install has completed and passed
 `torch.cuda.is_available()` validation.
 
+The CUDA runtime setup installs `requirements-optional-tensorrt.txt` best-effort. TensorRT is the
+optional accelerator for `engine=onnx` (`provider=auto`); if it fails to install the runtime still
+succeeds and `engine=onnx` uses the CUDA execution provider. See
+[ONNX / TensorRT engine](onnx-tensorrt-engine.md). Runtime regeneration is driven by the backend
+version and a `deps_hash` of the requirements file recorded in `.complete.json`, so dependency
+changes rebuild the venv once.
+
 Lexical matching defaults to OR semantics. Use `--match all` to require every Kiwi token or
 `--match phrase` to require adjacent tokens in order. `--verbose --json` includes channel ranks and
 RRF contributions.

@@ -7,7 +7,9 @@ Portable settings are stored in plugin `data.json`. The Python executable is mac
 - `titleRrfWeight` is the independent title retrieval channel weight; 0 disables the channel so only body/vector candidates remain.
 - `prefixFallback` retries FTS5 with token prefixes only when exact BM25 returns no results.
 - Include/exclude changes are hot-applied and reconciled.
-- Model, device, prefixes, and normalization trigger an atomic vector rebuild.
+- Model, device, engine, provider, prefixes, and normalization trigger an atomic vector rebuild.
+- `engine` selects the embedding backend: `pytorch` (default) or `onnx` (direct ONNX Runtime, requires `device=cuda` and the `intfloat/multilingual-e5-base` model).
+- `provider` (used when `engine=onnx`) is `auto` (default), `cuda`, or `tensorrt`. `auto` prefers TensorRT when installed and falls back to the CUDA EP. See [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
 - `chunkingStrategy` defaults to `paragraph-v1`, which preserves the original paragraph chunker.
 - `markdown-v2` keeps Markdown headings as embedding breadcrumbs and groups fences, tables, lists, and callouts at atom boundaries.
 - Changing the chunking strategy, chunk size, or overlap triggers an atomic complete rebuild.

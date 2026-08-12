@@ -17,7 +17,9 @@ Reload Obsidian and open **Vault Search Service** settings. The first installati
 GPU is detected, explains the multi-GB CUDA download before asking whether to install the CUDA runtime.
 Use `-AcceptCudaDownload` for an unattended approved CUDA install, or `-Runtime cpu` to explicitly keep
 the installation CPU-only. The plugin also offers **CUDA 런타임 설치** later; existing CPU runtime and
-settings remain active until CUDA installation and validation succeed.
+settings remain active until CUDA installation and validation succeed. The CUDA runtime may also install
+the optional TensorRT accelerator, which `engine=onnx` (setting `provider=auto`) uses to speed up
+indexing; see [ONNX / TensorRT embedding engine](docs/onnx-tensorrt-engine.md).
 
 ## Test
 
@@ -56,6 +58,7 @@ The expansion is limited to one hop and five source notes, and never performs a 
 - [Architecture](docs/architecture.md)
 - [Protocol](docs/protocol.md)
 - [Settings](docs/settings.md)
+- [ONNX / TensorRT embedding engine](docs/onnx-tensorrt-engine.md)
 - [Development](docs/development.md)
 - [K_Notes migration and rollback](docs/migration-from-knotes.md)
 - [2026-08-11 implementation report](docs/implementation-report-2026-08-11.md)
