@@ -94,7 +94,9 @@ class SearchEngine:
             raise FileNotFoundError("Search index is missing; run rebuild_all")
         if self.model.dimension is None:
             raise RuntimeError("Embedding model dimension is unavailable")
-        problems = validate_index_files(self.config, self.model.dimension, check_scope=False)
+        problems = validate_index_files(
+            self.config, self.model.dimension, check_scope=False,
+            effective_provider=self.model.effective_provider())
         if problems:
             raise IndexCompatibilityError(problems)
 

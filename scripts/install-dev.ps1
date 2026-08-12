@@ -26,6 +26,7 @@ New-Item -ItemType Directory -Force -Path $BackendTarget | Out-Null
 Copy-Item -Recurse -Force (Join-Path $RepoRoot "backend\vault_search") $BackendTarget
 Copy-Item -Force (Join-Path $RepoRoot "backend\requirements.txt") $BackendTarget
 Copy-Item -Force (Join-Path $RepoRoot "backend\requirements-runtime.txt") $BackendTarget
+Copy-Item -Force (Join-Path $RepoRoot "backend\requirements-optional-tensorrt.txt") $BackendTarget
 Copy-Item -Force (Join-Path $RepoRoot "backend\setup-runtime.ps1") $BackendTarget
 Copy-Item -Force (Join-Path $RepoRoot "backend\pyproject.toml") $BackendTarget
 Get-ChildItem -Path $BackendTarget -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force

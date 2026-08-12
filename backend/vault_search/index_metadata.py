@@ -86,9 +86,11 @@ def validate_metadata(actual: dict[str, Any] | None, expected: dict[str, Any],
 
 
 def validate_index_files(config: SearchConfig, dimension: int,
-                         check_scope: bool = False) -> list[str]:
+                         check_scope: bool = False,
+                         effective_provider: str | None = None) -> list[str]:
     actual = load_metadata(config.metadata_path)
-    problems = validate_metadata(actual, expected_metadata(config, dimension), check_scope)
+    problems = validate_metadata(
+        actual, expected_metadata(config, dimension, effective_provider), check_scope)
     if actual is None:
         return problems
     db_metadata = read_index_metadata(config.db_path)

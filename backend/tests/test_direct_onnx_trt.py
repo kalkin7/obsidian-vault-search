@@ -40,21 +40,25 @@ def test_trt_provider_options_shape_profile() -> None:
 
 
 def test_find_trt_lib_dir_detects_site_packages(tmp_path: Path, monkeypatch) -> None:
+    import sysconfig as _sc
     libs = tmp_path / "tensorrt_libs"
     libs.mkdir()
     (libs / "nvinfer_10.dll").write_bytes(b"x")
-    fake_sys = type("S", (), {"path": [str(tmp_path)], "prefix": str(tmp_path)})()
+    monkeypatch.setattr(_sc, "get_path", lambda key: str(tmp_path))
+    fake_sys = type("S", (), {"path": [str(tmp_path)]})()
     monkeypatch.setattr("vault_search.direct_onnx.sys", fake_sys)
     assert _find_trt_lib_dir() == libs
 
 
 def test_find_trt_lib_dir_rejects_foreign_paths(tmp_path: Path, monkeypatch) -> None:
+    import sysconfig as _sc
     outside = tmp_path.parent / "unrelated"
     outside.mkdir(exist_ok=True)
     libs = outside / "tensorrt_libs"
     libs.mkdir()
     (libs / "nvinfer_10.dll").write_bytes(b"x")
-    fake_sys = type("S", (), {"path": [str(outside)], "prefix": str(tmp_path)})()
+    monkeypatch.setattr(_sc, "get_path", lambda key: str(tmp_path))
+    fake_sys = type("S", (), {"path": [str(outside)]})()
     monkeypatch.setattr("vault_search.direct_onnx.sys", fake_sys)
     assert _find_trt_lib_dir() is None
 
@@ -132,3 +136,34 @@ def test_trt_cache_key_changes_with_batch_and_path() -> None:
     assert k1 != k2
     k3 = _trt_cache_key(Path(r"C:\models\other.onnx"), 32)
     assert k1 != k3
+
+
+def test_cuda_session_requires_cuda_primary(monkeypatch) -> None:
+    def fake_build(path, provider, cache_dir, max_batch):
+        return _FakeSession(["CPUExecutionProvider"])
+
+    monkeypatch.setattr(direct_onnx, "_resolve_provider", _auto_trt_resolve)
+    monkeypatch.setattr(DirectE5Onnx, "_build_session", staticmethod(fake_build))
+    with pytest.raises(RuntimeError, match="primary EP is"):
+        DirectE5Onnx._create_session("cuda", Path("x.onnx"), None, 64)
+
+
+def test_cache_quota_removes_oldest_keeps_active(tmp_path: Path, monkeypatch) -> None:
+    from vault_search.direct_onnx import _enforce_cache_quota
+
+    monkeypatch.setattr("vault_search.direct_onnx.TRT_CACHE_MAX_BYTES", 2 * 1024 * 1024)
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / "engine.bin").write_bytes(b"x" * (1024 * 1024))
+    newer = tmp_path / "newer"
+    newer.mkdir()
+    (newer / "engine.bin").write_bytes(b"x" * (1024 * 1024))
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    (keep / "engine.bin").write_bytes(b"x" * (1024 * 1024))
+
+    _enforce_cache_quota(tmp_path, keep)
+
+    assert not old.exists()
+    assert newer.exists()
+    assert keep.exists()

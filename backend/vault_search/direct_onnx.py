@@ -44,15 +44,23 @@ def _find_trt_lib_dir() -> Path | None:
     The `tensorrt` pip package installs nvinfer*.dll into a site-packages
     directory (tensorrt_libs). ORT's TensorrtExecutionProvider resolves the
     library through the DLL search path, so we prepend that directory to PATH
-    before creating the session. Only venv-installed locations are accepted to
-    avoid picking up arbitrary DLLs from unrelated directories.
+    before creating the session. Only the interpreter's real site-packages
+    (purelib/platlib) are accepted to avoid picking up arbitrary DLLs from
+    unrelated directories.
     """
-    prefix = Path(sys.prefix).resolve()
+    import sysconfig
+    candidate_dirs = set()
+    for key in ("purelib", "platlib"):
+        value = sysconfig.get_path(key)
+        if value:
+            candidate_dirs.add(str(Path(value).resolve()))
     for entry in sys.path:
         candidate = Path(entry)
         if not candidate.is_dir():
             continue
-        if not str(candidate.resolve()).lower().startswith(str(prefix).lower()):
+        resolved = str(candidate.resolve()).lower()
+        if not any(resolved == base or resolved.startswith(base + os.sep)
+                   for base in (b.lower() for b in candidate_dirs)):
             continue
         libs = candidate / "tensorrt_libs"
         if libs.is_dir() and (libs / "nvinfer_10.dll").exists():
@@ -88,6 +96,19 @@ def _trt_available() -> bool:
     if os.name == "nt":
         return _find_trt_lib_dir() is not None
     return True
+
+
+def _require_cuda_primary(session: Any) -> None:
+    """Ensure a built session actually runs on the CUDA EP as its primary EP.
+
+    ORT can silently drop an execution provider and return a lower one (e.g.
+    CPU) without raising; recording that session as CUDA would be wrong.
+    """
+    primary = session.get_providers()[0] if session.get_providers() else ""
+    if primary != "CUDAExecutionProvider":
+        raise RuntimeError(
+            f"CUDA session could not be created; primary EP is {primary!r}: "
+            f"{session.get_providers()}")
 
 
 def _trt_provider_options(engine_cache_dir: Path, max_batch: int) -> dict[str, Any]:
@@ -237,12 +258,14 @@ class DirectE5Onnx:
         TensorRT is preferred for "auto" and falls back to the CUDA EP both
         when the TRT engine build raises and when ORT silently returns a CUDA
         primary session (TRT registration failure). Explicit "tensorrt"
-        requests surface errors instead of falling back.
+        requests surface errors instead of falling back. A CUDA session must
+        also have CUDA as its primary EP; there is no lower fallback.
         """
         resolved = _resolve_provider(requested)
         if resolved != "TensorrtExecutionProvider":
             session = DirectE5Onnx._build_session(
                 onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+            _require_cuda_primary(session)
             return session, "CUDAExecutionProvider"
 
         try:
@@ -251,9 +274,10 @@ class DirectE5Onnx:
         except Exception:
             if requested != "auto":
                 raise
-            return DirectE5Onnx._build_session(
-                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch), \
-                "CUDAExecutionProvider"
+            session = DirectE5Onnx._build_session(
+                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+            _require_cuda_primary(session)
+            return session, "CUDAExecutionProvider"
 
         primary = session.get_providers()[0] if session.get_providers() else ""
         if primary == "TensorrtExecutionProvider":
@@ -262,9 +286,10 @@ class DirectE5Onnx:
             raise RuntimeError(
                 f"provider=tensorrt requested but the primary EP is {primary!r}: "
                 f"{session.get_providers()}")
-        return DirectE5Onnx._build_session(
-            onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch), \
-            "CUDAExecutionProvider"
+        session = DirectE5Onnx._build_session(
+            onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+        _require_cuda_primary(session)
+        return session, "CUDAExecutionProvider"
 
     @staticmethod
     def _build_session(onnx_path: Path, provider: str,
@@ -289,12 +314,14 @@ class DirectE5Onnx:
             cache_dir.mkdir(parents=True, exist_ok=True)
             _enforce_cache_quota(cache_root, cache_dir)
             session_options = ort.SessionOptions()
-            return ort.InferenceSession(
+            session = ort.InferenceSession(
                 str(onnx_path),
                 sess_options=session_options,
                 providers=[("TensorrtExecutionProvider",
                             _trt_provider_options(cache_dir, trt_max_batch)),
                            "CUDAExecutionProvider"])
+            _enforce_cache_quota(cache_root, cache_dir)
+            return session
 
         session_options = ort.SessionOptions()
         session_options.add_session_config_entry("session.enable_cuda_mem_arena", "0")

@@ -270,7 +270,8 @@ class IndexManager:
                 [(db_temp, self.config.db_path),
                  (vector_temp, self.config.vector_path),
                  (metadata_temp, self.config.metadata_path)],
-                lambda: validate_index_files(self.config, dimension),
+                lambda: validate_index_files(self.config, dimension,
+                                             effective_provider=self.model.effective_provider()),
             )
         except Exception:
             self._remove_paths(db_temp, vector_temp, metadata_temp)
@@ -338,7 +339,8 @@ class IndexManager:
                 [(db_temp, self.config.db_path),
                  (vector_temp, self.config.vector_path),
                  (metadata_temp, self.config.metadata_path)],
-                lambda: validate_index_files(self.config, dimension),
+                lambda: validate_index_files(self.config, dimension,
+                                             effective_provider=self.model.effective_provider()),
             )
         except Exception:
             self._remove_paths(db_temp, vector_temp, metadata_temp)
@@ -353,7 +355,8 @@ class IndexManager:
         state = self.ensure_state_schema()
         if state.get("rebuild_required"):
             return {**state, **self.status()}
-        problems = validate_index_files(self.config, self._dimension(), check_scope=False)
+        problems = validate_index_files(self.config, self._dimension(), check_scope=False,
+                                        effective_provider=self.model.effective_provider())
         if problems:
             return {"rebuild_required": True, "reason": "; ".join(problems), **self.status()}
 
@@ -482,7 +485,8 @@ class IndexManager:
         deleted_set = sorted(set(deleted_paths) | set(changed_set))
 
         dimension = self._dimension()
-        problems = validate_index_files(self.config, dimension, check_scope=False)
+        problems = validate_index_files(self.config, dimension, check_scope=False,
+                                        effective_provider=self.model.effective_provider())
         if problems:
             return {"rebuild_required": True, "reason": "; ".join(problems), **self.status()}
 
@@ -549,7 +553,8 @@ class IndexManager:
                 [(db_temp, self.config.db_path),
                  (vector_temp, self.config.vector_path),
                  (metadata_temp, self.config.metadata_path)],
-                lambda: validate_index_files(self.config, dimension),
+                lambda: validate_index_files(self.config, dimension,
+                                             effective_provider=self.model.effective_provider()),
             )
             self._clear_pending_paths(list(pending))
         except Exception:
