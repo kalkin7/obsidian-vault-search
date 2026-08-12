@@ -25,6 +25,8 @@ $BackendTarget = Join-Path $Target "backend"
 New-Item -ItemType Directory -Force -Path $BackendTarget | Out-Null
 Copy-Item -Recurse -Force (Join-Path $RepoRoot "backend\vault_search") $BackendTarget
 Copy-Item -Force (Join-Path $RepoRoot "backend\requirements.txt") $BackendTarget
+Copy-Item -Force (Join-Path $RepoRoot "backend\requirements-runtime.txt") $BackendTarget
+Copy-Item -Force (Join-Path $RepoRoot "backend\setup-runtime.ps1") $BackendTarget
 Copy-Item -Force (Join-Path $RepoRoot "backend\pyproject.toml") $BackendTarget
 Get-ChildItem -Path $BackendTarget -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 
@@ -68,7 +70,21 @@ finally { $Sha.Dispose() }
 $VaultId = $Hash.Substring(0, 20)
 $MachineDir = Join-Path $env:LOCALAPPDATA "ObsidianVaultSearch\vaults\$VaultId"
 New-Item -ItemType Directory -Force -Path $MachineDir | Out-Null
-@{ pythonExecutable = $PythonExecutable } | ConvertTo-Json | Set-Content -Encoding UTF8 (Join-Path $MachineDir "machine.json")
+$MachinePath = Join-Path $MachineDir "machine.json"
+$Machine = [ordered]@{ pythonExecutable = $PythonExecutable }
+if (Test-Path $MachinePath) {
+    $Existing = Get-Content -Raw -Encoding UTF8 $MachinePath | ConvertFrom-Json
+    if ($Existing.PSObject.Properties.Name -contains "runtimes") { $Machine.runtimes = $Existing.runtimes }
+}
+$MachineJson = $Machine | ConvertTo-Json -Depth 5
+$MachineTemp = "$MachinePath.$PID.tmp"
+$MachineBackup = "$MachinePath.$PID.backup"
+[IO.File]::WriteAllText($MachineTemp, $MachineJson, [Text.UTF8Encoding]::new($false))
+if (Test-Path $MachinePath) {
+    [IO.File]::Replace($MachineTemp, $MachinePath, $MachineBackup)
+    Remove-Item -Force $MachineBackup
+}
+else { [IO.File]::Move($MachineTemp, $MachinePath) }
 
 if ($Enable) {
     $CommunityPath = Join-Path $Vault ".obsidian\community-plugins.json"

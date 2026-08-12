@@ -10,6 +10,7 @@ export interface SearchModalOwner {
     ensureStarted(): Promise<void>;
     call<T>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>;
   };
+  ensureSearchStarted(): Promise<void>;
   openSearchResult(location: SearchResultLocation): Promise<void>;
   openSearchSettings(): void;
   searchModalClosed(modal: VaultSearchModal): void;
@@ -58,7 +59,7 @@ export class VaultSearchModal extends Modal {
   }
 
   private async search(query: string): Promise<SearchResult[]> {
-    await this.owner.backend.ensureStarted();
+    await this.owner.ensureSearchStarted();
     const response = await this.owner.backend.call<{ results: SearchResult[] }>(
       "search", { query, verbose: true }, 30_000);
     return response.results;

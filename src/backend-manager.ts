@@ -2,7 +2,8 @@ import { ChildProcessWithoutNullStreams, execFile, spawn } from "child_process";
 import { createWriteStream, existsSync } from "fs";
 import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import * as path from "path";
-import type { BackendResponse, BackendStatus, RuntimeInfo, VaultSearchSettings } from "./types";
+import type { BackendResponse, BackendStatus, PythonRuntimeInfo, RuntimeInfo, VaultSearchSettings } from "./types";
+import { BACKEND_VERSION } from "./constants";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
 
@@ -11,11 +12,21 @@ interface BackendEvent {
   data: Record<string, unknown>;
 }
 
+interface MachineConfig {
+  pythonExecutable?: string;
+  runtimes?: Partial<Record<"cpu" | "cuda", string>>;
+}
+
 export class BackendManager {
   private child: ChildProcessWithoutNullStreams | null = null;
   private runtime: RuntimeInfo | null = null;
   private heartbeat: ReturnType<typeof setInterval> | null = null;
   private stopping = false;
+  private runtimeInstall: Promise<PythonRuntimeInfo> | null = null;
+  private runtimeInstaller: ChildProcessWithoutNullStreams | null = null;
+  private machineWrite: Promise<void> = Promise.resolve();
+  private startPromise: Promise<void> | null = null;
+  private startGeneration = 0;
   private statusValue: BackendStatus = { state: "stopped" };
 
   constructor(
@@ -33,22 +44,143 @@ export class BackendManager {
   get status(): BackendStatus { return { ...this.statusValue }; }
 
   async readMachinePython(): Promise<string | null> {
+    const config = await this.readMachineConfig();
+    return config.pythonExecutable || null;
+  }
+
+  async readMachineConfig(): Promise<MachineConfig> {
     try {
-      const value = JSON.parse(await readFile(this.machinePath, "utf8")) as { pythonExecutable?: string };
-      return value.pythonExecutable || null;
-    } catch { return null; }
+      return JSON.parse(await readFile(this.machinePath, "utf8")) as MachineConfig;
+    } catch { return {}; }
   }
 
   async writeMachinePython(pythonExecutable: string): Promise<void> {
-    await mkdir(this.dataDir, { recursive: true });
-    const temp = this.machinePath + ".tmp";
-    await writeFile(temp, JSON.stringify({ pythonExecutable }, null, 2), "utf8");
-    try { await rename(temp, this.machinePath); }
-    catch { await rm(this.machinePath, { force: true }); await rename(temp, this.machinePath); }
+    await this.updateMachineConfig(config => { config.pythonExecutable = pythonExecutable; });
+  }
+
+  async writeManagedRuntime(kind: "cpu" | "cuda", pythonExecutable: string): Promise<void> {
+    await this.updateMachineConfig(config => {
+      config.runtimes = { ...(config.runtimes || {}), [kind]: pythonExecutable };
+    });
+  }
+
+  private async updateMachineConfig(change: (config: MachineConfig) => void): Promise<void> {
+    const operation = this.machineWrite.then(async () => {
+      await mkdir(this.dataDir, { recursive: true });
+      const config = await this.readMachineConfig();
+      change(config);
+      const suffix = `${process.pid}.${Date.now()}`;
+      const temp = `${this.machinePath}.${suffix}.tmp`;
+      const backup = `${this.machinePath}.${suffix}.backup`;
+      await writeFile(temp, JSON.stringify(config, null, 2), "utf8");
+      let backedUp = false;
+      try {
+        if (existsSync(this.machinePath)) { await rename(this.machinePath, backup); backedUp = true; }
+        await rename(temp, this.machinePath);
+        if (backedUp) await rm(backup, { force: true });
+      } catch (error) {
+        await rm(temp, { force: true }).catch(() => undefined);
+        if (backedUp && !existsSync(this.machinePath)) await rename(backup, this.machinePath);
+        throw error;
+      }
+    });
+    this.machineWrite = operation.catch(() => undefined);
+    return operation;
+  }
+
+  async inspectPython(pythonExecutable: string): Promise<PythonRuntimeInfo | null> {
+    const code = [
+      "import importlib.util,json,sys,torch,vault_search",
+      "required=['transformers','tokenizers','sentence_transformers','kiwipiepy','usearch','numpy']",
+      "assert all(importlib.util.find_spec(name) for name in required)",
+      "print(json.dumps({'base':sys._base_executable,'torch':torch.__version__,'backend':vault_search.__version__,'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available(),'device_name':torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))"
+    ].join(";");
+    try {
+      const stdout = await this.execFileText(pythonExecutable, ["-X", "utf8", "-c", code], 15_000);
+      const value = JSON.parse(stdout.trim()) as Record<string, unknown>;
+      if (String(value.backend || "") !== BACKEND_VERSION) return null;
+      return {
+        pythonExecutable,
+        baseExecutable: String(value.base || pythonExecutable),
+        torchVersion: String(value.torch || "unknown"),
+        cudaBuild: value.cuda_build ? String(value.cuda_build) : null,
+        cudaAvailable: value.cuda_available === true,
+        deviceName: value.device_name ? String(value.device_name) : null,
+      };
+    } catch { return null; }
+  }
+
+  async hasNvidiaGpu(): Promise<boolean> {
+    try {
+      await this.execFileText("nvidia-smi.exe", ["--query-gpu=name", "--format=csv,noheader"], 10_000);
+      return true;
+    } catch { return false; }
+  }
+
+  async managedRuntime(kind: "cpu" | "cuda"): Promise<PythonRuntimeInfo | null> {
+    const executable = (await this.readMachineConfig()).runtimes?.[kind];
+    return executable ? this.inspectPython(executable) : null;
+  }
+
+  async installManagedRuntime(kind: "cpu" | "cuda", basePython: string,
+    progress: (text: string) => void): Promise<PythonRuntimeInfo> {
+    if (this.runtimeInstall) return this.runtimeInstall;
+    this.runtimeInstall = this.runRuntimeInstall(kind, basePython, progress);
+    try { return await this.runtimeInstall; }
+    finally { this.runtimeInstall = null; }
+  }
+
+  private async runRuntimeInstall(kind: "cpu" | "cuda", basePython: string,
+    progress: (text: string) => void): Promise<PythonRuntimeInfo> {
+    const script = path.join(this.backendRoot, "setup-runtime.ps1");
+    if (!existsSync(script)) throw new Error(`Runtime installer is missing: ${script}`);
+    const executable = await new Promise<string>((resolve, reject) => {
+      const child = spawn("powershell.exe", [
+        "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script,
+        "-PythonExecutable", basePython, "-Version", BACKEND_VERSION, "-Runtime", kind,
+      ], { cwd: this.pluginDir, windowsHide: true, shell: false, env: { ...process.env, PYTHONUTF8: "1" } });
+      this.runtimeInstaller = child;
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", chunk => {
+        const text = chunk.toString("utf8"); stdout += text; progress(text.trim());
+      });
+      child.stderr.on("data", chunk => {
+        const text = chunk.toString("utf8"); stderr += text; progress(text.trim());
+      });
+      child.on("error", reject);
+      child.on("exit", code => {
+        this.runtimeInstaller = null;
+        if (code !== 0) reject(new Error(stderr.trim() || `Runtime installer exited with code ${code}`));
+        else resolve(stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || "");
+      });
+    });
+    const info = await this.inspectPython(executable);
+    if (!info) throw new Error("Installed runtime validation failed");
+    if (kind === "cuda" && !info.cudaAvailable) {
+      throw new Error("CUDA runtime was installed, but CUDA is not available to PyTorch. Check the NVIDIA driver.");
+    }
+    await this.writeManagedRuntime(kind, executable);
+    return info;
+  }
+
+  private execFileText(executable: string, args: string[], timeout: number): Promise<string> {
+    return new Promise((resolve, reject) => {
+      execFile(executable, args, { timeout, windowsHide: true, encoding: "utf8" },
+        (error, stdout) => error ? reject(error) : resolve(stdout));
+    });
   }
 
   async start(lazyOverride?: boolean): Promise<void> {
     if (this.child && this.child.exitCode === null) return;
+    if (this.startPromise) return this.startPromise;
+    const generation = ++this.startGeneration;
+    this.startPromise = this.startInternal(lazyOverride, generation);
+    try { await this.startPromise; }
+    finally { this.startPromise = null; }
+  }
+
+  private async startInternal(lazyOverride: boolean | undefined, generation: number): Promise<void> {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
@@ -57,6 +189,7 @@ export class BackendManager {
     }
     await this.stopStaleRuntime();
     await this.writeServiceConfig(lazyOverride);
+    if (generation !== this.startGeneration || this.stopping) return;
 
     const settings = this.getSettings();
     const args = [
@@ -138,6 +271,19 @@ export class BackendManager {
 
   async stop(): Promise<void> {
     this.stopping = true;
+    ++this.startGeneration;
+    const installer = this.runtimeInstaller;
+    if (installer && installer.exitCode === null) {
+      installer.kill();
+      if (process.platform === "win32" && installer.pid) {
+        await new Promise<void>(resolve => {
+          execFile("taskkill.exe", ["/PID", String(installer.pid), "/T", "/F"], () => resolve());
+        });
+      }
+      this.runtimeInstaller = null;
+    }
+    const starting = this.startPromise;
+    if (starting) await starting.catch(() => undefined);
     this.clearHeartbeat();
     const child = this.child;
     if (child?.stdin.writable) child.stdin.end();

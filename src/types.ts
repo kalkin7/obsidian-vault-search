@@ -46,6 +46,16 @@ export interface BackendStatus {
   progress?: string;
   pending_recovery_required?: boolean;
   pending_recovery_warning?: string | null;
+  runtime_warning?: string | null;
+}
+
+export interface PythonRuntimeInfo {
+  pythonExecutable: string;
+  baseExecutable: string;
+  torchVersion: string;
+  cudaBuild: string | null;
+  cudaAvailable: boolean;
+  deviceName: string | null;
 }
 
 export interface RuntimeInfo {

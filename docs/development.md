@@ -6,10 +6,16 @@ npm run build
 npm test
 python -X utf8 -m pytest backend/tests
 .\scripts\setup-backend.ps1 -Vault "C:\path\to\vault"
+.\scripts\setup-backend.ps1 -Vault "C:\path\to\vault" -Runtime auto -AcceptCudaDownload
 .\scripts\install-dev.ps1 -Vault "C:\path\to\vault" -PythonExecutable "<venv-python>" -Enable
 ```
 
 Unit and integration tests use the deterministic `__fake__` embedding model and do not download a model. Real-model smoke tests are Windows-only manual checks.
+
+Runtime profiles are separate under `%LOCALAPPDATA%\ObsidianVaultSearch\runtime\<version>\cpu` and
+`...\cuda`. `auto` prefers a validated CUDA runtime when NVIDIA is available; otherwise it uses CPU and
+shows why. Never replace the active CPU runtime before a CUDA install has completed and passed
+`torch.cuda.is_available()` validation.
 
 Lexical matching defaults to OR semantics. Use `--match all` to require every Kiwi token or
 `--match phrase` to require adjacent tokens in order. `--verbose --json` includes channel ranks and

@@ -13,6 +13,12 @@ $Python = .\scripts\setup-backend.ps1 -Vault "C:\path\to\vault" | Select-Object 
 
 Reload Obsidian and open **Vault Search Service** settings. The first installation needs **전체 재구축**. Indexes, runtime tokens, logs, and the Python path stay outside the vault under `%LOCALAPPDATA%\ObsidianVaultSearch`.
 
+`setup-backend.ps1` defaults to `-Runtime auto`. It always prepares a CPU runtime and, when an NVIDIA
+GPU is detected, explains the multi-GB CUDA download before asking whether to install the CUDA runtime.
+Use `-AcceptCudaDownload` for an unattended approved CUDA install, or `-Runtime cpu` to explicitly keep
+the installation CPU-only. The plugin also offers **CUDA 런타임 설치** later; existing CPU runtime and
+settings remain active until CUDA installation and validation succeed.
+
 ## Test
 
 ```powershell

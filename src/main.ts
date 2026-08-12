@@ -9,6 +9,8 @@ import { VaultEventQueue } from "./vault-event-queue";
 import { VaultSearchModal } from "./search-modal";
 import type { SearchResultLocation } from "./search-result-view";
 import { selectedTextQuery } from "./search-session";
+import { confirmRuntimeInstall } from "./runtime-install-modal";
+import { selectRuntime } from "./runtime-selection";
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -19,6 +21,9 @@ export default class VaultSearchPlugin extends Plugin {
   private startupPrepared = false;
   private startupInProgress = false;
   private searchModal: VaultSearchModal | null = null;
+  private runtimeChangePromise: Promise<void> | null = null;
+  runtimeSummary = "런타임: 확인 전";
+  runtimeWarning: string | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -99,10 +104,20 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async applyDraftSettings(): Promise<void> {
+    if (this.runtimeChangePromise) return this.runtimeChangePromise;
+    this.runtimeChangePromise = this.applyDraftSettingsInternal();
+    try { await this.runtimeChangePromise; }
+    finally { this.runtimeChangePromise = null; }
+  }
+
+  private async applyDraftSettingsInternal(): Promise<void> {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
+    if (previous.device !== next.device || previous.pythonExecutable !== next.pythonExecutable) {
+      await this.prepareRuntime(next, true);
+    }
     const previousWasRunning = this.backend.status.state !== "stopped";
 
     try {
@@ -143,16 +158,82 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async startBackend(): Promise<void> {
+    await this.prepareRuntime(this.settings, false);
     await this.backend.start(false);
     await this.backend.waitUntilReady();
     await this.completeStartup();
     this.settingTab?.display();
   }
 
+  async installCudaRuntime(): Promise<void> {
+    if (this.runtimeChangePromise) return this.runtimeChangePromise;
+    this.runtimeChangePromise = this.installCudaRuntimeInternal();
+    try { await this.runtimeChangePromise; }
+    finally { this.runtimeChangePromise = null; }
+  }
+
+  private async installCudaRuntimeInternal(): Promise<void> {
+    if (!await this.backend.hasNvidiaGpu()) {
+      throw new Error("NVIDIA GPU 또는 드라이버를 찾을 수 없습니다.");
+    }
+    if (!await confirmRuntimeInstall(this.app, true)) return;
+    const current = await this.backend.inspectPython(this.settings.pythonExecutable);
+    const cpu = await this.backend.managedRuntime("cpu");
+    const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
+    new Notice("CUDA 런타임을 설치하고 있습니다. 수 분 이상 걸릴 수 있습니다.", 10000);
+    const installed = await this.backend.installManagedRuntime("cuda", basePython,
+      text => { if (text) this.runtimeSummary = `CUDA 설치 중: ${text.split(/\r?\n/).at(-1)}`; });
+    this.runtimeSummary = `런타임: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`;
+    this.runtimeWarning = null;
+    if (this.settings.device === "cpu") {
+      const active = current || cpu;
+      this.runtimeSummary = active
+        ? `런타임: CPU / PyTorch ${active.torchVersion} (CUDA 런타임 설치됨)`
+        : "런타임: CPU (CUDA 런타임 설치됨)";
+      new Notice("CUDA 런타임을 설치했습니다. 현재 CPU 명시 설정은 유지됩니다.", 10000);
+      this.settingTab?.display();
+      return;
+    }
+    const previous = cloneSettings(this.settings);
+    const previousDraft = cloneSettings(this.draftSettings);
+    const wasRunning = this.backend.status.state !== "stopped";
+    try {
+      if (wasRunning) await this.backend.stop();
+      this.settings.pythonExecutable = installed.pythonExecutable;
+      this.draftSettings.pythonExecutable = installed.pythonExecutable;
+      if (wasRunning) {
+        await this.backend.start(false);
+        await this.backend.waitUntilReady();
+        await this.backend.call("rebuild_vectors", {}, 3_600_000);
+      }
+      await this.saveSettings();
+    } catch (error) {
+      await this.backend.stop().catch(() => undefined);
+      this.settings = previous;
+      this.draftSettings = previousDraft;
+      await this.saveSettings();
+      if (wasRunning) {
+        await this.backend.start(false);
+        await this.backend.waitUntilReady();
+      }
+      throw error;
+    }
+    new Notice("CUDA 런타임 설치와 적용을 완료했습니다.", 10000);
+    this.settingTab?.display();
+  }
+
   async startLazyBackend(): Promise<void> {
+    await this.prepareRuntime(this.settings, false);
     await this.backend.start(true);
     await this.backend.waitUntilAvailable();
     this.settingTab?.display();
+  }
+
+  async ensureSearchStarted(): Promise<void> {
+    if (this.backend.status.state === "stopped" || this.backend.status.state === "error") {
+      await this.prepareRuntime(this.settings, false);
+    }
+    await this.backend.ensureStarted();
   }
 
   async stopBackend(): Promise<void> {
@@ -163,6 +244,7 @@ export default class VaultSearchPlugin extends Plugin {
 
   async restartBackend(): Promise<void> {
     this.startupPrepared = false;
+    await this.prepareRuntime(this.settings, false);
     await this.backend.restart();
     await this.completeStartup();
     this.settingTab?.display();
@@ -170,19 +252,19 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async previewScope(): Promise<{ count: number; sample: string[] }> {
-    await this.backend.ensureStarted();
+    await this.ensureSearchStarted();
     return this.backend.call("preview_scope", {}, 120_000);
   }
 
   async reconcile(mode: "fast" | "strict" = "strict"): Promise<void> {
-    await this.backend.ensureStarted();
+    await this.ensureSearchStarted();
     const result = await this.backend.call<Record<string, unknown>>("reconcile", { mode }, 600_000);
     new Notice(result.rebuild_required ? `재구축 필요: ${result.reason}` : "인덱스 증분 대조를 완료했습니다.", 8000);
     this.settingTab?.display();
   }
 
   async rebuildAll(): Promise<void> {
-    await this.backend.ensureStarted();
+    await this.ensureSearchStarted();
     new Notice("전체 인덱스 재구축을 시작합니다. 백그라운드에서 진행됩니다.");
     const result = await this.backend.call<{ files: number; chunks: number }>("rebuild_all", {}, 3_600_000);
     new Notice(`전체 재구축 완료: 파일 ${result.files}개, 청크 ${result.chunks}개`, 10000);
@@ -190,7 +272,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async rebuildVectors(): Promise<void> {
-    await this.backend.ensureStarted();
+    await this.ensureSearchStarted();
     new Notice("벡터 인덱스 재구축을 시작합니다.");
     const result = await this.backend.call<{ chunks: number }>("rebuild_vectors", {}, 3_600_000);
     new Notice(`벡터 재구축 완료: 청크 ${result.chunks}개`, 10000);
@@ -210,6 +292,63 @@ export default class VaultSearchPlugin extends Plugin {
     this.addCommand({ id: "reconcile-index", name: "Reconcile search index", callback: () => void this.reconcile() });
     this.addCommand({ id: "rebuild-index", name: "Rebuild complete search index", callback: () => void this.rebuildAll() });
     this.addCommand({ id: "rebuild-vectors", name: "Rebuild vector index", callback: () => void this.rebuildVectors() });
+  }
+
+  private async prepareRuntime(target: VaultSearchSettings, interactive: boolean): Promise<void> {
+    const current = await this.backend.inspectPython(target.pythonExecutable);
+    const cpu = await this.backend.managedRuntime("cpu");
+    const cuda = await this.backend.managedRuntime("cuda");
+    const choose = (python: string, summary: string) => {
+      target.pythonExecutable = python;
+      this.runtimeSummary = summary;
+      this.runtimeWarning = null;
+    };
+
+    const hasGpu = await this.backend.hasNvidiaGpu();
+    const selection = selectRuntime(target.device, current, cpu, cuda, hasGpu);
+    if (selection.kind === "error") throw new Error(selection.message);
+    if (selection.kind === "selected") {
+      const selected = selection.runtime;
+      choose(selected.pythonExecutable, selected.cudaAvailable
+        ? `런타임: CUDA ${selected.cudaBuild || ""} / ${selected.deviceName || "GPU"}`
+        : `런타임: CPU / PyTorch ${selected.torchVersion}`);
+      return;
+    }
+    if (selection.kind === "cpu-fallback" && !interactive) {
+      target.pythonExecutable = selection.runtime.pythonExecutable;
+      this.runtimeSummary = `런타임: CPU / PyTorch ${selection.runtime.torchVersion}`;
+      this.runtimeWarning = selection.warning;
+      return;
+    }
+
+    const install = interactive && await confirmRuntimeInstall(this.app, target.device === "cuda");
+    if (!install) {
+      if (target.device === "cuda") throw new Error(interactive
+        ? "CUDA 런타임 설치가 취소되어 설정을 적용하지 않았습니다."
+        : "CUDA 런타임이 없습니다. 설정에서 CUDA 런타임을 먼저 설치해 주세요.");
+      const selected = selection.kind === "cpu-fallback" ? selection.runtime : cpu || current;
+      if (!selected) throw new Error("사용 가능한 CPU 검색 런타임이 없습니다.");
+      target.pythonExecutable = selected.pythonExecutable;
+      this.runtimeSummary = `런타임: CPU / PyTorch ${selected.torchVersion}`;
+      this.runtimeWarning = "NVIDIA GPU가 감지됐지만 CUDA 런타임이 설치되지 않아 CPU를 사용합니다.";
+      return;
+    }
+
+    const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
+    try {
+      new Notice("CUDA 런타임을 설치하고 있습니다. 수 분 이상 걸릴 수 있습니다.", 10000);
+      const installed = await this.backend.installManagedRuntime("cuda", basePython,
+        text => { if (text) this.runtimeSummary = `CUDA 설치 중: ${text.split(/\r?\n/).at(-1)}`; });
+      choose(installed.pythonExecutable,
+        `런타임: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`);
+    } catch (error) {
+      if (target.device === "cuda") throw error;
+      const selected = cpu || current;
+      if (!selected) throw error;
+      target.pythonExecutable = selected.pythonExecutable;
+      this.runtimeSummary = `런타임: CPU / PyTorch ${selected.torchVersion}`;
+      this.runtimeWarning = `CUDA 런타임 설치 실패로 CPU를 사용합니다: ${this.errorMessage(error)}`;
+    }
   }
 
   private handleStatus(status: BackendStatus): void {

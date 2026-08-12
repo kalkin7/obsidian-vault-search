@@ -26,6 +26,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       status.progress ? `진행: ${status.progress}` : "",
       status.pending_recovery_required ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}` : "",
       status.error ? `오류: ${status.error}` : ""
+      , this.owner.runtimeSummary
+      , this.owner.runtimeWarning || ""
     ].filter(Boolean).join("\n"));
     if (status.error) statusEl.addClass("vault-search-error");
 
@@ -73,9 +75,16 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("모델 ID")
       .setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers 모델 ID")
       .addText(text => text.setValue(draft.modelId).onChange(value => { draft.modelId = value.trim(); }));
-    new Setting(containerEl).setName("디바이스").addDropdown(dropdown => dropdown
+    new Setting(containerEl).setName("디바이스")
+      .setDesc("자동은 NVIDIA GPU와 검증된 CUDA 런타임이 있으면 GPU를, 아니면 사유를 표시하고 CPU를 사용합니다.")
+      .addDropdown(dropdown => dropdown
       .addOption("auto", "자동").addOption("cpu", "CPU").addOption("cuda", "CUDA")
       .setValue(draft.device).onChange(value => { draft.device = value as typeof draft.device; }));
+    new Setting(containerEl).setName("CUDA 런타임")
+      .setDesc("NVIDIA GPU용 PyTorch를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.")
+      .addButton(button => button.setButtonText("CUDA 런타임 설치").onClick(async () => {
+        try { await this.owner.installCudaRuntime(); } catch (error) { this.showError(error); }
+      }));
     new Setting(containerEl).setName("임베딩 정규화").addToggle(toggle => toggle
       .setValue(draft.normalizeEmbeddings).onChange(value => { draft.normalizeEmbeddings = value; }));
     new Setting(containerEl).setName("Query prefix").addText(text => text

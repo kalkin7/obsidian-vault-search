@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => VaultSearchPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var path3 = __toESM(require("path"));
 
 // src/backend-manager.ts
@@ -41,12 +41,9 @@ var import_fs = require("fs");
 var import_promises = require("fs/promises");
 var path2 = __toESM(require("path"));
 
-// src/backend-protocol.ts
-var net = __toESM(require("net"));
-var import_crypto = require("crypto");
-
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
+var BACKEND_VERSION = "0.1.0";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
     name: "Multilingual E5 Base (\uAD8C\uC7A5, \uC800\uC790\uC6D0)",
@@ -104,6 +101,8 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/backend-protocol.ts
+var net = __toESM(require("net"));
+var import_crypto = require("crypto");
 function requestBackend(runtime, method, params = {}, timeoutMs = 3e3) {
   return new Promise((resolve2, reject) => {
     const requestId = (0, import_crypto.randomUUID)();
@@ -177,6 +176,11 @@ var BackendManager = class {
   runtime = null;
   heartbeat = null;
   stopping = false;
+  runtimeInstall = null;
+  runtimeInstaller = null;
+  machineWrite = Promise.resolve();
+  startPromise = null;
+  startGeneration = 0;
   statusValue = { state: "stopped" };
   get dataDir() {
     return vaultDataDir(this.vaultPath);
@@ -197,26 +201,163 @@ var BackendManager = class {
     return { ...this.statusValue };
   }
   async readMachinePython() {
+    const config = await this.readMachineConfig();
+    return config.pythonExecutable || null;
+  }
+  async readMachineConfig() {
     try {
-      const value = JSON.parse(await (0, import_promises.readFile)(this.machinePath, "utf8"));
-      return value.pythonExecutable || null;
+      return JSON.parse(await (0, import_promises.readFile)(this.machinePath, "utf8"));
+    } catch {
+      return {};
+    }
+  }
+  async writeMachinePython(pythonExecutable) {
+    await this.updateMachineConfig((config) => {
+      config.pythonExecutable = pythonExecutable;
+    });
+  }
+  async writeManagedRuntime(kind, pythonExecutable) {
+    await this.updateMachineConfig((config) => {
+      config.runtimes = { ...config.runtimes || {}, [kind]: pythonExecutable };
+    });
+  }
+  async updateMachineConfig(change) {
+    const operation = this.machineWrite.then(async () => {
+      await (0, import_promises.mkdir)(this.dataDir, { recursive: true });
+      const config = await this.readMachineConfig();
+      change(config);
+      const suffix = `${process.pid}.${Date.now()}`;
+      const temp = `${this.machinePath}.${suffix}.tmp`;
+      const backup = `${this.machinePath}.${suffix}.backup`;
+      await (0, import_promises.writeFile)(temp, JSON.stringify(config, null, 2), "utf8");
+      let backedUp = false;
+      try {
+        if ((0, import_fs.existsSync)(this.machinePath)) {
+          await (0, import_promises.rename)(this.machinePath, backup);
+          backedUp = true;
+        }
+        await (0, import_promises.rename)(temp, this.machinePath);
+        if (backedUp) await (0, import_promises.rm)(backup, { force: true });
+      } catch (error) {
+        await (0, import_promises.rm)(temp, { force: true }).catch(() => void 0);
+        if (backedUp && !(0, import_fs.existsSync)(this.machinePath)) await (0, import_promises.rename)(backup, this.machinePath);
+        throw error;
+      }
+    });
+    this.machineWrite = operation.catch(() => void 0);
+    return operation;
+  }
+  async inspectPython(pythonExecutable) {
+    const code = [
+      "import importlib.util,json,sys,torch,vault_search",
+      "required=['transformers','tokenizers','sentence_transformers','kiwipiepy','usearch','numpy']",
+      "assert all(importlib.util.find_spec(name) for name in required)",
+      "print(json.dumps({'base':sys._base_executable,'torch':torch.__version__,'backend':vault_search.__version__,'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available(),'device_name':torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))"
+    ].join(";");
+    try {
+      const stdout = await this.execFileText(pythonExecutable, ["-X", "utf8", "-c", code], 15e3);
+      const value = JSON.parse(stdout.trim());
+      if (String(value.backend || "") !== BACKEND_VERSION) return null;
+      return {
+        pythonExecutable,
+        baseExecutable: String(value.base || pythonExecutable),
+        torchVersion: String(value.torch || "unknown"),
+        cudaBuild: value.cuda_build ? String(value.cuda_build) : null,
+        cudaAvailable: value.cuda_available === true,
+        deviceName: value.device_name ? String(value.device_name) : null
+      };
     } catch {
       return null;
     }
   }
-  async writeMachinePython(pythonExecutable) {
-    await (0, import_promises.mkdir)(this.dataDir, { recursive: true });
-    const temp = this.machinePath + ".tmp";
-    await (0, import_promises.writeFile)(temp, JSON.stringify({ pythonExecutable }, null, 2), "utf8");
+  async hasNvidiaGpu() {
     try {
-      await (0, import_promises.rename)(temp, this.machinePath);
+      await this.execFileText("nvidia-smi.exe", ["--query-gpu=name", "--format=csv,noheader"], 1e4);
+      return true;
     } catch {
-      await (0, import_promises.rm)(this.machinePath, { force: true });
-      await (0, import_promises.rename)(temp, this.machinePath);
+      return false;
     }
+  }
+  async managedRuntime(kind) {
+    const executable = (await this.readMachineConfig()).runtimes?.[kind];
+    return executable ? this.inspectPython(executable) : null;
+  }
+  async installManagedRuntime(kind, basePython, progress) {
+    if (this.runtimeInstall) return this.runtimeInstall;
+    this.runtimeInstall = this.runRuntimeInstall(kind, basePython, progress);
+    try {
+      return await this.runtimeInstall;
+    } finally {
+      this.runtimeInstall = null;
+    }
+  }
+  async runRuntimeInstall(kind, basePython, progress) {
+    const script = path2.join(this.backendRoot, "setup-runtime.ps1");
+    if (!(0, import_fs.existsSync)(script)) throw new Error(`Runtime installer is missing: ${script}`);
+    const executable = await new Promise((resolve2, reject) => {
+      const child = (0, import_child_process.spawn)("powershell.exe", [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        script,
+        "-PythonExecutable",
+        basePython,
+        "-Version",
+        BACKEND_VERSION,
+        "-Runtime",
+        kind
+      ], { cwd: this.pluginDir, windowsHide: true, shell: false, env: { ...process.env, PYTHONUTF8: "1" } });
+      this.runtimeInstaller = child;
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        const text = chunk.toString("utf8");
+        stdout += text;
+        progress(text.trim());
+      });
+      child.stderr.on("data", (chunk) => {
+        const text = chunk.toString("utf8");
+        stderr += text;
+        progress(text.trim());
+      });
+      child.on("error", reject);
+      child.on("exit", (code) => {
+        this.runtimeInstaller = null;
+        if (code !== 0) reject(new Error(stderr.trim() || `Runtime installer exited with code ${code}`));
+        else resolve2(stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || "");
+      });
+    });
+    const info = await this.inspectPython(executable);
+    if (!info) throw new Error("Installed runtime validation failed");
+    if (kind === "cuda" && !info.cudaAvailable) {
+      throw new Error("CUDA runtime was installed, but CUDA is not available to PyTorch. Check the NVIDIA driver.");
+    }
+    await this.writeManagedRuntime(kind, executable);
+    return info;
+  }
+  execFileText(executable, args, timeout) {
+    return new Promise((resolve2, reject) => {
+      (0, import_child_process.execFile)(
+        executable,
+        args,
+        { timeout, windowsHide: true, encoding: "utf8" },
+        (error, stdout) => error ? reject(error) : resolve2(stdout)
+      );
+    });
   }
   async start(lazyOverride) {
     if (this.child && this.child.exitCode === null) return;
+    if (this.startPromise) return this.startPromise;
+    const generation = ++this.startGeneration;
+    this.startPromise = this.startInternal(lazyOverride, generation);
+    try {
+      await this.startPromise;
+    } finally {
+      this.startPromise = null;
+    }
+  }
+  async startInternal(lazyOverride, generation) {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await (0, import_promises.mkdir)(this.dataDir, { recursive: true });
@@ -225,6 +366,7 @@ var BackendManager = class {
     }
     await this.stopStaleRuntime();
     await this.writeServiceConfig(lazyOverride);
+    if (generation !== this.startGeneration || this.stopping) return;
     const settings = this.getSettings();
     const args = [
       "-X",
@@ -311,6 +453,19 @@ var BackendManager = class {
   }
   async stop() {
     this.stopping = true;
+    ++this.startGeneration;
+    const installer = this.runtimeInstaller;
+    if (installer && installer.exitCode === null) {
+      installer.kill();
+      if (process.platform === "win32" && installer.pid) {
+        await new Promise((resolve2) => {
+          (0, import_child_process.execFile)("taskkill.exe", ["/PID", String(installer.pid), "/T", "/F"], () => resolve2());
+        });
+      }
+      this.runtimeInstaller = null;
+    }
+    const starting = this.startPromise;
+    if (starting) await starting.catch(() => void 0);
     this.clearHeartbeat();
     const child = this.child;
     if (child?.stdin.writable) child.stdin.end();
@@ -611,7 +766,9 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
       status.model_load_seconds !== void 0 ? `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08` : "",
       status.progress ? `\uC9C4\uD589: ${status.progress}` : "",
       status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
-      status.error ? `\uC624\uB958: ${status.error}` : ""
+      status.error ? `\uC624\uB958: ${status.error}` : "",
+      this.owner.runtimeSummary,
+      this.owner.runtimeWarning || ""
     ].filter(Boolean).join("\n"));
     if (status.error) statusEl.addClass("vault-search-error");
     const impact = settingsImpact(this.owner.settings, draft);
@@ -657,8 +814,15 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID").addText((text) => text.setValue(draft.modelId).onChange((value) => {
       draft.modelId = value.trim();
     }));
-    new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9\uC740 NVIDIA GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC544\uB2C8\uBA74 \uC0AC\uC720\uB97C \uD45C\uC2DC\uD558\uACE0 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
       draft.device = value;
+    }));
+    new import_obsidian.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc("NVIDIA GPU\uC6A9 PyTorch\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => button.setButtonText("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58").onClick(async () => {
+      try {
+        await this.owner.installCudaRuntime();
+      } catch (error) {
+        this.showError(error);
+      }
     }));
     new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC815\uADDC\uD654").addToggle((toggle) => toggle.setValue(draft.normalizeEmbeddings).onChange((value) => {
       draft.normalizeEmbeddings = value;
@@ -950,7 +1114,7 @@ var VaultSearchModal = class extends import_obsidian2.Modal {
     if (this.statusEl) this.renderBackendStatus(status);
   }
   async search(query) {
-    await this.owner.backend.ensureStarted();
+    await this.owner.ensureSearchStarted();
     const response = await this.owner.backend.call(
       "search",
       { query, verbose: true },
@@ -995,8 +1159,66 @@ var VaultSearchModal = class extends import_obsidian2.Modal {
   }
 };
 
+// src/runtime-install-modal.ts
+var import_obsidian3 = require("obsidian");
+var RuntimeInstallModal = class extends import_obsidian3.Modal {
+  constructor(app, explicitCuda, resolveChoice) {
+    super(app);
+    this.explicitCuda = explicitCuda;
+    this.resolveChoice = resolveChoice;
+  }
+  settled = false;
+  onOpen() {
+    this.titleEl.setText("CUDA \uAC80\uC0C9 \uB7F0\uD0C0\uC784 \uC124\uCE58");
+    this.contentEl.createEl("p", { text: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA\uC6A9 PyTorch \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4." });
+    this.contentEl.createEl("p", { text: "\uCD5C\uCD08 \uC124\uCE58\uB294 \uC218 GB\uB97C \uB2E4\uC6B4\uB85C\uB4DC\uD558\uBBC0\uB85C \uB124\uD2B8\uC6CC\uD06C\uC640 PC \uC131\uB2A5\uC5D0 \uB530\uB77C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uCE58 \uD6C4 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uB2E4\uC2DC \uAD6C\uCD95\uD569\uB2C8\uB2E4." });
+    if (this.explicitCuda) this.contentEl.createEl("p", { text: "CUDA\uB97C \uBA85\uC2DC\uC801\uC73C\uB85C \uC120\uD0DD\uD588\uC73C\uBBC0\uB85C \uC124\uCE58\uD558\uC9C0 \uC54A\uC73C\uBA74 \uC124\uC815\uC744 \uC801\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+    new import_obsidian3.Setting(this.contentEl).addButton((button) => button.setButtonText("\uB098\uC911\uC5D0").onClick(() => this.finish(false))).addButton((button) => button.setButtonText("\uC124\uCE58").setCta().onClick(() => this.finish(true)));
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.settled) {
+      this.settled = true;
+      this.resolveChoice(false);
+    }
+  }
+  finish(install) {
+    if (this.settled) return;
+    this.settled = true;
+    this.close();
+    this.resolveChoice(install);
+  }
+};
+function confirmRuntimeInstall(app, explicitCuda) {
+  return new Promise((resolve2) => new RuntimeInstallModal(app, explicitCuda, resolve2).open());
+}
+
+// src/runtime-selection.ts
+function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
+  if (device === "cpu") {
+    const selected2 = cpu || current;
+    return selected2 ? { kind: "selected", runtime: selected2 } : { kind: "error", message: "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." };
+  }
+  if (current?.cudaAvailable) return { kind: "selected", runtime: current };
+  if (cuda?.cudaAvailable) return { kind: "selected", runtime: cuda };
+  if (!hasNvidiaGpu) {
+    if (device === "cuda") {
+      return { kind: "error", message: "NVIDIA GPU \uB610\uB294 \uB4DC\uB77C\uC774\uBC84\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." };
+    }
+    const selected2 = cpu || current;
+    return selected2 ? { kind: "selected", runtime: selected2 } : { kind: "error", message: "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." };
+  }
+  if (device === "cuda") return { kind: "install-cuda" };
+  const selected = cpu || current;
+  return selected ? {
+    kind: "cpu-fallback",
+    runtime: selected,
+    warning: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC9C0 \uC54A\uC544 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4."
+  } : { kind: "install-cuda" };
+}
+
 // src/main.ts
-var VaultSearchPlugin = class extends import_obsidian3.Plugin {
+var VaultSearchPlugin = class extends import_obsidian4.Plugin {
   draftSettings;
   backend;
   queue;
@@ -1004,11 +1226,14 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
   startupPrepared = false;
   startupInProgress = false;
   searchModal = null;
+  runtimeChangePromise = null;
+  runtimeSummary = "\uB7F0\uD0C0\uC784: \uD655\uC778 \uC804";
+  runtimeWarning = null;
   async onload() {
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian3.FileSystemAdapter)) {
-      new import_obsidian3.Notice("Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
+    if (!(adapter instanceof import_obsidian4.FileSystemAdapter)) {
+      new import_obsidian4.Notice("Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
       return;
     }
     const vaultPath = adapter.getBasePath();
@@ -1033,16 +1258,16 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
       }
     );
     this.registerEvent(this.app.vault.on("create", (file) => {
-      if (file instanceof import_obsidian3.TFile) this.queue.markChanged(file.path);
+      if (file instanceof import_obsidian4.TFile) this.queue.markChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
-      if (file instanceof import_obsidian3.TFile) this.queue.markChanged(file.path);
+      if (file instanceof import_obsidian4.TFile) this.queue.markChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
-      if (file instanceof import_obsidian3.TFile) this.queue.markDeleted(file.path);
+      if (file instanceof import_obsidian4.TFile) this.queue.markDeleted(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      if (file instanceof import_obsidian3.TFile) {
+      if (file instanceof import_obsidian4.TFile) {
         this.queue.markDeleted(oldPath);
         this.queue.markChanged(file.path);
       }
@@ -1052,9 +1277,9 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
     this.registerCommands();
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.loadPolicy === "vault-open") {
-        void this.startBackend().catch((error) => new import_obsidian3.Notice(`Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
+        void this.startBackend().catch((error) => new import_obsidian4.Notice(`Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
       } else if (this.settings.loadPolicy === "first-search") {
-        void this.startLazyBackend().catch((error) => new import_obsidian3.Notice(`Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
+        void this.startLazyBackend().catch((error) => new import_obsidian4.Notice(`Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
       }
     });
   }
@@ -1079,10 +1304,22 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
     this.settingTab?.display();
   }
   async applyDraftSettings() {
+    if (this.runtimeChangePromise) return this.runtimeChangePromise;
+    this.runtimeChangePromise = this.applyDraftSettingsInternal();
+    try {
+      await this.runtimeChangePromise;
+    } finally {
+      this.runtimeChangePromise = null;
+    }
+  }
+  async applyDraftSettingsInternal() {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
+    if (previous.device !== next.device || previous.pythonExecutable !== next.pythonExecutable) {
+      await this.prepareRuntime(next, true);
+    }
     const previousWasRunning = this.backend.status.state !== "stopped";
     try {
       if (impact === "all" || impact === "vectors" || impact === "restart") {
@@ -1103,7 +1340,7 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
         }
       }
       this.draftSettings = cloneSettings(this.settings);
-      new import_obsidian3.Notice(impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "Vault Search \uC124\uC815\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian4.Notice(impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "Vault Search \uC124\uC815\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4.");
     } catch (error) {
       await this.backend.stop().catch(() => void 0);
       this.settings = previous;
@@ -1119,15 +1356,84 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
     }
   }
   async startBackend() {
+    await this.prepareRuntime(this.settings, false);
     await this.backend.start(false);
     await this.backend.waitUntilReady();
     await this.completeStartup();
     this.settingTab?.display();
   }
+  async installCudaRuntime() {
+    if (this.runtimeChangePromise) return this.runtimeChangePromise;
+    this.runtimeChangePromise = this.installCudaRuntimeInternal();
+    try {
+      await this.runtimeChangePromise;
+    } finally {
+      this.runtimeChangePromise = null;
+    }
+  }
+  async installCudaRuntimeInternal() {
+    if (!await this.backend.hasNvidiaGpu()) {
+      throw new Error("NVIDIA GPU \uB610\uB294 \uB4DC\uB77C\uC774\uBC84\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+    }
+    if (!await confirmRuntimeInstall(this.app, true)) return;
+    const current = await this.backend.inspectPython(this.settings.pythonExecutable);
+    const cpu = await this.backend.managedRuntime("cpu");
+    const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
+    new import_obsidian4.Notice("CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", 1e4);
+    const installed = await this.backend.installManagedRuntime(
+      "cuda",
+      basePython,
+      (text) => {
+        if (text) this.runtimeSummary = `CUDA \uC124\uCE58 \uC911: ${text.split(/\r?\n/).at(-1)}`;
+      }
+    );
+    this.runtimeSummary = `\uB7F0\uD0C0\uC784: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`;
+    this.runtimeWarning = null;
+    if (this.settings.device === "cpu") {
+      const active = current || cpu;
+      this.runtimeSummary = active ? `\uB7F0\uD0C0\uC784: CPU / PyTorch ${active.torchVersion} (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)` : "\uB7F0\uD0C0\uC784: CPU (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)";
+      new import_obsidian4.Notice("CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uD604\uC7AC CPU \uBA85\uC2DC \uC124\uC815\uC740 \uC720\uC9C0\uB429\uB2C8\uB2E4.", 1e4);
+      this.settingTab?.display();
+      return;
+    }
+    const previous = cloneSettings(this.settings);
+    const previousDraft = cloneSettings(this.draftSettings);
+    const wasRunning = this.backend.status.state !== "stopped";
+    try {
+      if (wasRunning) await this.backend.stop();
+      this.settings.pythonExecutable = installed.pythonExecutable;
+      this.draftSettings.pythonExecutable = installed.pythonExecutable;
+      if (wasRunning) {
+        await this.backend.start(false);
+        await this.backend.waitUntilReady();
+        await this.backend.call("rebuild_vectors", {}, 36e5);
+      }
+      await this.saveSettings();
+    } catch (error) {
+      await this.backend.stop().catch(() => void 0);
+      this.settings = previous;
+      this.draftSettings = previousDraft;
+      await this.saveSettings();
+      if (wasRunning) {
+        await this.backend.start(false);
+        await this.backend.waitUntilReady();
+      }
+      throw error;
+    }
+    new import_obsidian4.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
+    this.settingTab?.display();
+  }
   async startLazyBackend() {
+    await this.prepareRuntime(this.settings, false);
     await this.backend.start(true);
     await this.backend.waitUntilAvailable();
     this.settingTab?.display();
+  }
+  async ensureSearchStarted() {
+    if (this.backend.status.state === "stopped" || this.backend.status.state === "error") {
+      await this.prepareRuntime(this.settings, false);
+    }
+    await this.backend.ensureStarted();
   }
   async stopBackend() {
     this.startupPrepared = false;
@@ -1136,33 +1442,34 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
   }
   async restartBackend() {
     this.startupPrepared = false;
+    await this.prepareRuntime(this.settings, false);
     await this.backend.restart();
     await this.completeStartup();
     this.settingTab?.display();
-    new import_obsidian3.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
+    new import_obsidian4.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
   }
   async previewScope() {
-    await this.backend.ensureStarted();
+    await this.ensureSearchStarted();
     return this.backend.call("preview_scope", {}, 12e4);
   }
   async reconcile(mode = "strict") {
-    await this.backend.ensureStarted();
+    await this.ensureSearchStarted();
     const result = await this.backend.call("reconcile", { mode }, 6e5);
-    new import_obsidian3.Notice(result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 8e3);
+    new import_obsidian4.Notice(result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 8e3);
     this.settingTab?.display();
   }
   async rebuildAll() {
-    await this.backend.ensureStarted();
-    new import_obsidian3.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
+    await this.ensureSearchStarted();
+    new import_obsidian4.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
     const result = await this.backend.call("rebuild_all", {}, 36e5);
-    new import_obsidian3.Notice(`\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian4.Notice(`\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   async rebuildVectors() {
-    await this.backend.ensureStarted();
-    new import_obsidian3.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
+    await this.ensureSearchStarted();
+    new import_obsidian4.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
     const result = await this.backend.call("rebuild_vectors", {}, 36e5);
-    new import_obsidian3.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian4.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   registerCommands() {
@@ -1178,6 +1485,62 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
     this.addCommand({ id: "reconcile-index", name: "Reconcile search index", callback: () => void this.reconcile() });
     this.addCommand({ id: "rebuild-index", name: "Rebuild complete search index", callback: () => void this.rebuildAll() });
     this.addCommand({ id: "rebuild-vectors", name: "Rebuild vector index", callback: () => void this.rebuildVectors() });
+  }
+  async prepareRuntime(target, interactive) {
+    const current = await this.backend.inspectPython(target.pythonExecutable);
+    const cpu = await this.backend.managedRuntime("cpu");
+    const cuda = await this.backend.managedRuntime("cuda");
+    const choose = (python, summary) => {
+      target.pythonExecutable = python;
+      this.runtimeSummary = summary;
+      this.runtimeWarning = null;
+    };
+    const hasGpu = await this.backend.hasNvidiaGpu();
+    const selection = selectRuntime(target.device, current, cpu, cuda, hasGpu);
+    if (selection.kind === "error") throw new Error(selection.message);
+    if (selection.kind === "selected") {
+      const selected = selection.runtime;
+      choose(selected.pythonExecutable, selected.cudaAvailable ? `\uB7F0\uD0C0\uC784: CUDA ${selected.cudaBuild || ""} / ${selected.deviceName || "GPU"}` : `\uB7F0\uD0C0\uC784: CPU / PyTorch ${selected.torchVersion}`);
+      return;
+    }
+    if (selection.kind === "cpu-fallback" && !interactive) {
+      target.pythonExecutable = selection.runtime.pythonExecutable;
+      this.runtimeSummary = `\uB7F0\uD0C0\uC784: CPU / PyTorch ${selection.runtime.torchVersion}`;
+      this.runtimeWarning = selection.warning;
+      return;
+    }
+    const install = interactive && await confirmRuntimeInstall(this.app, target.device === "cuda");
+    if (!install) {
+      if (target.device === "cuda") throw new Error(interactive ? "CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uAC00 \uCDE8\uC18C\uB418\uC5B4 \uC124\uC815\uC744 \uC801\uC6A9\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4." : "CUDA \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C CUDA \uB7F0\uD0C0\uC784\uC744 \uBA3C\uC800 \uC124\uCE58\uD574 \uC8FC\uC138\uC694.");
+      const selected = selection.kind === "cpu-fallback" ? selection.runtime : cpu || current;
+      if (!selected) throw new Error("\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      target.pythonExecutable = selected.pythonExecutable;
+      this.runtimeSummary = `\uB7F0\uD0C0\uC784: CPU / PyTorch ${selected.torchVersion}`;
+      this.runtimeWarning = "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC9C0 \uC54A\uC544 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.";
+      return;
+    }
+    const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
+    try {
+      new import_obsidian4.Notice("CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.", 1e4);
+      const installed = await this.backend.installManagedRuntime(
+        "cuda",
+        basePython,
+        (text) => {
+          if (text) this.runtimeSummary = `CUDA \uC124\uCE58 \uC911: ${text.split(/\r?\n/).at(-1)}`;
+        }
+      );
+      choose(
+        installed.pythonExecutable,
+        `\uB7F0\uD0C0\uC784: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`
+      );
+    } catch (error) {
+      if (target.device === "cuda") throw error;
+      const selected = cpu || current;
+      if (!selected) throw error;
+      target.pythonExecutable = selected.pythonExecutable;
+      this.runtimeSummary = `\uB7F0\uD0C0\uC784: CPU / PyTorch ${selected.torchVersion}`;
+      this.runtimeWarning = `CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58 \uC2E4\uD328\uB85C CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4: ${this.errorMessage(error)}`;
+    }
   }
   handleStatus(status) {
     this.settingTab?.display();
@@ -1199,7 +1562,7 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
           6e5
         );
         if (result.rebuild_required) {
-          new import_obsidian3.Notice("Vault Search \uC778\uB371\uC2A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uC804\uCCB4 \uC7AC\uAD6C\uCD95\uC744 \uC2E4\uD589\uD558\uC138\uC694.", 8e3);
+          new import_obsidian4.Notice("Vault Search \uC778\uB371\uC2A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uC804\uCCB4 \uC7AC\uAD6C\uCD95\uC744 \uC2E4\uD589\uD558\uC138\uC694.", 8e3);
         }
       }
       this.startupPrepared = true;
@@ -1222,8 +1585,8 @@ var VaultSearchPlugin = class extends import_obsidian3.Plugin {
   }
   async openSearchResult(location) {
     const file = this.app.vault.getAbstractFileByPath(location.path);
-    if (!(file instanceof import_obsidian3.TFile)) {
-      new import_obsidian3.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
+    if (!(file instanceof import_obsidian4.TFile)) {
+      new import_obsidian4.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
       return;
     }
     await this.app.workspace.getLeaf(false).openFile(file, {
