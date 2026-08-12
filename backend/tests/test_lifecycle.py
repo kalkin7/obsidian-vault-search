@@ -146,6 +146,17 @@ def test_invalid_match_mode_is_invalid_params(tmp_path: Path):
     assert error.value.code == "INVALID_PARAMS"
 
 
+def test_invalid_search_intent_is_invalid_params(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.state = "ready"
+    service.index = SimpleNamespace()  # type: ignore[assignment]
+    service.search_engine = SimpleNamespace()  # type: ignore[assignment]
+    with pytest.raises(ServiceError) as error:
+        service.call("search", {"query": "test", "intent": "invalid"})
+    assert error.value.code == "INVALID_PARAMS"
+
+
 def test_invalid_reconcile_mode_is_invalid_params(tmp_path: Path):
     config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
     service = SearchService(config, lambda _event, _data: None)

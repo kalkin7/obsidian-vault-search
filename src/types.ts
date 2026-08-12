@@ -74,4 +74,7 @@ export interface SearchResult {
   heading_path?: string[];
   start_line?: number;
   channels?: string[];
+  expanded?: boolean;
+  source?: "wiki_sources";
+  linked_from?: string;
 }

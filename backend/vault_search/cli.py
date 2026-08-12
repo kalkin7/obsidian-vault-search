@@ -91,6 +91,8 @@ def make_parser() -> argparse.ArgumentParser:
     search.add_argument("--top", type=int, default=20)
     search.add_argument("--verbose", action="store_true")
     search.add_argument("--match", choices=("any", "all", "phrase"), default="any")
+    search.add_argument("--intent", choices=(
+        "exact", "known-item", "topic", "timeline", "value", "korean-morphology"))
     search.add_argument("--json", action="store_true", dest="json_output")
     sub.add_parser("status")
     return parser
@@ -107,6 +109,8 @@ def main() -> None:
                 "verbose": args.verbose,
                 "match_mode": args.match,
             }
+            if args.intent:
+                params["intent"] = args.intent
             response = call_runtime(vault, "search", params, args.timeout)
             error = response.get("error") or {}
             if not response.get("ok") and error.get("code") == "MODEL_LOADING":

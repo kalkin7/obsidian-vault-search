@@ -134,12 +134,18 @@ class SearchService:
                 if match_mode not in {"any", "all", "phrase"}:
                     raise ServiceError(
                         "INVALID_PARAMS", "match_mode must be any, all, or phrase")
+                raw_intent = params.get("intent")
+                intent = str(raw_intent) if raw_intent is not None else None
+                if intent not in {None, "exact", "known-item", "topic", "timeline",
+                                  "value", "korean-morphology"}:
+                    raise ServiceError("INVALID_PARAMS", "intent is invalid")
                 try:
                     results = self.search_engine.search(
                         query,
                         top_k=int(params.get("top_k") or self.config.final_top_k),
                         verbose=bool(params.get("verbose", False)),
                         match_mode=match_mode,
+                        intent=intent,
                     )
                 except FileNotFoundError as exc:
                     raise ServiceError("INDEX_MISSING", str(exc)) from exc

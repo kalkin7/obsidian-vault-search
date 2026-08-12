@@ -28,9 +28,13 @@ After `setup-backend.ps1`, use the venv-installed wrapper:
 ```powershell
 vault-search --vault "C:\path\to\vault" status
 vault-search --vault "C:\path\to\vault" search --top 20 --json "검색어"
+vault-search --vault "C:\path\to\vault" search --top 40 --intent timeline --json "전체 경과"
 ```
 
 The CLI does not start an orphan service. With `first-search`, it asks the already-running lightweight plugin sidecar to load the model and waits for readiness. If the plugin is unavailable it exits in about one second with code 3.
+
+Timeline searches can cheaply supplement ranks 31-40 from explicit `sources` in top-ranked Wiki notes.
+The expansion is limited to one hop and five source notes, and never performs a second model search.
 
 ## Lifecycle guarantees
 

@@ -9,6 +9,7 @@ from .config import SearchConfig
 from .index_metadata import validate_index_files
 from .model_manager import ModelManager
 from .tokenizer import tokenize
+from .wiki_expansion import expand_wiki_sources
 
 FILE_FIELD_WEIGHTS = (10.0, 7.0, 8.0, 3.0, 2.0)
 
@@ -87,7 +88,8 @@ class SearchEngine:
         self.kiwi = kiwi
 
     def search(self, query: str, top_k: int | None = None,
-               verbose: bool = False, match_mode: str = "any") -> list[dict[str, Any]]:
+               verbose: bool = False, match_mode: str = "any",
+               intent: str | None = None) -> list[dict[str, Any]]:
         if not self.config.db_path.exists() or not self.config.vector_path.exists():
             raise FileNotFoundError("Search index is missing; run rebuild_all")
         if self.model.dimension is None:
@@ -194,7 +196,9 @@ class SearchEngine:
                             1.0 / (self.config.rrf_k + vector_rank[chunk_id]), 6)
                     entry["rrf_contributions"] = contributions
                 results.append(entry)
-            return results
+            return expand_wiki_sources(
+                connection, self.config, results, query, intent, requested,
+                verbose, query_tokens, match_mode)
         finally:
             connection.close()
 

@@ -26,6 +26,11 @@ def test_search_match_mode_parser():
     assert args.match == "all"
 
 
+def test_search_intent_parser():
+    args = make_parser().parse_args(["search", "전체 경과", "--intent", "timeline"])
+    assert args.intent == "timeline"
+
+
 def test_cli_forwards_match_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     captured: dict = {}
     monkeypatch.setattr(cli, "discover_vault", lambda _explicit: tmp_path)
@@ -41,3 +46,19 @@ def test_cli_forwards_match_mode(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     cli.main()
     assert captured["method"] == "search"
     assert captured["params"]["match_mode"] == "phrase"
+
+
+def test_cli_forwards_intent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    captured: dict = {}
+    monkeypatch.setattr(cli, "discover_vault", lambda _explicit: tmp_path)
+
+    def fake_call(_vault, method, params, _timeout):
+        captured.update({"method": method, "params": params})
+        return {"ok": True, "data": {"results": []}}
+
+    monkeypatch.setattr(cli, "call_runtime", fake_call)
+    monkeypatch.setattr(sys, "argv", [
+        "vault-search", "search", "전체 경과", "--intent", "timeline", "--json",
+    ])
+    cli.main()
+    assert captured["params"]["intent"] == "timeline"

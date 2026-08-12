@@ -124,7 +124,8 @@ def test_compare_baseline_recall40_regression():
         return {
             "metrics": {
                 "recall@40": recall40, "complete_recall": 1.0 if complete else 0.0,
-                "forbidden_count@20": forbidden, "latency_p95_ms": p95,
+                "forbidden_count@20": forbidden, "forbidden_count@40": forbidden,
+                "latency_p95_ms": p95,
             },
             "cases": [{"id": "case-one", "complete": complete}],
         }
@@ -142,7 +143,8 @@ def test_compare_baseline_complete_recall_regression():
         return {
             "metrics": {
                 "recall@40": recall40, "complete_recall": 1.0 if complete else 0.0,
-                "forbidden_count@20": forbidden, "latency_p95_ms": p95,
+                "forbidden_count@20": forbidden, "forbidden_count@40": forbidden,
+                "latency_p95_ms": p95,
             },
             "cases": [{"id": "case-one", "complete": complete}],
         }
@@ -160,7 +162,8 @@ def test_compare_baseline_forbidden_increase():
         return {
             "metrics": {
                 "recall@40": recall40, "complete_recall": 1.0,
-                "forbidden_count@20": forbidden, "latency_p95_ms": p95,
+                "forbidden_count@20": forbidden, "forbidden_count@40": forbidden,
+                "latency_p95_ms": p95,
             },
             "cases": [{"id": "case-one", "complete": complete}],
         }
@@ -173,12 +176,29 @@ def test_compare_baseline_forbidden_increase():
     assert passed
 
 
+def test_compare_baseline_forbidden_at_40_increase():
+    def report(forbidden40):
+        return {
+            "metrics": {
+                "recall@40": 0.9, "complete_recall": 1.0,
+                "forbidden_count@20": 0, "forbidden_count@40": forbidden40,
+                "latency_p95_ms": 100.0,
+            },
+            "cases": [{"id": "case-one", "complete": True}],
+        }
+
+    passed, failures = compare_baseline(report(1), report(0))
+    assert not passed
+    assert any("at 40" in failure for failure in failures)
+
+
 def test_compare_baseline_latency_increase():
     def report(p95, recall40=0.9, complete=True, forbidden=0):
         return {
             "metrics": {
                 "recall@40": recall40, "complete_recall": 1.0,
-                "forbidden_count@20": forbidden, "latency_p95_ms": p95,
+                "forbidden_count@20": forbidden, "forbidden_count@40": forbidden,
+                "latency_p95_ms": p95,
             },
             "cases": [{"id": "case-one", "complete": complete}],
         }

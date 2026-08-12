@@ -127,6 +127,7 @@ def run_case(vault: Path, case: dict[str, Any], timeout: float) -> tuple[dict[st
         "query": case["query"],
         "top_k": int(case.get("top_k", DEFAULT_TOP_K)),
         "verbose": True,
+        "intent": case["intent"],
     }
     warm_up = _search(vault, params, timeout)
     latencies: list[float] = []
@@ -219,6 +220,7 @@ def summarize_case(case: dict[str, Any], results: list[dict[str, Any]],
         "mrr@10": mrr_at(paths_all, expected, 10),
         "unique_path_count@20": len(set(metric_paths(results, 20))),
         "forbidden_count@20": forbidden_count(paths_all, forbidden, 20),
+        "forbidden_count@40": forbidden_count(paths_all, forbidden, 40),
     }
 
 
@@ -245,6 +247,7 @@ def aggregate_metrics(cases: list[dict[str, Any]], summaries: list[dict[str, Any
         "unique_path_count@20": round(
             sum(s["unique_path_count@20"] for s in summaries) / len(summaries), 6),
         "forbidden_count@20": sum(s["forbidden_count@20"] for s in summaries),
+        "forbidden_count@40": sum(s["forbidden_count@40"] for s in summaries),
         "latency_p50_ms": round(statistics.median(latencies), 3) if latencies else None,
         "latency_p95_ms": round(_p95(latencies), 3) if latencies else None,
     }
@@ -272,6 +275,14 @@ def compare_baseline(current: dict[str, Any], baseline: dict[str, Any]) -> tuple
         failures.append(
             "forbidden count increased: "
             f"{baseline_metrics['forbidden_count@20']} -> {current_metrics['forbidden_count@20']}")
+    baseline_forbidden40 = baseline_metrics.get(
+        "forbidden_count@40", baseline_metrics["forbidden_count@20"])
+    current_forbidden40 = current_metrics.get(
+        "forbidden_count@40", current_metrics["forbidden_count@20"])
+    if current_forbidden40 > baseline_forbidden40:
+        failures.append(
+            "forbidden count at 40 increased: "
+            f"{baseline_forbidden40} -> {current_forbidden40}")
     baseline_p95 = baseline_metrics.get("latency_p95_ms")
     current_p95 = current_metrics.get("latency_p95_ms")
     if baseline_p95 and current_p95 and current_p95 > baseline_p95 * 1.25:
@@ -342,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  complete:      {baseline['metrics']['complete_recall']} -> {report['metrics']['complete_recall']}")
     print(f"  mrr@10:        {baseline['metrics']['mrr@10']} -> {report['metrics']['mrr@10']}")
     print(f"  forbidden@20:  {baseline['metrics']['forbidden_count@20']} -> {report['metrics']['forbidden_count@20']}")
+    print(f"  forbidden@40:  {baseline['metrics'].get('forbidden_count@40', baseline['metrics']['forbidden_count@20'])} -> {report['metrics']['forbidden_count@40']}")
     print(f"  latency p95:   {baseline['metrics'].get('latency_p95_ms')} -> {report['metrics'].get('latency_p95_ms')} ms")
     if failures:
         print("Quality gate FAILED:")
