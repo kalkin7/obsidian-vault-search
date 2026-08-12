@@ -19,6 +19,26 @@ The lexical index uses `yaml.safe_load()` to extract aliases, tags, and scalar/n
 Malformed frontmatter is logged by path and indexed with empty metadata; frontmatter source is never
 written to logs. Lexical schema upgrades do not re-encode or rewrite vectors.
 
+State schema upgrades are also non-embedding migrations. `STATE_SCHEMA_VERSION=2` is stored as the
+SQLite `user_version`; migration adds file stat columns and the pending-path journal in a temporary DB
+copy, validates it, and atomically replaces only `chunks.db`. Keep protocol version 1 when extending
+`reconcile`: omitted `mode` must remain fast and invalid values must return `INVALID_PARAMS`.
+
+Index replacement tests must cover post-install validation rollback, partial multi-target install
+failure, and backup cleanup failure. The backup files are disposable only after validation succeeds.
+Run the 2,000-file fast reconcile test when changing file discovery or state comparisons; unchanged
+Markdown body reads must remain zero.
+
+The backend acquires `%LOCALAPPDATA%/ObsidianVaultSearch/.../writer.lock` before replacement recovery,
+migrations, or index writes and holds the OS lock until shutdown. Never bypass this lock in a second
+backend process. Replacement crash tests simulate termination after every backup and install move;
+`replace-operation.json` must restore the prior complete generation on the next startup.
+
+Every UUID operation temp is owned by one rebuild, migration, or incremental call and must be removed
+on any exception before manifest installation. After manifest recovery, startup removes unreferenced
+UUID temp and backup artifacts. Cleanup must never remove source or backup names referenced by an
+active manifest. Status and heartbeat are cache-only; do not add direct `index_counts()` calls there.
+
 ```powershell
 vault-search --vault "C:\path\to\vault" search --match all --verbose --json "전기차 충전시설"
 ```

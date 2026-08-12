@@ -304,9 +304,21 @@ export class BackendManager {
     if (!runtime) return;
     try {
       await requestBackend(runtime, "shutdown", {}, 1000);
-      await new Promise(resolve => setTimeout(resolve, 500));
     } catch { /* stale file */ }
+    const deadline = Date.now() + 10_000;
+    while (this.pidRunning(runtime.pid) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 200));
+    }
+    if (this.pidRunning(runtime.pid)) {
+      throw new Error(`Existing Vault Search backend did not stop: PID ${runtime.pid}`);
+    }
     await rm(this.runtimePath, { force: true });
+  }
+
+  private pidRunning(pid: number): boolean {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try { process.kill(pid, 0); return true; }
+    catch { return false; }
   }
 
   private waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {

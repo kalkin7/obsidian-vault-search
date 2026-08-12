@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from vault_search.config import SearchConfig
+from vault_search.database import STATE_SCHEMA_VERSION
 from vault_search.index_metadata import (
     LEXICAL_SCHEMA_VERSION, SCHEMA_VERSION, expected_metadata, validate_metadata,
 )
@@ -29,5 +30,6 @@ def test_lexical_schema_version_is_separate_from_core_schema(tmp_path: Path):
     metadata = expected_metadata(config(tmp_path), 768)
     assert SCHEMA_VERSION == 2
     assert LEXICAL_SCHEMA_VERSION == 2
+    assert STATE_SCHEMA_VERSION == 2
     assert metadata["schema_version"] == 2
     assert metadata["lexical_schema_version"] == 2

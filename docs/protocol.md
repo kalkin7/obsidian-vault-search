@@ -15,3 +15,15 @@ channels (`body`, `heading`, `file`, `vector`), per-channel ranks, and RRF contr
 Verbose results expose `body_rank`, `heading_rank`, `file_rank`, and `vector_rank`. The older
 `bm25_rank`, `title_rank`, `title` channel, and `title` contribution aliases remain for protocol v1
 consumers. Title aliases mirror the generalized file signal and do not add a second RRF score.
+
+`reconcile` accepts an optional `mode` parameter without changing protocol version 1. The default is
+`fast`, which stats current files and skips unchanged bodies. `strict` hashes every current file. Any
+other value returns `INVALID_PARAMS`.
+
+Status responses may include `pending_recovery_required: true` and `pending_recovery_warning` after a
+transient startup replay failure. The existing searchable generation remains available; a later sync
+or restart retries the journal.
+
+`status` and `heartbeat` return cached index counts and never open SQLite. `count_available: false`
+means the backend could not refresh counts at a worker-controlled boundary, including an incompatible
+future database shape; compatibility errors are still returned through the existing rebuild-required path.

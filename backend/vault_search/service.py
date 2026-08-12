@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 import time
 from typing import Any, Callable
@@ -28,6 +29,10 @@ class SearchService:
         self.initialization_requested = threading.Event()
         self.last_heartbeat = time.monotonic()
         self.index_rebuild_reason: str | None = None
+        self.pending_recovery_warning: str | None = None
+        self._cached_counts: dict[str, Any] = {"files": 0, "chunks": 0, "vector_chunks": 0}
+        self._count_available = False
+        self._index_operation_active = False
 
     def start_initialization(self) -> None:
         with self.initialization_lock:
@@ -47,9 +52,21 @@ class SearchService:
             self.model.load()
             self.event_sink("model_stage", {"stage": "model_loaded"})
             self.index = IndexManager(self.config, self.model, self.kiwi, self._index_event)
-            lexical = self.index.ensure_lexical_index()
-            self.index_rebuild_reason = str(lexical.get("reason")) \
-                if lexical.get("rebuild_required") else None
+            self._index_operation_active = True
+            try:
+                state_schema = self.index.ensure_state_schema()
+                lexical = self.index.ensure_lexical_index() \
+                    if not state_schema.get("rebuild_required") else {}
+                migration = state_schema if state_schema.get("rebuild_required") else lexical
+                self.index_rebuild_reason = str(migration.get("reason")) \
+                    if migration.get("rebuild_required") else None
+                if self.index_rebuild_reason is None:
+                    recovery = self._recover_pending_paths()
+                    if recovery.get("rebuild_required"):
+                        self.index_rebuild_reason = str(recovery.get("reason"))
+                self._refresh_cached_counts()
+            finally:
+                self._index_operation_active = False
             self.search_engine = SearchEngine(self.config, self.model, self.kiwi)
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
@@ -66,7 +83,6 @@ class SearchService:
             self.ready_event.set()
 
     def status(self) -> dict[str, Any]:
-        counts = index_counts(self.config.db_path)
         return {
             "state": self.state,
             "error": self.error,
@@ -74,7 +90,10 @@ class SearchService:
             "device": self.model.device,
             "dimension": self.model.dimension,
             "uptime_seconds": round(time.time() - self.started_at, 3),
-            **counts,
+            "pending_recovery_warning": self.pending_recovery_warning,
+            "pending_recovery_required": self.pending_recovery_warning is not None,
+            "count_available": self._count_available,
+            **self._cached_counts,
         }
 
     def call(self, method: str, params: dict[str, Any]) -> Any:
@@ -135,11 +154,15 @@ class SearchService:
             if method == "preview_scope":
                 return self.index.preview_scope()
             if method == "reconcile":
-                return self._run_index_operation("reconciling", self.index.reconcile)
+                mode = str(params.get("mode", "fast"))
+                if mode not in {"fast", "strict"}:
+                    raise ServiceError("INVALID_PARAMS", "mode must be fast or strict")
+                return self._run_index_operation(
+                    "reconciling", lambda: self._reconcile(mode))
             if method == "sync_paths":
                 return self._run_index_operation(
                     "syncing",
-                    lambda: self.index.sync_paths(
+                    lambda: self._sync_paths(
                         [str(x) for x in params.get("changed", [])],
                         [str(x) for x in params.get("deleted", [])],
                     ),
@@ -178,12 +201,33 @@ class SearchService:
         self.index_rebuild_reason = None
         return result
 
+    def _reconcile(self, mode: str) -> dict[str, Any]:
+        if self.index is None:
+            raise RuntimeError("Search index is unavailable")
+        result = self.index.reconcile(mode=mode)
+        if not result.get("rebuild_required"):
+            self.pending_recovery_warning = None
+        return result
+
+    def _sync_paths(self, changed: list[str], deleted: list[str]) -> dict[str, Any]:
+        if self.index is None:
+            raise RuntimeError("Search index is unavailable")
+        result = self.index.sync_paths(changed, deleted)
+        if not result.get("rebuild_required"):
+            self.pending_recovery_warning = None
+        return result
+
     def _run_index_operation(self, state: str, operation: Callable[[], Any]) -> Any:
         previous = self.state
+        self._index_operation_active = True
         self.state = state
         self.event_sink("state", self.status())
         try:
             result = operation()
+            if isinstance(result, dict):
+                for key in ("files", "chunks", "vector_chunks"):
+                    if key in result:
+                        self._cached_counts[key] = result[key]
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
             return result
@@ -192,7 +236,33 @@ class SearchService:
             self.error = f"{type(exc).__name__}: {exc}"
             raise
         finally:
+            self._refresh_cached_counts()
+            self._index_operation_active = False
             self.event_sink("state", self.status())
+
+    def _refresh_cached_counts(self) -> None:
+        try:
+            self._cached_counts = index_counts(self.config.db_path)
+            self._count_available = True
+        except (sqlite3.Error, OSError):
+            self._cached_counts = {"files": 0, "chunks": 0, "vector_chunks": 0}
+            self._count_available = False
+
+    def _recover_pending_paths(self) -> dict[str, Any]:
+        if self.index is None:
+            return {"recovered": 0}
+        try:
+            result = self.index.recover_pending_paths()
+            self.pending_recovery_warning = None
+            return result
+        except Exception as exc:
+            self.pending_recovery_warning = f"{type(exc).__name__}: {exc}"
+            self.event_sink("warning", {
+                "code": "PENDING_RECOVERY_RETRY_REQUIRED",
+                "message": self.pending_recovery_warning,
+            })
+            return {"recovered": 0, "retry_required": True,
+                    "warning": self.pending_recovery_warning}
 
     def _index_event(self, event: str, data: dict[str, Any]) -> None:
         self.event_sink(event, data)

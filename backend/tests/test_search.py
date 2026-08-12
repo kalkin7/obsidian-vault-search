@@ -188,7 +188,7 @@ def test_lexical_index_migrates_without_vector_rebuild(tmp_path: Path):
     try:
         insert_chunk(connection, "Folder/전기차_설치.md", 0, "본문입니다.", ["본문"],
                      ("설치 경과",))
-        upsert_file_state(connection, "Folder/전기차_설치.md", "hash", 1)
+        upsert_file_state(connection, "Folder/전기차_설치.md", "hash", 1, 0, 0)
         connection.execute("DROP TABLE chunk_headings_fts")
         connection.execute("DROP TABLE file_fields_fts")
         connection.execute("DROP TABLE file_fields")
@@ -257,8 +257,8 @@ def test_title_channel_can_add_file_outside_body_vector(tmp_path: Path):
         title_only_id = insert_chunk(connection, "title-only.md", 0, "무관한 본문", ["무관"])
         upsert_file_fields(connection, "body.md", ["body"], [], [], [], [])
         upsert_file_fields(connection, "title-only.md", ["타이틀검색어"], [], [], [], [])
-        upsert_file_state(connection, "body.md", "hash", 1)
-        upsert_file_state(connection, "title-only.md", "hash", 1)
+        upsert_file_state(connection, "body.md", "hash", 1, 0, 0)
+        upsert_file_state(connection, "title-only.md", "hash", 1, 0, 0)
         connection.commit()
     finally:
         connection.close()

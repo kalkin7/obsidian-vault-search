@@ -116,7 +116,7 @@ export default class VaultSearchPlugin extends Plugin {
         await this.saveSettings();
         if (this.isReady()) {
           await this.backend.call("apply_search_config", hotConfig(next));
-          if (impact === "scope") await this.backend.call("reconcile", {}, 600_000);
+          if (impact === "scope") await this.backend.call("reconcile", { mode: "fast" }, 600_000);
         }
       }
       this.draftSettings = cloneSettings(this.settings);
@@ -170,9 +170,9 @@ export default class VaultSearchPlugin extends Plugin {
     return this.backend.call("preview_scope", {}, 120_000);
   }
 
-  async reconcile(): Promise<void> {
+  async reconcile(mode: "fast" | "strict" = "strict"): Promise<void> {
     await this.backend.ensureStarted();
-    const result = await this.backend.call<Record<string, unknown>>("reconcile", {}, 600_000);
+    const result = await this.backend.call<Record<string, unknown>>("reconcile", { mode }, 600_000);
     new Notice(result.rebuild_required ? `재구축 필요: ${result.reason}` : "인덱스 증분 대조를 완료했습니다.", 8000);
     this.settingTab?.display();
   }
@@ -216,7 +216,8 @@ export default class VaultSearchPlugin extends Plugin {
     try {
       this.queue?.clear();
       if (this.settings.startupReconcile) {
-        const result = await this.backend.call<Record<string, unknown>>("reconcile", {}, 600_000);
+        const result = await this.backend.call<Record<string, unknown>>(
+          "reconcile", { mode: "fast" }, 600_000);
         if (result.rebuild_required) {
           new Notice("Vault Search 인덱스가 없습니다. 설정에서 전체 재구축을 실행하세요.", 8000);
         }

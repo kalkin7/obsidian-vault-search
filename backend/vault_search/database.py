@@ -7,6 +7,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+STATE_SCHEMA_VERSION = 2
+
 
 def compute_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
@@ -14,6 +16,12 @@ def compute_hash(text: str) -> str:
 
 def init_db(path: Path) -> sqlite3.Connection:
     connection = sqlite3.connect(str(path))
+    current_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if current_version > STATE_SCHEMA_VERSION:
+        connection.close()
+        raise RuntimeError(
+            f"Unsupported future state schema version {current_version}; expected at most "
+            f"{STATE_SCHEMA_VERSION}")
     connection.executescript("""
         PRAGMA journal_mode=DELETE;
         CREATE TABLE IF NOT EXISTS chunks (
@@ -48,11 +56,19 @@ def init_db(path: Path) -> sqlite3.Connection:
             file_path TEXT PRIMARY KEY,
             file_hash TEXT NOT NULL,
             chunk_count INTEGER NOT NULL,
-            indexed_at REAL NOT NULL
+            indexed_at REAL NOT NULL,
+            file_size INTEGER NOT NULL,
+            modified_ns INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS pending_paths (
+            file_path TEXT PRIMARY KEY,
+            operation TEXT NOT NULL,
+            queued_at REAL NOT NULL
         );
         CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
     """)
+    connection.execute(f"PRAGMA user_version={STATE_SCHEMA_VERSION}")
     connection.commit()
     return connection
 
@@ -119,6 +135,62 @@ def lexical_index_problems(connection: sqlite3.Connection) -> list[str]:
     """).fetchone()[0])
     if heading_difference:
         problems.append("chunk_headings_fts rowids do not match chunks.id")
+    return problems
+
+
+def ensure_state_schema(connection: sqlite3.Connection) -> None:
+    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version > STATE_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Unsupported future state schema version {version}; expected at most "
+            f"{STATE_SCHEMA_VERSION}")
+    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(file_state)")}
+    if "file_size" not in columns:
+        connection.execute(
+            "ALTER TABLE file_state ADD COLUMN file_size INTEGER NOT NULL DEFAULT 0")
+    if "modified_ns" not in columns:
+        connection.execute(
+            "ALTER TABLE file_state ADD COLUMN modified_ns INTEGER NOT NULL DEFAULT 0")
+    connection.execute("""
+        CREATE TABLE IF NOT EXISTS pending_paths (
+            file_path TEXT PRIMARY KEY,
+            operation TEXT NOT NULL,
+            queued_at REAL NOT NULL
+        )
+    """)
+    connection.execute(f"PRAGMA user_version={STATE_SCHEMA_VERSION}")
+
+
+def state_schema_problems(connection: sqlite3.Connection) -> list[str]:
+    problems: list[str] = []
+    version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+    if version != STATE_SCHEMA_VERSION:
+        problems.append(
+            f"state schema version: expected {STATE_SCHEMA_VERSION}, found {version}")
+
+    file_columns = {str(row[1]): row for row in connection.execute(
+        "PRAGMA table_info(file_state)").fetchall()}
+    for name in ("file_size", "modified_ns"):
+        column = file_columns.get(name)
+        if column is None:
+            problems.append(f"file_state.{name} missing")
+        elif str(column[2]).upper() != "INTEGER" or int(column[3]) != 1:
+            problems.append(f"file_state.{name} must be INTEGER NOT NULL")
+
+    pending_columns = {str(row[1]): row for row in connection.execute(
+        "PRAGMA table_info(pending_paths)").fetchall()}
+    expected_pending = {
+        "file_path": ("TEXT", 0, 1),
+        "operation": ("TEXT", 1, 0),
+        "queued_at": ("REAL", 1, 0),
+    }
+    for name, (kind, not_null, primary_key) in expected_pending.items():
+        column = pending_columns.get(name)
+        if column is None:
+            problems.append(f"pending_paths.{name} missing")
+        elif (str(column[2]).upper(), int(column[3]), int(column[5])) != (
+                kind, not_null, primary_key):
+            problems.append(f"pending_paths.{name} has invalid definition")
     return problems
 
 
@@ -194,10 +266,12 @@ def delete_files(connection: sqlite3.Connection, file_paths: list[str]) -> list[
 
 
 def upsert_file_state(connection: sqlite3.Connection, file_path: str,
-                      file_hash: str, chunk_count: int) -> None:
+                      file_hash: str, chunk_count: int,
+                      file_size: int, modified_ns: int) -> None:
     connection.execute(
-        "INSERT OR REPLACE INTO file_state (file_path, file_hash, chunk_count, indexed_at)"
-        " VALUES (?, ?, ?, ?)", (file_path, file_hash, chunk_count, time.time()))
+        "INSERT OR REPLACE INTO file_state (file_path, file_hash, chunk_count, indexed_at,"
+        " file_size, modified_ns) VALUES (?, ?, ?, ?, ?, ?)",
+        (file_path, file_hash, chunk_count, time.time(), file_size, modified_ns))
 
 
 def write_index_metadata(connection: sqlite3.Connection, metadata: dict[str, Any]) -> None:

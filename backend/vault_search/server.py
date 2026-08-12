@@ -17,6 +17,8 @@ from .config import load_config
 from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION
 from .runtime import atomic_write_json, vault_id
 from .service import SearchService, ServiceError
+from .service_lock import ServiceLock, ServiceLockError
+from .indexing import IndexManager
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -134,6 +136,18 @@ def process_exists(pid: int) -> bool:
 
 def run_server(args: argparse.Namespace) -> int:
     config = load_config(args.config, args.vault, args.data_dir)
+    try:
+        writer_lock = ServiceLock.acquire(config.data_dir)
+    except ServiceLockError as exc:
+        print(f"ServiceLockError: {exc}", file=sys.stderr, flush=True)
+        return 2
+    try:
+        IndexManager.recover_interrupted_replace(config.index_dir)
+        IndexManager.cleanup_stale_operation_artifacts(config.index_dir)
+    except Exception as exc:
+        writer_lock.close()
+        print(f"IndexRecoveryError: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+        return 2
     token = secrets.token_urlsafe(32)
     service = SearchService(config, emit)
     server = BackendServer(("127.0.0.1", 0), RequestHandler, service, token)
@@ -243,6 +257,7 @@ def run_server(args: argparse.Namespace) -> int:
                     config.runtime_path.unlink()
         except Exception:
             pass
+        writer_lock.close()
         emit("stopped", {"pid": os.getpid()})
     return 0
 

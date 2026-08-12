@@ -12,5 +12,9 @@ Portable settings are stored in plugin `data.json`. The Python executable is mac
 - `markdown-v2` keeps Markdown headings as embedding breadcrumbs and groups fences, tables, lists, and callouts at atom boundaries.
 - Changing the chunking strategy, chunk size, or overlap triggers an atomic complete rebuild.
 - Failed rebuilds restore the previous settings and index.
+- Startup reconciliation uses fast mode: unchanged path, size, and nanosecond mtime tuples do not cause body reads.
+- The manual **정밀 대조** action uses strict mode and hashes every current file.
+- Interrupted incremental updates are replayed from the local pending-path journal when the backend starts.
+- Only one backend may own a vault data directory. Startup waits for the prior managed process to stop and refuses a duplicate writer.
 
 Paths are vault-relative POSIX-style globs. Absolute paths and traversal are rejected by the backend.

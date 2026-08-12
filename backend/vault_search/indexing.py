@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
+import re
 import shutil
 import sqlite3
 import time
@@ -14,9 +16,9 @@ import numpy as np
 from .chunking import DocumentChunk, chunk_document
 from .config import SearchConfig
 from .database import (
-    compute_hash, delete_files, ensure_lexical_schema, index_counts, init_db, insert_chunk,
-    lexical_index_problems, read_index_metadata, upsert_file_fields, upsert_file_state,
-    write_index_metadata,
+    STATE_SCHEMA_VERSION, compute_hash, delete_files, ensure_lexical_schema, ensure_state_schema,
+    index_counts, init_db, insert_chunk, lexical_index_problems, read_index_metadata, state_schema_problems,
+    upsert_file_fields, upsert_file_state, write_index_metadata,
 )
 from .document_fields import extract_file_fields, heading_tokens
 from .index_metadata import (
@@ -28,6 +30,14 @@ from .scope import is_in_scope, iter_vault_files, normalize_relative, resolve_in
 from .tokenizer import tokenize
 
 Progress = Callable[[str, dict[str, Any]], None]
+LOGGER = logging.getLogger(__name__)
+PENDING_RECONCILE_LIMIT = 1000
+PENDING_BATCH_SIZE = 400
+REPLACE_MANIFEST = "replace-operation.json"
+STABLE_READ_ATTEMPTS = 3
+OPERATION_ARTIFACT = re.compile(
+    r"(?:\.[0-9a-f]{32}\.tmp(?:\.tmp)?(?:-journal|-wal|-shm)?$|"
+    r"\.backup\.[0-9a-f]{32}$)")
 
 
 class IndexManager:
@@ -49,6 +59,48 @@ class IndexManager:
         })
         return counts
 
+    def ensure_state_schema(self) -> dict[str, Any]:
+        if not self.config.db_path.exists():
+            return {"migrated": False}
+        connection = sqlite3.connect(str(self.config.db_path))
+        try:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+            if version > STATE_SCHEMA_VERSION:
+                return {
+                    "migrated": False,
+                    "rebuild_required": True,
+                    "reason": f"Unsupported future state schema version {version}",
+                }
+            if not state_schema_problems(connection):
+                return {"migrated": False}
+        except sqlite3.Error:
+            pass
+        finally:
+            connection.close()
+
+        db_temp = self._operation_temp("chunks.db.state-building")
+        try:
+            self._remove_paths(db_temp)
+            shutil.copy2(self.config.db_path, db_temp)
+            connection = sqlite3.connect(str(db_temp))
+            try:
+                ensure_state_schema(connection)
+                connection.commit()
+                problems = self._state_db_problems(db_temp)
+                if problems:
+                    raise RuntimeError("State migration validation failed: " + "; ".join(problems))
+            finally:
+                connection.close()
+            self._atomic_replace(
+                [(db_temp, self.config.db_path)],
+                lambda: self._state_db_problems(self.config.db_path),
+            )
+        except Exception as exc:
+            self._remove_paths(db_temp)
+            return {"migrated": False, "rebuild_required": True,
+                    "reason": f"State migration failed: {type(exc).__name__}: {exc}"}
+        return {"migrated": True}
+
     def ensure_lexical_index(self) -> dict[str, Any]:
         if not self.config.db_path.exists():
             return {"migrated": False, "files": 0}
@@ -67,13 +119,14 @@ class IndexManager:
                 pass
             finally:
                 connection.close()
-        db_temp = self.config.index_dir / "chunks.db.lexical-building"
-        metadata_temp = self.config.index_dir / "metadata.json.lexical-building"
+        db_temp = self._operation_temp("chunks.db.lexical-building")
+        metadata_temp = self._operation_temp("metadata.json.lexical-building")
         try:
             self._remove_paths(db_temp, metadata_temp)
             shutil.copy2(self.config.db_path, db_temp)
             connection = sqlite3.connect(str(db_temp))
         except Exception as exc:
+            self._remove_paths(db_temp, metadata_temp)
             return {"migrated": False, "rebuild_required": True,
                     "reason": f"Lexical migration setup failed: {type(exc).__name__}: {exc}"}
         try:
@@ -128,10 +181,11 @@ class IndexManager:
         finally:
             connection.close()
         try:
-            self._atomic_replace([
-                (db_temp, self.config.db_path),
-                (metadata_temp, self.config.metadata_path),
-            ])
+            self._atomic_replace(
+                [(db_temp, self.config.db_path),
+                 (metadata_temp, self.config.metadata_path)],
+                self._lexical_install_problems,
+            )
         except Exception as exc:
             self._remove_paths(db_temp, metadata_temp)
             return {"migrated": False, "rebuild_required": True,
@@ -146,22 +200,30 @@ class IndexManager:
         return {"count": len(files), "sample": files[:30]}
 
     def rebuild_all(self) -> dict[str, Any]:
+        if self.config.db_path.exists():
+            state = self.ensure_state_schema()
+            if state.get("rebuild_required"):
+                raise RuntimeError(str(state.get("reason") or "State schema migration failed"))
         dimension = self._dimension()
         files = iter_vault_files(
             self.config.vault_path, self.config.include_globs, self.config.exclude_globs)
         self.progress("rebuild_started", {"files": len(files)})
-        db_temp = self.config.index_dir / "chunks.db.building"
-        vector_temp = self.config.index_dir / "vectors.usearch.building"
-        metadata_temp = self.config.index_dir / "metadata.json.building"
+        db_temp = self._operation_temp("chunks.db.building")
+        vector_temp = self._operation_temp("vectors.usearch.building")
+        metadata_temp = self._operation_temp("metadata.json.building")
         self._remove_paths(db_temp, vector_temp, metadata_temp)
 
-        connection = init_db(db_temp)
+        try:
+            connection = init_db(db_temp)
+        except Exception:
+            self._remove_paths(db_temp, vector_temp, metadata_temp)
+            raise
         chunk_ids: list[int] = []
         chunk_contents: list[str] = []
         try:
             for number, relative in enumerate(files, 1):
-                text = resolve_inside_vault(self.config.vault_path, relative).read_text(
-                    encoding="utf-8", errors="replace")
+                target = resolve_inside_vault(self.config.vault_path, relative)
+                text, stat = self._read_stable(target)
                 chunks = self._chunks(text, relative)
                 for chunk_index, chunk in enumerate(chunks):
                     lexical_only = chunk.lexical_only
@@ -173,7 +235,9 @@ class IndexManager:
                     if not lexical_only:
                         chunk_ids.append(row_id)
                         chunk_contents.append(chunk.embedding_text)
-                upsert_file_state(connection, relative, compute_hash(text), len(chunks))
+                upsert_file_state(
+                    connection, relative, compute_hash(text), len(chunks),
+                    stat.st_size, stat.st_mtime_ns)
                 fields = extract_file_fields(relative, text, self.kiwi)
                 upsert_file_fields(connection, relative, fields.basename, fields.directory,
                                    fields.aliases, fields.tags, fields.properties)
@@ -184,6 +248,10 @@ class IndexManager:
                         "chunks": len(chunk_ids),
                     })
             connection.commit()
+        except Exception:
+            connection.close()
+            self._remove_paths(db_temp, vector_temp, metadata_temp)
+            raise
         finally:
             connection.close()
 
@@ -197,18 +265,16 @@ class IndexManager:
                 self.config, dimension, vector_temp, len(vector_index), previous)
             self._store_db_metadata(db_temp, metadata)
             write_metadata(metadata_temp, metadata)
-            self._atomic_replace([
-                (db_temp, self.config.db_path),
-                (vector_temp, self.config.vector_path),
-                (metadata_temp, self.config.metadata_path),
-            ])
+            self._atomic_replace(
+                [(db_temp, self.config.db_path),
+                 (vector_temp, self.config.vector_path),
+                 (metadata_temp, self.config.metadata_path)],
+                lambda: validate_index_files(self.config, dimension),
+            )
         except Exception:
             self._remove_paths(db_temp, vector_temp, metadata_temp)
             raise
 
-        problems = validate_index_files(self.config, dimension)
-        if problems:
-            raise RuntimeError("Post-build validation failed: " + "; ".join(problems))
         result = self.status()
         self.progress("rebuild_finished", result)
         return result
@@ -253,57 +319,91 @@ class IndexManager:
         self.progress("embedding_started", {"chunks": len(contents)})
         vectors = self._encode_documents(contents, dimension)
         self.progress("embedding_finished", {"chunks": len(contents)})
-        db_temp = self.config.index_dir / "chunks.db.vector-building"
-        vector_temp = self.config.index_dir / "vectors.usearch.building"
-        metadata_temp = self.config.index_dir / "metadata.json.building"
+        db_temp = self._operation_temp("chunks.db.vector-building")
+        vector_temp = self._operation_temp("vectors.usearch.building")
+        metadata_temp = self._operation_temp("metadata.json.building")
         self._remove_paths(db_temp, vector_temp, metadata_temp)
-        shutil.copy2(self.config.db_path, db_temp)
         try:
+            shutil.copy2(self.config.db_path, db_temp)
             vector_index = self._build_vector_index(ids, vectors, vector_temp)
             metadata = build_metadata(
                 self.config, dimension, vector_temp, len(vector_index),
                 load_metadata(self.config.metadata_path))
             self._store_db_metadata(db_temp, metadata)
             write_metadata(metadata_temp, metadata)
-            self._atomic_replace([
-                (db_temp, self.config.db_path),
-                (vector_temp, self.config.vector_path),
-                (metadata_temp, self.config.metadata_path),
-            ])
+            self._atomic_replace(
+                [(db_temp, self.config.db_path),
+                 (vector_temp, self.config.vector_path),
+                 (metadata_temp, self.config.metadata_path)],
+                lambda: validate_index_files(self.config, dimension),
+            )
         except Exception:
             self._remove_paths(db_temp, vector_temp, metadata_temp)
             raise
-        problems = validate_index_files(self.config, dimension)
-        if problems:
-            raise RuntimeError("Post-build validation failed: " + "; ".join(problems))
         return self.status()
 
-    def reconcile(self) -> dict[str, Any]:
+    def reconcile(self, mode: str = "fast") -> dict[str, Any]:
+        if mode not in {"fast", "strict"}:
+            raise ValueError("mode must be fast or strict")
         if not self.config.db_path.exists() or not self.config.vector_path.exists():
             return {"rebuild_required": True, "reason": "index missing", **self.status()}
+        state = self.ensure_state_schema()
+        if state.get("rebuild_required"):
+            return {**state, **self.status()}
         problems = validate_index_files(self.config, self._dimension(), check_scope=False)
         if problems:
             return {"rebuild_required": True, "reason": "; ".join(problems), **self.status()}
 
         connection = sqlite3.connect(str(self.config.db_path))
         try:
-            existing = {str(row[0]): str(row[1]) for row in connection.execute(
-                "SELECT file_path, file_hash FROM file_state").fetchall()}
+            existing = {
+                str(row[0]): (str(row[1]), int(row[2]), int(row[3]))
+                for row in connection.execute(
+                    "SELECT file_path, file_hash, file_size, modified_ns FROM file_state"
+                ).fetchall()
+            }
         finally:
             connection.close()
         current = iter_vault_files(
             self.config.vault_path, self.config.include_globs, self.config.exclude_globs)
         current_set = set(current)
         changed: list[str] = []
+        stat_updates: list[tuple[str, int, int]] = []
         for relative in current:
-            text = resolve_inside_vault(self.config.vault_path, relative).read_text(
-                encoding="utf-8", errors="replace")
-            if existing.get(relative) != compute_hash(text):
+            target = resolve_inside_vault(self.config.vault_path, relative)
+            stat = target.stat()
+            previous = existing.get(relative)
+            if mode == "fast" and previous is not None \
+                    and previous[1:] == (stat.st_size, stat.st_mtime_ns):
+                continue
+            text, stable_stat = self._read_stable(target)
+            if previous is None or previous[0] != compute_hash(text):
                 changed.append(relative)
+            else:
+                stat_updates.append(
+                    (relative, stable_stat.st_size, stable_stat.st_mtime_ns))
         deleted = [relative for relative in existing if relative not in current_set]
-        result = self._apply_changes(changed, deleted)
+        result = self._drain_pending_paths(changed, deleted)
+        if not result.get("rebuild_required") and stat_updates:
+            self._apply_stat_updates(stat_updates)
+            result.update(self.status())
         result["scanned"] = len(current)
+        result["mode"] = mode
         return result
+
+    def recover_pending_paths(self) -> dict[str, Any]:
+        if not self.config.db_path.exists() or not self.config.vector_path.exists():
+            return {"recovered": 0}
+        pending_count = self._pending_count()
+        if not pending_count:
+            return {"recovered": 0}
+        totals = self._drain_pending_paths([], [])
+        if totals.get("rebuild_required"):
+            return totals
+        totals["recovered"] = pending_count
+        if pending_count > PENDING_RECONCILE_LIMIT:
+            totals["pending_escalated"] = pending_count
+        return totals
 
     def sync_paths(self, changed_paths: list[str], deleted_paths: list[str]) -> dict[str, Any]:
         changed: list[str] = []
@@ -324,55 +424,100 @@ class IndexManager:
                 changed.append(relative)
             else:
                 deleted.add(relative)
-        return self._apply_changes(sorted(set(changed)), sorted(deleted))
+        return self._drain_pending_paths(sorted(set(changed)), sorted(deleted))
+
+    def _drain_pending_paths(self, changed: list[str], deleted: list[str]) -> dict[str, Any]:
+        totals = {"changed": 0, "deleted": 0, "removed_chunks": 0, "added_chunks": 0}
+        first = True
+        while first or self._read_pending_paths(limit=1):
+            result = self._apply_changes(changed if first else [], deleted if first else [])
+            first = False
+            if result.get("rebuild_required"):
+                return result
+            for key in totals:
+                totals[key] += int(result.get(key, 0))
+        totals.update(self.status())
+        return totals
 
     def _apply_changes(self, changed: list[str], deleted: list[str]) -> dict[str, Any]:
-        changed_set = sorted(set(changed))
-        deleted_set = sorted(set(deleted) | set(changed_set))
-        if not changed_set and not deleted_set:
-            return {"changed": 0, "deleted": 0, **self.status()}
         if not self.config.db_path.exists() or not self.config.vector_path.exists():
             return {"rebuild_required": True, "reason": "index missing", **self.status()}
+        state = self.ensure_state_schema()
+        if state.get("rebuild_required"):
+            return {**state, **self.status()}
+        incoming = {relative: "changed" for relative in changed}
+        incoming.update({relative: "deleted" for relative in deleted})
+        self._journal_paths(changed, deleted)
+        effective: dict[str, str] = {}
+        for relative in self._read_pending_paths(limit=PENDING_BATCH_SIZE):
+            if relative in incoming:
+                effective[relative] = incoming[relative]
+                continue
+            target = resolve_inside_vault(self.config.vault_path, relative)
+            effective[relative] = "changed" if target.exists() and is_in_scope(
+                relative, self.config.include_globs, self.config.exclude_globs) else "deleted"
+        self._journal_paths(
+            [path for path, operation in effective.items() if operation == "changed"],
+            [path for path, operation in effective.items() if operation == "deleted"],
+        )
+        pending = effective
+        if not pending:
+            return {"changed": 0, "deleted": 0, **self.status()}
+
+        changed_set: list[str] = []
+        deleted_paths: list[str] = []
+        for relative, operation in sorted(pending.items()):
+            if operation == "changed":
+                changed_set.append(relative)
+            else:
+                deleted_paths.append(relative)
+        deleted_set = sorted(set(deleted_paths) | set(changed_set))
 
         dimension = self._dimension()
         problems = validate_index_files(self.config, dimension, check_scope=False)
         if problems:
             return {"rebuild_required": True, "reason": "; ".join(problems), **self.status()}
 
-        db_temp = self.config.index_dir / "chunks.db.syncing"
-        vector_temp = self.config.index_dir / "vectors.usearch.syncing"
-        metadata_temp = self.config.index_dir / "metadata.json.syncing"
+        db_temp = self._operation_temp("chunks.db.syncing")
+        vector_temp = self._operation_temp("vectors.usearch.syncing")
+        metadata_temp = self._operation_temp("metadata.json.syncing")
         self._remove_paths(db_temp, vector_temp, metadata_temp)
-        shutil.copy2(self.config.db_path, db_temp)
-        connection = sqlite3.connect(str(db_temp))
         removed_ids: list[int] = []
         new_ids: list[int] = []
         new_contents: list[str] = []
         try:
-            removed_ids = delete_files(connection, deleted_set)
-            for relative in changed_set:
-                target = resolve_inside_vault(self.config.vault_path, relative)
-                if not target.exists():
-                    continue
-                text = target.read_text(encoding="utf-8", errors="replace")
-                chunks = self._chunks(text, relative)
-                for chunk_index, chunk in enumerate(chunks):
-                    lexical_only = chunk.lexical_only
-                    row_id = insert_chunk(
-                        connection, relative, chunk_index, chunk.content,
-                        tokenize(chunk.content, self.kiwi), chunk.heading_path,
-                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only,
-                        heading_tokens(chunk.heading_path, self.kiwi))
-                    if not lexical_only:
-                        new_ids.append(row_id)
-                        new_contents.append(chunk.embedding_text)
-                upsert_file_state(connection, relative, compute_hash(text), len(chunks))
-                fields = extract_file_fields(relative, text, self.kiwi)
-                upsert_file_fields(connection, relative, fields.basename, fields.directory,
-                                   fields.aliases, fields.tags, fields.properties)
-            connection.commit()
-        finally:
-            connection.close()
+            shutil.copy2(self.config.db_path, db_temp)
+            connection = sqlite3.connect(str(db_temp))
+            try:
+                removed_ids = delete_files(connection, deleted_set)
+                for relative in changed_set:
+                    target = resolve_inside_vault(self.config.vault_path, relative)
+                    if not target.exists():
+                        continue
+                    text, stat = self._read_stable(target)
+                    chunks = self._chunks(text, relative)
+                    for chunk_index, chunk in enumerate(chunks):
+                        lexical_only = chunk.lexical_only
+                        row_id = insert_chunk(
+                            connection, relative, chunk_index, chunk.content,
+                            tokenize(chunk.content, self.kiwi), chunk.heading_path,
+                            chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only,
+                            heading_tokens(chunk.heading_path, self.kiwi))
+                        if not lexical_only:
+                            new_ids.append(row_id)
+                            new_contents.append(chunk.embedding_text)
+                    upsert_file_state(
+                        connection, relative, compute_hash(text), len(chunks),
+                        stat.st_size, stat.st_mtime_ns)
+                    fields = extract_file_fields(relative, text, self.kiwi)
+                    upsert_file_fields(connection, relative, fields.basename, fields.directory,
+                                       fields.aliases, fields.tags, fields.properties)
+                connection.commit()
+            finally:
+                connection.close()
+        except Exception:
+            self._remove_paths(db_temp, vector_temp, metadata_temp)
+            raise
 
         try:
             from usearch.index import Index
@@ -391,17 +536,19 @@ class IndexManager:
                 load_metadata(self.config.metadata_path))
             self._store_db_metadata(db_temp, metadata)
             write_metadata(metadata_temp, metadata)
-            self._atomic_replace([
-                (db_temp, self.config.db_path),
-                (vector_temp, self.config.vector_path),
-                (metadata_temp, self.config.metadata_path),
-            ])
+            self._atomic_replace(
+                [(db_temp, self.config.db_path),
+                 (vector_temp, self.config.vector_path),
+                 (metadata_temp, self.config.metadata_path)],
+                lambda: validate_index_files(self.config, dimension),
+            )
+            self._clear_pending_paths(list(pending))
         except Exception:
             self._remove_paths(db_temp, vector_temp, metadata_temp)
             raise
         return {
             "changed": len(changed_set),
-            "deleted": len(set(deleted) - set(changed_set)),
+            "deleted": len(deleted_paths),
             "removed_chunks": len(removed_ids),
             "added_chunks": len(new_ids),
             **self.status(),
@@ -445,33 +592,261 @@ class IndexManager:
     @staticmethod
     def _remove_paths(*paths: Path) -> None:
         for path in paths:
-            if path.exists():
-                path.unlink()
+            for candidate in (
+                    path, Path(str(path) + ".tmp"), Path(str(path) + "-journal"),
+                    Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+                if candidate.exists():
+                    candidate.unlink()
+
+    def _apply_stat_updates(self, updates: list[tuple[str, int, int]]) -> None:
+        db_temp = self._operation_temp("chunks.db.stat-syncing")
+        self._remove_paths(db_temp)
+        try:
+            shutil.copy2(self.config.db_path, db_temp)
+            connection = sqlite3.connect(str(db_temp))
+            try:
+                connection.executemany(
+                    "UPDATE file_state SET file_size=?, modified_ns=? WHERE file_path=?",
+                    [(size, modified_ns, relative) for relative, size, modified_ns in updates],
+                )
+                connection.commit()
+            finally:
+                connection.close()
+        except Exception:
+            self._remove_paths(db_temp)
+            raise
+        try:
+            self._atomic_replace(
+                [(db_temp, self.config.db_path)],
+                lambda: self._state_db_problems(self.config.db_path),
+            )
+        except Exception:
+            self._remove_paths(db_temp)
+            raise
+
+    def _journal_paths(self, changed: list[str], deleted: list[str]) -> None:
+        rows = [(relative, "changed", time.time()) for relative in sorted(set(changed))]
+        rows.extend((relative, "deleted", time.time()) for relative in sorted(set(deleted)))
+        if not rows:
+            return
+        connection = sqlite3.connect(str(self.config.db_path))
+        try:
+            connection.executemany(
+                "INSERT OR REPLACE INTO pending_paths (file_path, operation, queued_at)"
+                " VALUES (?, ?, ?)", rows)
+            connection.commit()
+        finally:
+            connection.close()
+
+    def _read_pending_paths(self, limit: int | None = None) -> dict[str, str]:
+        connection = sqlite3.connect(str(self.config.db_path))
+        try:
+            sql = "SELECT file_path, operation FROM pending_paths ORDER BY queued_at, file_path"
+            parameters: tuple[int, ...] = ()
+            if limit is not None:
+                sql += " LIMIT ?"
+                parameters = (limit,)
+            return {str(row[0]): str(row[1]) for row in connection.execute(
+                sql, parameters).fetchall()}
+        finally:
+            connection.close()
+
+    def _pending_count(self) -> int:
+        connection = sqlite3.connect(str(self.config.db_path))
+        try:
+            return int(connection.execute("SELECT COUNT(*) FROM pending_paths").fetchone()[0])
+        finally:
+            connection.close()
+
+    def _operation_temp(self, stem: str) -> Path:
+        return self.config.index_dir / f"{stem}.{uuid.uuid4().hex}.tmp"
 
     @staticmethod
-    def _atomic_replace(pairs: list[tuple[Path, Path]]) -> None:
-        backups: list[tuple[Path, Path]] = []
-        installed: list[Path] = []
+    def _read_stable(target: Path) -> tuple[str, os.stat_result]:
+        for _attempt in range(STABLE_READ_ATTEMPTS):
+            before = target.stat()
+            text = target.read_text(encoding="utf-8", errors="replace")
+            after = target.stat()
+            if (before.st_size, before.st_mtime_ns, before.st_ctime_ns) == (
+                    after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                return text, after
+        raise RuntimeError(f"File changed while being read: {target}")
+
+    def _clear_pending_paths(self, paths: list[str]) -> None:
+        if not paths:
+            return
+        connection = sqlite3.connect(str(self.config.db_path))
         try:
-            for _source, target in pairs:
-                backup = target.with_suffix(target.suffix + ".backup")
-                if backup.exists():
-                    backup.unlink()
+            connection.executemany(
+                "DELETE FROM pending_paths WHERE file_path=?", [(path,) for path in paths])
+            connection.commit()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _state_db_problems(path: Path) -> list[str]:
+        connection = sqlite3.connect(str(path))
+        try:
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()
+            problems = state_schema_problems(connection)
+            if integrity is None or integrity[0] != "ok":
+                problems.append("SQLite integrity check failed")
+            return problems
+        except sqlite3.Error as exc:
+            return [f"state database invalid: {type(exc).__name__}: {exc}"]
+        finally:
+            connection.close()
+
+    def _lexical_install_problems(self) -> list[str]:
+        connection = sqlite3.connect(str(self.config.db_path))
+        try:
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()
+            problems = lexical_index_problems(connection)
+            if integrity is None or integrity[0] != "ok":
+                problems.append("SQLite integrity check failed")
+            db_generation = read_index_metadata(self.config.db_path) or {}
+            file_generation = load_metadata(self.config.metadata_path) or {}
+            if db_generation.get("index_generation") != file_generation.get("index_generation"):
+                problems.append("SQLite/metadata generation mismatch")
+            return problems
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _atomic_replace(
+            pairs: list[tuple[Path, Path]],
+            validate: Callable[[], list[str] | None]) -> None:
+        if not pairs:
+            raise ValueError("At least one replacement pair is required")
+        parents = {target.parent.resolve() for _source, target in pairs}
+        if len(parents) != 1:
+            raise ValueError("All replacement targets must share one directory")
+        operation_id = uuid.uuid4().hex
+        index_dir = next(iter(parents))
+        if any(source.parent.resolve() != index_dir for source, _target in pairs):
+            raise ValueError("All replacement sources must share the target directory")
+        manifest_path = index_dir / REPLACE_MANIFEST
+        if manifest_path.exists():
+            raise RuntimeError("Interrupted index replacement must be recovered first")
+        entries = []
+        backups: list[tuple[Path, Path]] = []
+        for source, target in pairs:
+            backup = target.with_name(f"{target.name}.backup.{operation_id}")
+            entries.append({
+                "source": source.name,
+                "target": target.name,
+                "backup": backup.name,
+                "had_target": target.exists(),
+            })
+        IndexManager._write_replace_manifest(manifest_path, {
+            "operation_id": operation_id,
+            "entries": entries,
+        })
+        try:
+            for entry, (_source, target) in zip(entries, pairs):
+                backup = index_dir / str(entry["backup"])
                 if target.exists():
                     os.replace(target, backup)
                     backups.append((backup, target))
             for source, target in pairs:
                 os.replace(source, target)
-                installed.append(target)
-        except Exception:
-            for target in installed:
-                if target.exists():
-                    target.unlink()
-            for backup, target in backups:
-                if backup.exists():
-                    os.replace(backup, target)
+            validation_errors = validate() or []
+            if validation_errors:
+                raise RuntimeError("Post-install validation failed: " + "; ".join(validation_errors))
+            manifest_path.unlink()
+        except Exception as original:
+            try:
+                IndexManager.recover_interrupted_replace(index_dir)
+            except Exception as restore_error:
+                LOGGER.exception("Failed to restore interrupted index replacement in %s", index_dir)
+                raise RuntimeError(
+                    f"{original}; rollback also failed: "
+                    f"{type(restore_error).__name__}: {restore_error}"
+                ) from original
             raise
         else:
             for backup, _target in backups:
-                if backup.exists():
-                    backup.unlink()
+                try:
+                    if backup.exists():
+                        backup.unlink()
+                except OSError:
+                    LOGGER.warning("Could not remove validated index backup %s", backup,
+                                   exc_info=True)
+
+    @staticmethod
+    def _write_replace_manifest(path: Path, payload: dict[str, Any]) -> None:
+        temp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temp.open("w", encoding="utf-8", newline="\n") as handle:
+                json.dump(payload, handle, ensure_ascii=False, indent=2)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, path)
+        except BaseException:
+            if temp.exists():
+                temp.unlink()
+            raise
+
+    @staticmethod
+    def recover_interrupted_replace(index_dir: Path) -> bool:
+        manifest_path = index_dir / REPLACE_MANIFEST
+        if not manifest_path.exists():
+            return False
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        entries = payload.get("entries")
+        if not isinstance(entries, list) or not entries:
+            raise RuntimeError("Invalid index replacement manifest")
+        for raw in entries:
+            if not isinstance(raw, dict):
+                raise RuntimeError("Invalid index replacement manifest entry")
+            names = [raw.get(key) for key in ("source", "target", "backup")]
+            if any(not isinstance(name, str) or Path(name).name != name for name in names):
+                raise RuntimeError("Unsafe index replacement manifest path")
+
+        for raw in entries:
+            target = index_dir / str(raw["target"])
+            backup = index_dir / str(raw["backup"])
+            had_target = bool(raw.get("had_target"))
+            if backup.exists():
+                if target.exists():
+                    target.unlink()
+                os.replace(backup, target)
+            elif not had_target:
+                if target.exists():
+                    target.unlink()
+            elif not target.exists():
+                raise RuntimeError(f"Cannot recover prior index target: {target.name}")
+        for raw in entries:
+            source = index_dir / str(raw["source"])
+            if source.exists():
+                source.unlink()
+        manifest_path.unlink()
+        LOGGER.warning("Recovered interrupted index replacement from %s", manifest_path)
+        return True
+
+    @staticmethod
+    def cleanup_stale_operation_artifacts(index_dir: Path) -> list[str]:
+        manifest_path = index_dir / REPLACE_MANIFEST
+        referenced: set[str] = set()
+        if manifest_path.exists():
+            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+            entries = payload.get("entries")
+            if not isinstance(entries, list):
+                raise RuntimeError("Invalid index replacement manifest")
+            for raw in entries:
+                if not isinstance(raw, dict):
+                    raise RuntimeError("Invalid index replacement manifest entry")
+                for key in ("source", "target", "backup"):
+                    value = raw.get(key)
+                    if isinstance(value, str):
+                        referenced.add(value)
+        removed: list[str] = []
+        for path in index_dir.iterdir():
+            if not path.is_file() or path.name in referenced:
+                continue
+            if OPERATION_ARTIFACT.search(path.name):
+                path.unlink()
+                removed.append(path.name)
+        if removed:
+            LOGGER.warning("Removed %d stale index operation artifacts", len(removed))
+        return sorted(removed)

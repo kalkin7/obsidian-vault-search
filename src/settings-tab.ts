@@ -20,9 +20,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       status.model_id ? `모델: ${status.model_id}` : "",
       status.device ? `디바이스: ${status.device}` : "",
       status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
-      status.files !== undefined ? `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개` : "",
+      status.count_available === false ? "인덱스 개수: 확인 불가" :
+        status.files !== undefined ? `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개` : "",
       status.model_load_seconds !== undefined ? `최근 모델 로딩: ${status.model_load_seconds}초` : "",
       status.progress ? `진행: ${status.progress}` : "",
+      status.pending_recovery_required ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}` : "",
       status.error ? `오류: ${status.error}` : ""
     ].filter(Boolean).join("\n"));
     if (status.error) statusEl.addClass("vault-search-error");
@@ -98,8 +100,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         try { const result = await this.owner.previewScope(); new Notice(`검색 대상: ${result.count}개 파일`); }
         catch (error) { this.showError(error); }
       }))
-      .addButton(button => button.setButtonText("증분 대조").onClick(async () => {
-        try { await this.owner.reconcile(); } catch (error) { this.showError(error); }
+      .addButton(button => button.setButtonText("정밀 대조").onClick(async () => {
+        try { await this.owner.reconcile("strict"); } catch (error) { this.showError(error); }
       }))
       .addButton(button => button.setButtonText("벡터 재구축").onClick(async () => {
         try { await this.owner.rebuildVectors(); } catch (error) { this.showError(error); }

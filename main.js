@@ -490,10 +490,25 @@ var BackendManager = class {
     if (!runtime) return;
     try {
       await requestBackend(runtime, "shutdown", {}, 1e3);
-      await new Promise((resolve2) => setTimeout(resolve2, 500));
     } catch {
     }
+    const deadline = Date.now() + 1e4;
+    while (this.pidRunning(runtime.pid) && Date.now() < deadline) {
+      await new Promise((resolve2) => setTimeout(resolve2, 200));
+    }
+    if (this.pidRunning(runtime.pid)) {
+      throw new Error(`Existing Vault Search backend did not stop: PID ${runtime.pid}`);
+    }
     await (0, import_promises.rm)(this.runtimePath, { force: true });
+  }
+  pidRunning(pid) {
+    if (!Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
   waitForExit(child, timeoutMs) {
     if (child.exitCode !== null) return Promise.resolve(true);
@@ -592,9 +607,10 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
       status.model_id ? `\uBAA8\uB378: ${status.model_id}` : "",
       status.device ? `\uB514\uBC14\uC774\uC2A4: ${status.device}` : "",
       status.pid ? `PID: ${status.pid} / \uD3EC\uD2B8: ${status.port}` : "",
-      status.files !== void 0 ? `\uC778\uB371\uC2A4: \uD30C\uC77C ${status.files}\uAC1C / \uCCAD\uD06C ${status.chunks ?? 0}\uAC1C` : "",
+      status.count_available === false ? "\uC778\uB371\uC2A4 \uAC1C\uC218: \uD655\uC778 \uBD88\uAC00" : status.files !== void 0 ? `\uC778\uB371\uC2A4: \uD30C\uC77C ${status.files}\uAC1C / \uCCAD\uD06C ${status.chunks ?? 0}\uAC1C` : "",
       status.model_load_seconds !== void 0 ? `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08` : "",
       status.progress ? `\uC9C4\uD589: ${status.progress}` : "",
+      status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
       status.error ? `\uC624\uB958: ${status.error}` : ""
     ].filter(Boolean).join("\n"));
     if (status.error) statusEl.addClass("vault-search-error");
@@ -674,9 +690,9 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
       } catch (error) {
         this.showError(error);
       }
-    })).addButton((button) => button.setButtonText("\uC99D\uBD84 \uB300\uC870").onClick(async () => {
+    })).addButton((button) => button.setButtonText("\uC815\uBC00 \uB300\uC870").onClick(async () => {
       try {
-        await this.owner.reconcile();
+        await this.owner.reconcile("strict");
       } catch (error) {
         this.showError(error);
       }
@@ -909,7 +925,7 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
         await this.saveSettings();
         if (this.isReady()) {
           await this.backend.call("apply_search_config", hotConfig(next));
-          if (impact === "scope") await this.backend.call("reconcile", {}, 6e5);
+          if (impact === "scope") await this.backend.call("reconcile", { mode: "fast" }, 6e5);
         }
       }
       this.draftSettings = cloneSettings(this.settings);
@@ -955,9 +971,9 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
     await this.backend.ensureStarted();
     return this.backend.call("preview_scope", {}, 12e4);
   }
-  async reconcile() {
+  async reconcile(mode = "strict") {
     await this.backend.ensureStarted();
-    const result = await this.backend.call("reconcile", {}, 6e5);
+    const result = await this.backend.call("reconcile", { mode }, 6e5);
     new import_obsidian2.Notice(result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 8e3);
     this.settingTab?.display();
   }
@@ -996,7 +1012,11 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
     try {
       this.queue?.clear();
       if (this.settings.startupReconcile) {
-        const result = await this.backend.call("reconcile", {}, 6e5);
+        const result = await this.backend.call(
+          "reconcile",
+          { mode: "fast" },
+          6e5
+        );
         if (result.rebuild_required) {
           new import_obsidian2.Notice("Vault Search \uC778\uB371\uC2A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uC804\uCCB4 \uC7AC\uAD6C\uCD95\uC744 \uC2E4\uD589\uD558\uC138\uC694.", 8e3);
         }

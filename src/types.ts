@@ -41,8 +41,11 @@ export interface BackendStatus {
   dimension?: number | null;
   files?: number;
   chunks?: number;
+  count_available?: boolean;
   model_load_seconds?: number;
   progress?: string;
+  pending_recovery_required?: boolean;
+  pending_recovery_warning?: string | null;
 }
 
 export interface RuntimeInfo {
