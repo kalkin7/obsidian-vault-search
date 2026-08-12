@@ -30,7 +30,16 @@ class ModelManager:
             raise RuntimeError("CUDA was requested but is not available")
         self.device = "cuda" if requested == "cuda" or (
             requested == "auto" and torch.cuda.is_available()) else "cpu"
-        self.model = SentenceTransformer(self.config.model_id, device=self.device)
+        try:
+            self.model = SentenceTransformer(
+                self.config.model_id,
+                device=self.device,
+                local_files_only=True,
+            )
+        except OSError as exc:
+            if not _is_huggingface_cache_miss(exc):
+                raise
+            self.model = SentenceTransformer(self.config.model_id, device=self.device)
         getter = getattr(self.model, "get_embedding_dimension", None)
         dimension = getter() if getter else self.model.get_sentence_embedding_dimension()
         if dimension is None:
@@ -91,3 +100,14 @@ class _FakeSentenceTransformer:
         if norm:
             vector /= norm
         return vector
+
+
+def _is_huggingface_cache_miss(error: BaseException) -> bool:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ == "LocalEntryNotFoundError":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
