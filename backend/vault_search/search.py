@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from collections import defaultdict
 from typing import Any
@@ -139,9 +140,11 @@ class SearchEngine:
             candidate_ids = [chunk_id for chunk_id, _score in ranked]
             placeholders = ",".join("?" for _ in candidate_ids)
             rows = {
-                int(row[0]): (str(row[1]), str(row[2]))
+                int(row[0]): (
+                    str(row[1]), str(row[2]), json.loads(str(row[3])), int(row[4]))
                 for row in connection.execute(
-                    f"SELECT id, file_path, content FROM chunks WHERE id IN ({placeholders})",
+                    f"SELECT id, file_path, content, heading_path, start_line "
+                    f"FROM chunks WHERE id IN ({placeholders})",
                     candidate_ids,
                 ).fetchall()
             }
@@ -151,12 +154,14 @@ class SearchEngine:
                 ranked, rows, requested, self.config.max_chunks_per_file)
             results: list[dict[str, Any]] = []
             for chunk_id, score in selected:
-                file_path, content = rows[chunk_id]
+                file_path, content, heading_path, start_line = rows[chunk_id]
                 entry: dict[str, Any] = {
                     "rank": len(results) + 1,
                     "file_path": file_path,
                     "score": round(float(score), 6),
                     "content": content,
+                    "heading_path": heading_path,
+                    "start_line": start_line,
                 }
                 if verbose:
                     result_channels = set(sources.get(chunk_id, set()))

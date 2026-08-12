@@ -65,3 +65,13 @@ export interface BackendResponse<T = unknown> {
   data?: T;
   error?: { code: string; message: string; details?: unknown };
 }
+
+export interface SearchResult {
+  rank: number;
+  file_path: string;
+  score: number;
+  content: string;
+  heading_path?: string[];
+  start_line?: number;
+  channels?: string[];
+}

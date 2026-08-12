@@ -58,6 +58,8 @@ def test_paragraph_v1_is_unchanged_and_default():
     expected = chunk_text(text, 100, 10)
     assert [chunk.content for chunk in chunk_document(text, "note.md", 100, 10)] == expected
     assert [chunk.embedding_text for chunk in chunk_document(text, "note.md", 100, 10)] == expected
+    assert all(chunk.heading_path == () and chunk.start_line >= 1 for chunk in
+               chunk_document(text, "note.md", 100, 10))
 
 
 def test_paragraph_v1_line_ranges_advance_for_repeated_content_and_overlap():

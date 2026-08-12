@@ -32,7 +32,7 @@ __export(main_exports, {
   default: () => VaultSearchPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 var path3 = __toESM(require("path"));
 
 // src/backend-manager.ts
@@ -822,19 +822,193 @@ var VaultEventQueue = class {
   }
 };
 
+// src/search-modal.ts
+var import_obsidian2 = require("obsidian");
+
+// src/search-session.ts
+function selectedTextQuery(editor) {
+  return editor.getSelection();
+}
+var SearchSession = class {
+  constructor(search, stateChanged, debounceMs = 250) {
+    this.search = search;
+    this.stateChanged = stateChanged;
+    this.debounceMs = debounceMs;
+  }
+  timer = null;
+  generation = 0;
+  setQuery(value) {
+    const query = value.trim();
+    const generation = ++this.generation;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    if (query.length < 2) {
+      this.stateChanged({ kind: "idle" });
+      return;
+    }
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.execute(query, generation);
+    }, this.debounceMs);
+  }
+  dispose() {
+    this.generation++;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+  }
+  async execute(query, generation) {
+    this.stateChanged({ kind: "loading" });
+    try {
+      const results = await this.search(query);
+      if (generation !== this.generation) return;
+      this.stateChanged({ kind: "results", results });
+    } catch (error) {
+      if (generation !== this.generation) return;
+      this.stateChanged({
+        kind: "unavailable",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+};
+
+// src/search-result-view.ts
+function resultLocation(result) {
+  return { path: result.file_path, line: Math.max(1, result.start_line ?? 1) };
+}
+var SearchResultView = class {
+  constructor(containerEl, openResult) {
+    this.containerEl = containerEl;
+    this.openResult = openResult;
+  }
+  render(results) {
+    this.containerEl.empty();
+    if (results.length === 0) {
+      this.containerEl.createDiv({ cls: "vault-search-empty", text: "\uAC80\uC0C9 \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4." });
+      return;
+    }
+    for (const result of results) {
+      const location = resultLocation(result);
+      const item = this.containerEl.createEl("button", { cls: "vault-search-result" });
+      const header = item.createDiv({ cls: "vault-search-result-header" });
+      header.createSpan({
+        cls: "vault-search-result-file",
+        text: result.file_path.split("/").pop()?.replace(/\.md$/i, "") || result.file_path
+      });
+      const badges = header.createSpan({ cls: "vault-search-result-badges" });
+      for (const channel of result.channels ?? []) {
+        badges.createSpan({ cls: "vault-search-channel", text: channel });
+      }
+      const heading = result.heading_path?.filter(Boolean).join(" \u203A ");
+      if (heading) item.createDiv({ cls: "vault-search-result-heading", text: heading });
+      item.createDiv({ cls: "vault-search-result-snippet", text: result.content.replace(/\s+/g, " ").trim() });
+      item.addEventListener("click", () => void this.openResult(location));
+    }
+  }
+};
+
+// src/search-modal.ts
+var VaultSearchModal = class extends import_obsidian2.Modal {
+  constructor(owner, initialQuery = "") {
+    super(owner.app);
+    this.owner = owner;
+    this.initialQuery = initialQuery;
+  }
+  inputEl;
+  statusEl;
+  resultsEl;
+  resultView;
+  session;
+  onOpen() {
+    this.modalEl.addClass("vault-search-modal");
+    this.contentEl.empty();
+    this.contentEl.createEl("h2", { text: "Vault Search" });
+    this.inputEl = this.contentEl.createEl("input", {
+      cls: "vault-search-input",
+      attr: { type: "search", placeholder: "\uBCFC\uD2B8 \uAC80\uC0C9", "aria-label": "Vault Search query" }
+    });
+    this.statusEl = this.contentEl.createDiv({ cls: "vault-search-modal-status" });
+    this.resultsEl = this.contentEl.createDiv({ cls: "vault-search-results" });
+    this.resultView = new SearchResultView(
+      this.resultsEl,
+      (location) => this.owner.openSearchResult(location)
+    );
+    this.session = new SearchSession((query) => this.search(query), (state) => this.renderState(state));
+    this.inputEl.addEventListener("input", () => this.session.setQuery(this.inputEl.value));
+    this.inputEl.value = this.initialQuery;
+    this.renderBackendStatus(this.owner.backend.status);
+    this.session.setQuery(this.initialQuery);
+    this.inputEl.focus();
+    this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+  }
+  onClose() {
+    this.session?.dispose();
+    this.contentEl.empty();
+    this.owner.searchModalClosed(this);
+  }
+  updateBackendStatus(status) {
+    if (this.statusEl) this.renderBackendStatus(status);
+  }
+  async search(query) {
+    await this.owner.backend.ensureStarted();
+    const response = await this.owner.backend.call(
+      "search",
+      { query, verbose: true },
+      3e4
+    );
+    return response.results;
+  }
+  renderState(state) {
+    if (state.kind === "idle") {
+      this.resultsEl.empty();
+      return;
+    }
+    if (state.kind === "loading") {
+      this.resultsEl.empty();
+      this.resultsEl.createDiv({ cls: "vault-search-empty", text: "\uAC80\uC0C9 \uC911\u2026" });
+      return;
+    }
+    if (state.kind === "results") {
+      this.resultView.render(state.results);
+      return;
+    }
+    this.resultsEl.empty();
+    const unavailable = this.resultsEl.createDiv({ cls: "vault-search-unavailable" });
+    unavailable.createDiv({ text: `\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${state.message}` });
+    const button = unavailable.createEl("button", { text: "\uC124\uC815 \uC5F4\uAE30" });
+    button.addEventListener("click", () => this.owner.openSearchSettings());
+  }
+  renderBackendStatus(status) {
+    this.statusEl.removeClass("vault-search-error");
+    if (status.state === "idle") {
+      this.statusEl.setText("\uBAA8\uB378 \uB300\uAE30 \uC911 \xB7 \uAC80\uC0C9 \uC2DC \uBAA8\uB378\uC744 \uB85C\uB4DC\uD569\uB2C8\uB2E4.");
+    } else if (status.state === "loading_model" || status.state === "starting") {
+      this.statusEl.setText("\uAC80\uC0C9 \uBAA8\uB378\uC744 \uB85C\uB4DC\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
+    } else if (status.state === "error") {
+      this.statusEl.setText(status.error || "\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      this.statusEl.addClass("vault-search-error");
+    } else if (status.state === "stopped") {
+      this.statusEl.setText("\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uAC00 \uC911\uC9C0\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
+    } else {
+      this.statusEl.setText("");
+    }
+  }
+};
+
 // src/main.ts
-var VaultSearchPlugin = class extends import_obsidian2.Plugin {
+var VaultSearchPlugin = class extends import_obsidian3.Plugin {
   draftSettings;
   backend;
   queue;
   settingTab;
   startupPrepared = false;
   startupInProgress = false;
+  searchModal = null;
   async onload() {
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian2.FileSystemAdapter)) {
-      new import_obsidian2.Notice("Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
+    if (!(adapter instanceof import_obsidian3.FileSystemAdapter)) {
+      new import_obsidian3.Notice("Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4.");
       return;
     }
     const vaultPath = adapter.getBasePath();
@@ -859,16 +1033,16 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
       }
     );
     this.registerEvent(this.app.vault.on("create", (file) => {
-      if (file instanceof import_obsidian2.TFile) this.queue.markChanged(file.path);
+      if (file instanceof import_obsidian3.TFile) this.queue.markChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
-      if (file instanceof import_obsidian2.TFile) this.queue.markChanged(file.path);
+      if (file instanceof import_obsidian3.TFile) this.queue.markChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
-      if (file instanceof import_obsidian2.TFile) this.queue.markDeleted(file.path);
+      if (file instanceof import_obsidian3.TFile) this.queue.markDeleted(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      if (file instanceof import_obsidian2.TFile) {
+      if (file instanceof import_obsidian3.TFile) {
         this.queue.markDeleted(oldPath);
         this.queue.markChanged(file.path);
       }
@@ -878,9 +1052,9 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
     this.registerCommands();
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.loadPolicy === "vault-open") {
-        void this.startBackend().catch((error) => new import_obsidian2.Notice(`Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
+        void this.startBackend().catch((error) => new import_obsidian3.Notice(`Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
       } else if (this.settings.loadPolicy === "first-search") {
-        void this.startLazyBackend().catch((error) => new import_obsidian2.Notice(`Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
+        void this.startLazyBackend().catch((error) => new import_obsidian3.Notice(`Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`, 1e4));
       }
     });
   }
@@ -929,7 +1103,7 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
         }
       }
       this.draftSettings = cloneSettings(this.settings);
-      new import_obsidian2.Notice(impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "Vault Search \uC124\uC815\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian3.Notice(impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "Vault Search \uC124\uC815\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4.");
     } catch (error) {
       await this.backend.stop().catch(() => void 0);
       this.settings = previous;
@@ -965,7 +1139,7 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
     await this.backend.restart();
     await this.completeStartup();
     this.settingTab?.display();
-    new import_obsidian2.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
+    new import_obsidian3.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
   }
   async previewScope() {
     await this.backend.ensureStarted();
@@ -974,24 +1148,30 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
   async reconcile(mode = "strict") {
     await this.backend.ensureStarted();
     const result = await this.backend.call("reconcile", { mode }, 6e5);
-    new import_obsidian2.Notice(result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 8e3);
+    new import_obsidian3.Notice(result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 8e3);
     this.settingTab?.display();
   }
   async rebuildAll() {
     await this.backend.ensureStarted();
-    new import_obsidian2.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
+    new import_obsidian3.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
     const result = await this.backend.call("rebuild_all", {}, 36e5);
-    new import_obsidian2.Notice(`\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian3.Notice(`\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   async rebuildVectors() {
     await this.backend.ensureStarted();
-    new import_obsidian2.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
+    new import_obsidian3.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
     const result = await this.backend.call("rebuild_vectors", {}, 36e5);
-    new import_obsidian2.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian3.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   registerCommands() {
+    this.addCommand({ id: "open-search", name: "Open search", callback: () => this.openSearch() });
+    this.addCommand({
+      id: "search-selected-text",
+      name: "Search selected text",
+      editorCallback: (editor) => this.openSearch(selectedTextQuery(editor))
+    });
     this.addCommand({ id: "start-service", name: "Start search service", callback: () => void this.startBackend() });
     this.addCommand({ id: "stop-service", name: "Stop search service", callback: () => void this.stopBackend() });
     this.addCommand({ id: "restart-service", name: "Restart search service", callback: () => void this.restartBackend() });
@@ -1001,6 +1181,7 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
   }
   handleStatus(status) {
     this.settingTab?.display();
+    this.searchModal?.updateBackendStatus(status);
     if (status.state === "ready" || status.state === "ready_no_index") {
       if (this.startupPrepared) void this.queue?.flush();
       else void this.completeStartup();
@@ -1018,7 +1199,7 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
           6e5
         );
         if (result.rebuild_required) {
-          new import_obsidian2.Notice("Vault Search \uC778\uB371\uC2A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uC804\uCCB4 \uC7AC\uAD6C\uCD95\uC744 \uC2E4\uD589\uD558\uC138\uC694.", 8e3);
+          new import_obsidian3.Notice("Vault Search \uC778\uB371\uC2A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uC804\uCCB4 \uC7AC\uAD6C\uCD95\uC744 \uC2E4\uD589\uD558\uC138\uC694.", 8e3);
         }
       }
       this.startupPrepared = true;
@@ -1033,5 +1214,30 @@ var VaultSearchPlugin = class extends import_obsidian2.Plugin {
   }
   errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
+  }
+  openSearch(initialQuery = "") {
+    this.searchModal?.close();
+    this.searchModal = new VaultSearchModal(this, initialQuery);
+    this.searchModal.open();
+  }
+  async openSearchResult(location) {
+    const file = this.app.vault.getAbstractFileByPath(location.path);
+    if (!(file instanceof import_obsidian3.TFile)) {
+      new import_obsidian3.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file, {
+      active: true,
+      eState: { line: location.line - 1 }
+    });
+    this.searchModal?.close();
+  }
+  openSearchSettings() {
+    const setting = this.app.setting;
+    setting.open();
+    setting.openTabById(this.manifest.id);
+  }
+  searchModalClosed(modal) {
+    if (this.searchModal === modal) this.searchModal = null;
   }
 };

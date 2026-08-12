@@ -254,7 +254,9 @@ def test_title_channel_can_add_file_outside_body_vector(tmp_path: Path):
     connection = init_db(cfg.db_path)
     try:
         body_id = insert_chunk(connection, "body.md", 0, "전기차 충전기 설치 경과", ["전기차"])
-        title_only_id = insert_chunk(connection, "title-only.md", 0, "무관한 본문", ["무관"])
+        title_only_id = insert_chunk(
+            connection, "title-only.md", 0, "무관한 본문", ["무관"],
+            ("상위", "하위"), 7, 7)
         upsert_file_fields(connection, "body.md", ["body"], [], [], [], [])
         upsert_file_fields(connection, "title-only.md", ["타이틀검색어"], [], [], [], [])
         upsert_file_state(connection, "body.md", "hash", 1, 0, 0)
@@ -294,6 +296,8 @@ def test_title_channel_can_add_file_outside_body_vector(tmp_path: Path):
     assert entry["match_mode"] == "any"
     assert entry["rrf_contributions"]["file"] > 0
     assert entry["rrf_contributions"]["title"] == entry["rrf_contributions"]["file"]
+    assert entry["heading_path"] == ["상위", "하위"]
+    assert entry["start_line"] == 7
 
 
 def test_file_and_body_share_no_duplicate_chunk(tmp_path: Path):

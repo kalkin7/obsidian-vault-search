@@ -6,6 +6,9 @@ import { VaultSearchSettingTab } from "./settings-tab";
 import { cloneSettings, hotConfig, settingsImpact } from "./settings";
 import type { BackendStatus, VaultSearchSettings } from "./types";
 import { VaultEventQueue } from "./vault-event-queue";
+import { VaultSearchModal } from "./search-modal";
+import type { SearchResultLocation } from "./search-result-view";
+import { selectedTextQuery } from "./search-session";
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -15,6 +18,7 @@ export default class VaultSearchPlugin extends Plugin {
   private settingTab!: VaultSearchSettingTab;
   private startupPrepared = false;
   private startupInProgress = false;
+  private searchModal: VaultSearchModal | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -194,6 +198,12 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   private registerCommands(): void {
+    this.addCommand({ id: "open-search", name: "Open search", callback: () => this.openSearch() });
+    this.addCommand({
+      id: "search-selected-text",
+      name: "Search selected text",
+      editorCallback: editor => this.openSearch(selectedTextQuery(editor))
+    });
     this.addCommand({ id: "start-service", name: "Start search service", callback: () => void this.startBackend() });
     this.addCommand({ id: "stop-service", name: "Stop search service", callback: () => void this.stopBackend() });
     this.addCommand({ id: "restart-service", name: "Restart search service", callback: () => void this.restartBackend() });
@@ -204,6 +214,7 @@ export default class VaultSearchPlugin extends Plugin {
 
   private handleStatus(status: BackendStatus): void {
     this.settingTab?.display();
+    this.searchModal?.updateBackendStatus(status);
     if (status.state === "ready" || status.state === "ready_no_index") {
       if (this.startupPrepared) void this.queue?.flush();
       else void this.completeStartup();
@@ -236,5 +247,36 @@ export default class VaultSearchPlugin extends Plugin {
 
   private errorMessage(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
+  }
+
+  openSearch(initialQuery = ""): void {
+    this.searchModal?.close();
+    this.searchModal = new VaultSearchModal(this, initialQuery);
+    this.searchModal.open();
+  }
+
+  async openSearchResult(location: SearchResultLocation): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath(location.path);
+    if (!(file instanceof TFile)) {
+      new Notice(`파일을 찾을 수 없습니다: ${location.path}`);
+      return;
+    }
+    await this.app.workspace.getLeaf(false).openFile(file, {
+      active: true,
+      eState: { line: location.line - 1 }
+    });
+    this.searchModal?.close();
+  }
+
+  openSearchSettings(): void {
+    const setting = (this.app as typeof this.app & {
+      setting: { open(): void; openTabById(id: string): void };
+    }).setting;
+    setting.open();
+    setting.openTabById(this.manifest.id);
+  }
+
+  searchModalClosed(modal: VaultSearchModal): void {
+    if (this.searchModal === modal) this.searchModal = null;
   }
 }
