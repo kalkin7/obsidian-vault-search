@@ -9,5 +9,9 @@ Messages are limited to 2 MiB. Unknown versions and invalid tokens are rejected.
 `search` accepts optional `top_k`, `verbose`, and `match_mode` parameters. `match_mode` defaults to
 `any` and also accepts `all` or `phrase`; invalid values return `INVALID_PARAMS` without changing
 protocol version 1. With `verbose: true`, each result includes query tokens, match mode, contributing
-channels, per-channel ranks, and RRF contributions. The stable result fields remain `rank`,
+channels (`body`, `heading`, `file`, `vector`), per-channel ranks, and RRF contributions. The stable result fields remain `rank`,
 `file_path`, `score`, and `content`.
+
+Verbose results expose `body_rank`, `heading_rank`, `file_rank`, and `vector_rank`. The older
+`bm25_rank`, `title_rank`, `title` channel, and `title` contribution aliases remain for protocol v1
+consumers. Title aliases mirror the generalized file signal and do not add a second RRF score.

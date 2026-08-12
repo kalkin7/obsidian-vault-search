@@ -8,9 +8,6 @@ from pathlib import Path
 from typing import Any
 
 
-TITLE_INDEX_VERSION = 1
-
-
 def compute_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
@@ -20,53 +17,116 @@ def init_db(path: Path) -> sqlite3.Connection:
     connection.executescript("""
         PRAGMA journal_mode=DELETE;
         CREATE TABLE IF NOT EXISTS chunks (
-            id          INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path   TEXT NOT NULL,
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL,
             chunk_index INTEGER NOT NULL,
-            content     TEXT NOT NULL,
+            content TEXT NOT NULL,
             heading_path TEXT NOT NULL,
-            start_line  INTEGER NOT NULL,
-            end_line    INTEGER NOT NULL,
+            start_line INTEGER NOT NULL,
+            end_line INTEGER NOT NULL,
             embedding_text TEXT NOT NULL,
             lexical_only INTEGER NOT NULL DEFAULT 0,
             UNIQUE(file_path, chunk_index)
         );
-        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(
-            tokens,
-            tokenize='ascii'
-        );
-        CREATE TABLE IF NOT EXISTS file_titles (
-            file_path       TEXT NOT NULL UNIQUE,
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts USING fts5(tokens, tokenize='ascii');
+        CREATE TABLE IF NOT EXISTS file_fields (
+            file_path TEXT NOT NULL UNIQUE,
             basename_tokens TEXT NOT NULL,
             directory_tokens TEXT NOT NULL,
-            heading_tokens  TEXT NOT NULL
+            alias_tokens TEXT NOT NULL,
+            tag_tokens TEXT NOT NULL,
+            property_tokens TEXT NOT NULL
         );
-        CREATE VIRTUAL TABLE IF NOT EXISTS titles_fts USING fts5(
-            basename_tokens,
-            directory_tokens,
-            heading_tokens,
+        CREATE VIRTUAL TABLE IF NOT EXISTS file_fields_fts USING fts5(
+            basename_tokens, directory_tokens, alias_tokens, tag_tokens, property_tokens,
             tokenize='ascii'
         );
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunk_headings_fts USING fts5(
+            heading_tokens, tokenize='ascii'
+        );
         CREATE TABLE IF NOT EXISTS file_state (
-            file_path   TEXT PRIMARY KEY,
-            file_hash   TEXT NOT NULL,
+            file_path TEXT PRIMARY KEY,
+            file_hash TEXT NOT NULL,
             chunk_count INTEGER NOT NULL,
-            indexed_at  REAL NOT NULL
+            indexed_at REAL NOT NULL
         );
-        CREATE TABLE IF NOT EXISTS index_metadata (
-            key   TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
+        CREATE TABLE IF NOT EXISTS index_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE INDEX IF NOT EXISTS idx_chunks_file ON chunks(file_path);
     """)
     connection.commit()
     return connection
 
 
+def ensure_lexical_schema(connection: sqlite3.Connection) -> None:
+    connection.executescript("""
+        CREATE TABLE IF NOT EXISTS file_fields (
+            file_path TEXT NOT NULL UNIQUE,
+            basename_tokens TEXT NOT NULL,
+            directory_tokens TEXT NOT NULL,
+            alias_tokens TEXT NOT NULL,
+            tag_tokens TEXT NOT NULL,
+            property_tokens TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS file_fields_fts USING fts5(
+            basename_tokens, directory_tokens, alias_tokens, tag_tokens, property_tokens,
+            tokenize='ascii'
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS chunk_headings_fts USING fts5(
+            heading_tokens, tokenize='ascii'
+        );
+    """)
+
+
+def lexical_index_problems(connection: sqlite3.Connection) -> list[str]:
+    required = {
+        "chunks", "chunks_fts", "file_state", "file_fields",
+        "file_fields_fts", "chunk_headings_fts",
+    }
+    existing = {str(row[0]) for row in connection.execute(
+        "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+    missing = sorted(required - existing)
+    if missing:
+        return ["missing lexical tables: " + ", ".join(missing)]
+
+    problems: list[str] = []
+    file_count = int(connection.execute("SELECT COUNT(*) FROM file_state").fetchone()[0])
+    field_count = int(connection.execute("SELECT COUNT(*) FROM file_fields").fetchone()[0])
+    field_fts_count = int(connection.execute(
+        "SELECT COUNT(*) FROM file_fields_fts").fetchone()[0])
+    chunk_count = int(connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
+    body_count = int(connection.execute("SELECT COUNT(*) FROM chunks_fts").fetchone()[0])
+    heading_count = int(connection.execute(
+        "SELECT COUNT(*) FROM chunk_headings_fts").fetchone()[0])
+    if field_count != file_count or field_fts_count != field_count:
+        problems.append(
+            f"file lexical row count mismatch: state={file_count}, fields={field_count},"
+            f" fts={field_fts_count}")
+    if body_count != chunk_count:
+        problems.append(f"body lexical row count mismatch: chunks={chunk_count}, fts={body_count}")
+    if heading_count != chunk_count:
+        problems.append(
+            f"heading lexical row count mismatch: chunks={chunk_count}, fts={heading_count}")
+    heading_difference = int(connection.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT id AS rowid FROM chunks
+            EXCEPT SELECT rowid FROM chunk_headings_fts
+        )
+    """).fetchone()[0]) + int(connection.execute("""
+        SELECT COUNT(*) FROM (
+            SELECT rowid FROM chunk_headings_fts
+            EXCEPT SELECT id AS rowid FROM chunks
+        )
+    """).fetchone()[0])
+    if heading_difference:
+        problems.append("chunk_headings_fts rowids do not match chunks.id")
+    return problems
+
+
 def insert_chunk(connection: sqlite3.Connection, file_path: str, chunk_index: int,
                  content: str, tokens: list[str], heading_path: tuple[str, ...] = (),
                  start_line: int = 1, end_line: int = 1,
-                 embedding_text: str | None = None, lexical_only: bool = False) -> int:
+                 embedding_text: str | None = None, lexical_only: bool = False,
+                 heading_tokens: list[str] | None = None) -> int:
     cursor = connection.execute(
         "INSERT INTO chunks (file_path, chunk_index, content, heading_path, start_line,"
         " end_line, embedding_text, lexical_only) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -75,103 +135,37 @@ def insert_chunk(connection: sqlite3.Connection, file_path: str, chunk_index: in
          int(lexical_only)),
     )
     row_id = int(cursor.lastrowid)
+    connection.execute("INSERT INTO chunks_fts(rowid, tokens) VALUES (?, ?)",
+                       (row_id, " ".join(tokens)))
     connection.execute(
-        "INSERT INTO chunks_fts(rowid, tokens) VALUES (?, ?)",
-        (row_id, " ".join(tokens)),
+        "INSERT INTO chunk_headings_fts(rowid, heading_tokens) VALUES (?, ?)",
+        (row_id, " ".join(heading_tokens or [])),
     )
     return row_id
 
 
-def ensure_title_schema(connection: sqlite3.Connection) -> None:
-    connection.executescript("""
-        CREATE TABLE IF NOT EXISTS file_titles (
-            file_path       TEXT NOT NULL UNIQUE,
-            basename_tokens TEXT NOT NULL,
-            directory_tokens TEXT NOT NULL,
-            heading_tokens  TEXT NOT NULL
-        );
-        CREATE VIRTUAL TABLE IF NOT EXISTS titles_fts USING fts5(
-            basename_tokens,
-            directory_tokens,
-            heading_tokens,
-            tokenize='ascii'
-        );
-    """)
-
-
-def upsert_file_title(connection: sqlite3.Connection, file_path: str,
-                      basename_tokens: list[str], directory_tokens: list[str],
-                      heading_tokens: list[str]) -> None:
+def upsert_file_fields(connection: sqlite3.Connection, file_path: str,
+                       basename_tokens: list[str], directory_tokens: list[str],
+                       alias_tokens: list[str], tag_tokens: list[str],
+                       property_tokens: list[str]) -> None:
     existing = connection.execute(
-        "SELECT rowid FROM file_titles WHERE file_path = ?", (file_path,)
-    ).fetchone()
-    basename = " ".join(basename_tokens)
-    directory = " ".join(directory_tokens)
-    headings = " ".join(heading_tokens)
+        "SELECT rowid FROM file_fields WHERE file_path = ?", (file_path,)).fetchone()
+    values = tuple(" ".join(tokens) for tokens in (
+        basename_tokens, directory_tokens, alias_tokens, tag_tokens, property_tokens))
     if existing is None:
         cursor = connection.execute(
-            "INSERT INTO file_titles"
-            " (file_path, basename_tokens, directory_tokens, heading_tokens)"
-            " VALUES (?, ?, ?, ?)",
-            (file_path, basename, directory, headings),
-        )
+            "INSERT INTO file_fields (file_path, basename_tokens, directory_tokens, alias_tokens,"
+            " tag_tokens, property_tokens) VALUES (?, ?, ?, ?, ?, ?)", (file_path, *values))
         row_id = int(cursor.lastrowid)
     else:
         row_id = int(existing[0])
-        connection.execute("DELETE FROM titles_fts WHERE rowid = ?", (row_id,))
+        connection.execute("DELETE FROM file_fields_fts WHERE rowid = ?", (row_id,))
         connection.execute(
-            "UPDATE file_titles SET basename_tokens = ?, directory_tokens = ?,"
-            " heading_tokens = ? WHERE rowid = ?",
-            (basename, directory, headings, row_id),
-        )
+            "UPDATE file_fields SET basename_tokens=?, directory_tokens=?, alias_tokens=?,"
+            " tag_tokens=?, property_tokens=? WHERE rowid=?", (*values, row_id))
     connection.execute(
-        "INSERT INTO titles_fts"
-        " (rowid, basename_tokens, directory_tokens, heading_tokens)"
-        " VALUES (?, ?, ?, ?)",
-        (row_id, basename, directory, headings),
-    )
-
-
-def delete_file_titles(connection: sqlite3.Connection, file_paths: list[str]) -> None:
-    if not file_paths:
-        return
-    placeholders = ",".join("?" for _ in file_paths)
-    row_ids = [int(row[0]) for row in connection.execute(
-        f"SELECT rowid FROM file_titles WHERE file_path IN ({placeholders})", file_paths
-    ).fetchall()]
-    if row_ids:
-        row_placeholders = ",".join("?" for _ in row_ids)
-        connection.execute(
-            f"DELETE FROM titles_fts WHERE rowid IN ({row_placeholders})", row_ids)
-    connection.execute(
-        f"DELETE FROM file_titles WHERE file_path IN ({placeholders})", file_paths)
-
-
-def title_index_needs_rebuild(connection: sqlite3.Connection) -> bool:
-    ensure_title_schema(connection)
-    value = connection.execute(
-        "SELECT value FROM index_metadata WHERE key = 'title_index_version'"
-    ).fetchone()
-    try:
-        version = int(json.loads(str(value[0]))) if value else 0
-    except (TypeError, ValueError, json.JSONDecodeError):
-        version = 0
-    file_count = int(connection.execute("SELECT COUNT(*) FROM file_state").fetchone()[0])
-    title_count = int(connection.execute("SELECT COUNT(*) FROM file_titles").fetchone()[0])
-    return version != TITLE_INDEX_VERSION or file_count != title_count
-
-
-def clear_title_index(connection: sqlite3.Connection) -> None:
-    ensure_title_schema(connection)
-    connection.execute("DELETE FROM titles_fts")
-    connection.execute("DELETE FROM file_titles")
-
-
-def mark_title_index_current(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        "INSERT OR REPLACE INTO index_metadata (key, value) VALUES (?, ?)",
-        ("title_index_version", json.dumps(TITLE_INDEX_VERSION)),
-    )
+        "INSERT INTO file_fields_fts (rowid, basename_tokens, directory_tokens, alias_tokens,"
+        " tag_tokens, property_tokens) VALUES (?, ?, ?, ?, ?, ?)", (row_id, *values))
 
 
 def delete_files(connection: sqlite3.Connection, file_paths: list[str]) -> list[int]:
@@ -184,10 +178,17 @@ def delete_files(connection: sqlite3.Connection, file_paths: list[str]) -> list[
     all_ids = [int(row[0]) for row in rows]
     vector_ids = [int(row[0]) for row in rows if not bool(row[1])]
     if all_ids:
-        id_placeholders = ",".join("?" for _ in all_ids)
-        connection.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({id_placeholders})", all_ids)
-        connection.execute(f"DELETE FROM chunks WHERE id IN ({id_placeholders})", all_ids)
-    delete_file_titles(connection, file_paths)
+        ids = ",".join("?" for _ in all_ids)
+        connection.execute(f"DELETE FROM chunks_fts WHERE rowid IN ({ids})", all_ids)
+        connection.execute(f"DELETE FROM chunk_headings_fts WHERE rowid IN ({ids})", all_ids)
+        connection.execute(f"DELETE FROM chunks WHERE id IN ({ids})", all_ids)
+    field_rows = connection.execute(
+        f"SELECT rowid FROM file_fields WHERE file_path IN ({placeholders})", file_paths).fetchall()
+    field_ids = [int(row[0]) for row in field_rows]
+    if field_ids:
+        ids = ",".join("?" for _ in field_ids)
+        connection.execute(f"DELETE FROM file_fields_fts WHERE rowid IN ({ids})", field_ids)
+    connection.execute(f"DELETE FROM file_fields WHERE file_path IN ({placeholders})", file_paths)
     connection.execute(f"DELETE FROM file_state WHERE file_path IN ({placeholders})", file_paths)
     return vector_ids
 
@@ -195,17 +196,14 @@ def delete_files(connection: sqlite3.Connection, file_paths: list[str]) -> list[
 def upsert_file_state(connection: sqlite3.Connection, file_path: str,
                       file_hash: str, chunk_count: int) -> None:
     connection.execute(
-        "INSERT OR REPLACE INTO file_state"
-        " (file_path, file_hash, chunk_count, indexed_at) VALUES (?, ?, ?, ?)",
-        (file_path, file_hash, chunk_count, time.time()),
-    )
+        "INSERT OR REPLACE INTO file_state (file_path, file_hash, chunk_count, indexed_at)"
+        " VALUES (?, ?, ?, ?)", (file_path, file_hash, chunk_count, time.time()))
 
 
 def write_index_metadata(connection: sqlite3.Connection, metadata: dict[str, Any]) -> None:
     connection.executemany(
         "INSERT OR REPLACE INTO index_metadata (key, value) VALUES (?, ?)",
-        [(key, json.dumps(value, ensure_ascii=False)) for key, value in metadata.items()],
-    )
+        [(key, json.dumps(value, ensure_ascii=False)) for key, value in metadata.items()])
 
 
 def read_index_metadata(path: Path) -> dict[str, Any] | None:
@@ -214,9 +212,7 @@ def read_index_metadata(path: Path) -> dict[str, Any] | None:
     connection = sqlite3.connect(str(path))
     try:
         rows = connection.execute("SELECT key, value FROM index_metadata").fetchall()
-        if not rows:
-            return None
-        return {str(key): json.loads(str(value)) for key, value in rows}
+        return {str(key): json.loads(str(value)) for key, value in rows} if rows else None
     except sqlite3.Error:
         return None
     finally:

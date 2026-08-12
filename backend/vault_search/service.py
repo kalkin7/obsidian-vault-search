@@ -27,6 +27,7 @@ class SearchService:
         self.initialization_lock = threading.Lock()
         self.initialization_requested = threading.Event()
         self.last_heartbeat = time.monotonic()
+        self.index_rebuild_reason: str | None = None
 
     def start_initialization(self) -> None:
         with self.initialization_lock:
@@ -46,7 +47,9 @@ class SearchService:
             self.model.load()
             self.event_sink("model_stage", {"stage": "model_loaded"})
             self.index = IndexManager(self.config, self.model, self.kiwi, self._index_event)
-            self.index.ensure_title_index()
+            lexical = self.index.ensure_lexical_index()
+            self.index_rebuild_reason = str(lexical.get("reason")) \
+                if lexical.get("rebuild_required") else None
             self.search_engine = SearchEngine(self.config, self.model, self.kiwi)
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
@@ -85,6 +88,10 @@ class SearchService:
             return self.status()
         if self.state == "idle":
             if method == "search":
+                if self.index_rebuild_reason:
+                    raise ServiceError(
+                        "INDEX_REBUILD_REQUIRED", self.index_rebuild_reason,
+                        {"problems": [self.index_rebuild_reason]})
                 self.start_initialization()
                 raise ServiceError("MODEL_LOADING", "Embedding model is loading after the first search request")
             raise ServiceError("MODEL_NOT_LOADED", "Embedding model is not loaded")
@@ -97,6 +104,10 @@ class SearchService:
 
         with self.operation_lock:
             if method == "search":
+                if self.index_rebuild_reason:
+                    raise ServiceError(
+                        "INDEX_REBUILD_REQUIRED", self.index_rebuild_reason,
+                        {"problems": [self.index_rebuild_reason]})
                 query = str(params.get("query", "")).strip()
                 if not query:
                     raise ServiceError("INVALID_QUERY", "Query must not be empty")
@@ -134,7 +145,7 @@ class SearchService:
                     ),
                 )
             if method == "rebuild_all":
-                return self._run_index_operation("rebuilding", self.index.rebuild_all)
+                return self._run_index_operation("rebuilding", self._rebuild_all)
             if method == "rebuild_vectors":
                 return self._run_index_operation("rebuilding_vectors", self.index.rebuild_vectors)
             if method == "apply_search_config":
@@ -159,6 +170,13 @@ class SearchService:
         if "excludeGlobs" in params:
             self.config.exclude_globs = [str(value) for value in params["excludeGlobs"]]
         return {"applied": True, **self.status()}
+
+    def _rebuild_all(self) -> dict[str, Any]:
+        if self.index is None:
+            raise RuntimeError("Search index is unavailable")
+        result = self.index.rebuild_all()
+        self.index_rebuild_reason = None
+        return result
 
     def _run_index_operation(self, state: str, operation: Callable[[], Any]) -> Any:
         previous = self.state

@@ -15,6 +15,10 @@ Lexical matching defaults to OR semantics. Use `--match all` to require every Ki
 `--match phrase` to require adjacent tokens in order. `--verbose --json` includes channel ranks and
 RRF contributions.
 
+The lexical index uses `yaml.safe_load()` to extract aliases, tags, and scalar/nested properties.
+Malformed frontmatter is logged by path and indexed with empty metadata; frontmatter source is never
+written to logs. Lexical schema upgrades do not re-encode or rewrite vectors.
+
 ```powershell
 vault-search --vault "C:\path\to\vault" search --match all --verbose --json "전기차 충전시설"
 ```

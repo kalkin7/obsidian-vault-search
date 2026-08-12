@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
+import time
+import uuid
 from pathlib import Path
 from typing import Any, Callable
 
@@ -11,13 +14,13 @@ import numpy as np
 from .chunking import DocumentChunk, chunk_document
 from .config import SearchConfig
 from .database import (
-    clear_title_index, compute_hash, delete_files, index_counts, init_db, insert_chunk,
-    mark_title_index_current, read_index_metadata, title_index_needs_rebuild, upsert_file_state,
-    upsert_file_title, write_index_metadata,
+    compute_hash, delete_files, ensure_lexical_schema, index_counts, init_db, insert_chunk,
+    lexical_index_problems, read_index_metadata, upsert_file_fields, upsert_file_state,
+    write_index_metadata,
 )
-from .document_fields import title_tokens
+from .document_fields import extract_file_fields, heading_tokens
 from .index_metadata import (
-    build_metadata, expected_metadata, load_metadata, validate_index_files,
+    LEXICAL_SCHEMA_VERSION, build_metadata, expected_metadata, load_metadata, validate_index_files,
     validate_metadata, write_metadata,
 )
 from .model_manager import ModelManager
@@ -46,39 +49,96 @@ class IndexManager:
         })
         return counts
 
-    def ensure_title_index(self) -> dict[str, Any]:
+    def ensure_lexical_index(self) -> dict[str, Any]:
         if not self.config.db_path.exists():
-            return {"rebuilt": False, "files": 0}
-        connection = sqlite3.connect(str(self.config.db_path))
+            return {"migrated": False, "files": 0}
+        file_metadata = load_metadata(self.config.metadata_path)
+        db_metadata = read_index_metadata(self.config.db_path)
+        actual = file_metadata or db_metadata
+        if file_metadata and db_metadata \
+                and file_metadata.get("lexical_schema_version") == LEXICAL_SCHEMA_VERSION \
+                and db_metadata.get("lexical_schema_version") == LEXICAL_SCHEMA_VERSION:
+            connection = sqlite3.connect(str(self.config.db_path))
+            try:
+                fast_path_problems = lexical_index_problems(connection)
+                if not fast_path_problems:
+                    return {"migrated": False, "files": index_counts(self.config.db_path)["files"]}
+            except sqlite3.Error:
+                pass
+            finally:
+                connection.close()
+        db_temp = self.config.index_dir / "chunks.db.lexical-building"
+        metadata_temp = self.config.index_dir / "metadata.json.lexical-building"
         try:
-            if not title_index_needs_rebuild(connection):
-                count = int(connection.execute(
-                    "SELECT COUNT(*) FROM file_titles").fetchone()[0])
-                return {"rebuilt": False, "files": count}
+            self._remove_paths(db_temp, metadata_temp)
+            shutil.copy2(self.config.db_path, db_temp)
+            connection = sqlite3.connect(str(db_temp))
+        except Exception as exc:
+            return {"migrated": False, "rebuild_required": True,
+                    "reason": f"Lexical migration setup failed: {type(exc).__name__}: {exc}"}
+        try:
             rows = [str(row[0]) for row in connection.execute(
                 "SELECT file_path FROM file_state ORDER BY file_path").fetchall()]
-            self.progress("title_index_started", {"files": len(rows)})
-            clear_title_index(connection)
-            for number, relative in enumerate(rows, 1):
+            self.progress("lexical_migration_started", {"files": len(rows)})
+            ensure_lexical_schema(connection)
+            connection.execute("DELETE FROM file_fields_fts")
+            connection.execute("DELETE FROM file_fields")
+            connection.execute("DELETE FROM chunk_headings_fts")
+            for relative in rows:
                 target = resolve_inside_vault(self.config.vault_path, relative)
                 text = target.read_text(encoding="utf-8", errors="replace") \
                     if target.exists() else ""
-                basename, directory, headings = title_tokens(relative, text, self.kiwi)
-                upsert_file_title(connection, relative, basename, directory, headings)
-                if number % 500 == 0:
-                    self.progress("title_index_progress", {
-                        "processed_files": number, "total_files": len(rows),
-                    })
-            mark_title_index_current(connection)
+                fields = extract_file_fields(relative, text, self.kiwi)
+                upsert_file_fields(connection, relative, fields.basename, fields.directory,
+                                   fields.aliases, fields.tags, fields.properties)
+            chunk_rows = connection.execute(
+                "SELECT id, content, heading_path FROM chunks ORDER BY id").fetchall()
+            connection.execute("DELETE FROM chunks_fts")
+            for chunk_id, content, raw_heading_path in chunk_rows:
+                parsed = json.loads(str(raw_heading_path))
+                headings = tuple(str(value) for value in parsed) if isinstance(parsed, list) else ()
+                connection.execute(
+                    "INSERT INTO chunks_fts(rowid, tokens) VALUES (?, ?)",
+                    (int(chunk_id), " ".join(tokenize(str(content), self.kiwi))))
+                connection.execute(
+                    "INSERT INTO chunk_headings_fts(rowid, heading_tokens) VALUES (?, ?)",
+                    (int(chunk_id), " ".join(heading_tokens(headings, self.kiwi))))
+            connection.execute("DROP TABLE IF EXISTS titles_fts")
+            connection.execute("DROP TABLE IF EXISTS file_titles")
+            metadata = dict(actual or {})
+            metadata.update({
+                "lexical_schema_version": LEXICAL_SCHEMA_VERSION,
+                "index_generation": uuid.uuid4().hex,
+                "updated_at": time.time(),
+            })
+            write_index_metadata(connection, metadata)
             connection.commit()
-            result = {"rebuilt": True, "files": len(rows)}
-            self.progress("title_index_finished", result)
-            return result
-        except Exception:
+            integrity = connection.execute("PRAGMA integrity_check").fetchone()
+            validation = lexical_index_problems(connection)
+            if integrity is None or integrity[0] != "ok" or validation:
+                raise RuntimeError(
+                    "Lexical migration validation failed: " + "; ".join(validation))
+            write_metadata(metadata_temp, metadata)
+        except Exception as exc:
             connection.rollback()
-            raise
+            connection.close()
+            self._remove_paths(db_temp, metadata_temp)
+            return {"migrated": False, "rebuild_required": True,
+                    "reason": f"Lexical migration failed: {type(exc).__name__}: {exc}"}
         finally:
             connection.close()
+        try:
+            self._atomic_replace([
+                (db_temp, self.config.db_path),
+                (metadata_temp, self.config.metadata_path),
+            ])
+        except Exception as exc:
+            self._remove_paths(db_temp, metadata_temp)
+            return {"migrated": False, "rebuild_required": True,
+                    "reason": f"Lexical migration install failed: {type(exc).__name__}: {exc}"}
+        result = {"migrated": True, "files": len(rows)}
+        self.progress("lexical_migration_finished", result)
+        return result
 
     def preview_scope(self) -> dict[str, Any]:
         files = iter_vault_files(
@@ -107,21 +167,22 @@ class IndexManager:
                     lexical_only = chunk.lexical_only
                     row_id = insert_chunk(
                         connection, relative, chunk_index, chunk.content,
-                        tokenize(self._lexical_text(chunk), self.kiwi), chunk.heading_path,
-                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only)
+                        tokenize(chunk.content, self.kiwi), chunk.heading_path,
+                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only,
+                        heading_tokens(chunk.heading_path, self.kiwi))
                     if not lexical_only:
                         chunk_ids.append(row_id)
                         chunk_contents.append(chunk.embedding_text)
                 upsert_file_state(connection, relative, compute_hash(text), len(chunks))
-                basename, directory, headings = title_tokens(relative, text, self.kiwi)
-                upsert_file_title(connection, relative, basename, directory, headings)
+                fields = extract_file_fields(relative, text, self.kiwi)
+                upsert_file_fields(connection, relative, fields.basename, fields.directory,
+                                   fields.aliases, fields.tags, fields.properties)
                 if number % 100 == 0:
                     connection.commit()
                     self.progress("rebuild_progress", {
                         "processed_files": number, "total_files": len(files),
                         "chunks": len(chunk_ids),
                     })
-            mark_title_index_current(connection)
             connection.commit()
         finally:
             connection.close()
@@ -156,9 +217,12 @@ class IndexManager:
         dimension = self._dimension()
         if not self.config.db_path.exists():
             raise FileNotFoundError("chunks.db is missing; run rebuild_all")
+        lexical = self.ensure_lexical_index()
+        if lexical.get("rebuild_required"):
+            raise RuntimeError(str(lexical.get("reason") or "Lexical migration required"))
         expected = expected_metadata(self.config, dimension)
         structural_keys = {
-            "schema_version", "chunking_strategy", "chunker_version",
+            "schema_version", "lexical_schema_version", "chunking_strategy", "chunker_version",
             "chunk_chars", "chunk_overlap",
         }
         structural_problems: list[str] = []
@@ -296,15 +360,16 @@ class IndexManager:
                     lexical_only = chunk.lexical_only
                     row_id = insert_chunk(
                         connection, relative, chunk_index, chunk.content,
-                        tokenize(self._lexical_text(chunk), self.kiwi), chunk.heading_path,
-                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only)
+                        tokenize(chunk.content, self.kiwi), chunk.heading_path,
+                        chunk.start_line, chunk.end_line, chunk.embedding_text, lexical_only,
+                        heading_tokens(chunk.heading_path, self.kiwi))
                     if not lexical_only:
                         new_ids.append(row_id)
                         new_contents.append(chunk.embedding_text)
                 upsert_file_state(connection, relative, compute_hash(text), len(chunks))
-                basename, directory, headings = title_tokens(relative, text, self.kiwi)
-                upsert_file_title(connection, relative, basename, directory, headings)
-            mark_title_index_current(connection)
+                fields = extract_file_fields(relative, text, self.kiwi)
+                upsert_file_fields(connection, relative, fields.basename, fields.directory,
+                                   fields.aliases, fields.tags, fields.properties)
             connection.commit()
         finally:
             connection.close()
@@ -351,10 +416,6 @@ class IndexManager:
         return chunk_document(
             text, relative, self.config.chunk_chars, self.config.chunk_overlap,
             self.config.chunking_strategy)
-
-    @staticmethod
-    def _lexical_text(chunk: DocumentChunk) -> str:
-        return "\n".join((*chunk.heading_path, chunk.content))
 
     def _encode_documents(self, contents: list[str], dimension: int) -> np.ndarray:
         if not contents:

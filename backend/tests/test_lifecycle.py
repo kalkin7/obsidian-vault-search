@@ -99,3 +99,15 @@ def test_invalid_match_mode_is_invalid_params(tmp_path: Path):
     with pytest.raises(ServiceError) as error:
         service.call("search", {"query": "test", "match_mode": "invalid"})
     assert error.value.code == "INVALID_PARAMS"
+
+
+def test_startup_lexical_migration_failure_routes_rebuild_required(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.state = "ready"
+    service.index = SimpleNamespace()  # type: ignore[assignment]
+    service.search_engine = SimpleNamespace()  # type: ignore[assignment]
+    service.index_rebuild_reason = "Lexical migration failed"
+    with pytest.raises(ServiceError) as error:
+        service.call("search", {"query": "test"})
+    assert error.value.code == "INDEX_REBUILD_REQUIRED"

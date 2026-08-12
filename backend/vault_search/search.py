@@ -9,7 +9,7 @@ from .index_metadata import validate_index_files
 from .model_manager import ModelManager
 from .tokenizer import tokenize
 
-TITLE_FIELD_WEIGHTS = (10.0, 7.0, 5.0)
+FILE_FIELD_WEIGHTS = (10.0, 7.0, 8.0, 3.0, 2.0)
 
 
 def weighted_rrf(
@@ -102,9 +102,14 @@ class SearchEngine:
             bm25_ids = [row[0] for row in bm25_results]
             bm25_rank = {chunk_id: rank for rank, chunk_id in enumerate(bm25_ids, 1)}
 
-            title_rows = self._title_rows(connection, query_tokens, match_mode)
-            title_ids = _title_candidate_ids(connection, title_rows, bm25_ids)
-            title_rank = {chunk_id: rank for rank, chunk_id in enumerate(title_ids, 1)}
+            heading_results = self._heading_rows(connection, query_tokens, match_mode)
+            heading_ids = [row[0] for row in heading_results]
+            heading_rank = {chunk_id: rank for rank, chunk_id in enumerate(heading_ids, 1)}
+
+            file_rows = self._file_rows(connection, query_tokens, match_mode)
+            file_ids = _file_candidate_ids(
+                connection, file_rows, [*bm25_ids, *heading_ids])
+            file_rank = {chunk_id: rank for rank, chunk_id in enumerate(file_ids, 1)}
 
             from usearch.index import Index
             vector = self.model.encode_query(query)
@@ -117,10 +122,11 @@ class SearchEngine:
 
             channels: list[tuple[str, list[int], float]] = [
                 ("body", bm25_ids, 1.0),
+                ("heading", heading_ids, 1.0),
             ]
             if self.config.title_rrf_weight > 0:
-                vector_ids = _coalesce_file_candidates(connection, title_ids, vector_ids)
-                channels.append(("title", title_ids, self.config.title_rrf_weight))
+                vector_ids = _coalesce_file_candidates(connection, file_ids, vector_ids)
+                channels.append(("file", file_ids, self.config.title_rrf_weight))
             vector_rank = {
                 chunk_id: rank
                 for rank, chunk_id in enumerate(dict.fromkeys(vector_ids), 1)
@@ -153,20 +159,31 @@ class SearchEngine:
                     "content": content,
                 }
                 if verbose:
-                    entry["channels"] = sorted(sources.get(chunk_id, set()))
+                    result_channels = set(sources.get(chunk_id, set()))
+                    if "file" in result_channels:
+                        result_channels.add("title")
+                    entry["channels"] = sorted(result_channels)
                     entry["query_tokens"] = query_tokens
                     entry["match_mode"] = match_mode
                     entry["bm25_rank"] = bm25_rank.get(chunk_id, -1)
+                    entry["body_rank"] = bm25_rank.get(chunk_id, -1)
+                    entry["heading_rank"] = heading_rank.get(chunk_id, -1)
+                    entry["file_rank"] = file_rank.get(chunk_id, -1)
                     entry["vector_rank"] = vector_rank.get(chunk_id, -1)
-                    entry["title_rank"] = title_rank.get(chunk_id, -1)
+                    entry["title_rank"] = file_rank.get(chunk_id, -1)
                     contributions: dict[str, float] = {}
                     if chunk_id in bm25_rank:
                         contributions["body"] = round(
                             1.0 / (self.config.rrf_k + bm25_rank[chunk_id]), 6)
-                    if chunk_id in title_rank and self.config.title_rrf_weight > 0:
-                        contributions["title"] = round(
+                    if chunk_id in heading_rank:
+                        contributions["heading"] = round(
+                            1.0 / (self.config.rrf_k + heading_rank[chunk_id]), 6)
+                    if chunk_id in file_rank and self.config.title_rrf_weight > 0:
+                        file_contribution = round(
                             self.config.title_rrf_weight
-                            / (self.config.rrf_k + title_rank[chunk_id]), 6)
+                            / (self.config.rrf_k + file_rank[chunk_id]), 6)
+                        contributions["file"] = file_contribution
+                        contributions["title"] = file_contribution
                     if chunk_id in vector_rank:
                         contributions["vector"] = round(
                             1.0 / (self.config.rrf_k + vector_rank[chunk_id]), 6)
@@ -201,62 +218,85 @@ class SearchEngine:
         except sqlite3.Error:
             return []
 
-    def _title_rows(self, connection: sqlite3.Connection,
-                    query_tokens: list[str], match_mode: str = "any") -> list[tuple[str, float]]:
+    def _heading_rows(self, connection: sqlite3.Connection,
+                      query_tokens: list[str], match_mode: str = "any") -> list[tuple[int, float]]:
         if not query_tokens:
             return []
-        rows = self._query_title_fts(
+        rows = self._query_heading_fts(
             connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
         if not rows and self.config.prefix_fallback and match_mode != "phrase":
-            rows = self._query_title_fts(
+            rows = self._query_heading_fts(
                 connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
                 self.config.bm25_top_k)
         return rows
 
     @staticmethod
-    def _query_title_fts(connection: sqlite3.Connection, expression: str,
-                         limit: int) -> list[tuple[str, float]]:
+    def _query_heading_fts(connection: sqlite3.Connection, expression: str,
+                           limit: int) -> list[tuple[int, float]]:
         try:
             rows = connection.execute(
-                "SELECT file_titles.file_path, "
-                "-bm25(titles_fts, ?, ?, ?) AS score "
-                "FROM titles_fts JOIN file_titles "
-                "ON file_titles.rowid = titles_fts.rowid "
-                "WHERE titles_fts MATCH ? ORDER BY score DESC LIMIT ?",
-                (*TITLE_FIELD_WEIGHTS, expression, limit),
+                "SELECT rowid, -bm25(chunk_headings_fts) AS score "
+                "FROM chunk_headings_fts WHERE heading_tokens MATCH ? "
+                "ORDER BY score DESC LIMIT ?", (expression, limit),
+            ).fetchall()
+            return [(int(row[0]), float(row[1])) for row in rows]
+        except sqlite3.Error:
+            return []
+
+    def _file_rows(self, connection: sqlite3.Connection,
+                   query_tokens: list[str], match_mode: str = "any") -> list[tuple[str, float]]:
+        if not query_tokens:
+            return []
+        rows = self._query_file_fts(
+            connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
+        if not rows and self.config.prefix_fallback and match_mode != "phrase":
+            rows = self._query_file_fts(
+                connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
+                self.config.bm25_top_k)
+        return rows
+
+    @staticmethod
+    def _query_file_fts(connection: sqlite3.Connection, expression: str,
+                        limit: int) -> list[tuple[str, float]]:
+        try:
+            rows = connection.execute(
+                "SELECT file_fields.file_path, -bm25(file_fields_fts, ?, ?, ?, ?, ?) AS score "
+                "FROM file_fields_fts JOIN file_fields ON file_fields.rowid=file_fields_fts.rowid "
+                "WHERE file_fields_fts MATCH ? ORDER BY score DESC LIMIT ?",
+                (*FILE_FIELD_WEIGHTS, expression, limit),
             ).fetchall()
             return [(str(row[0]), float(row[1])) for row in rows]
         except sqlite3.Error:
             return []
 
 
-def _title_candidate_ids(
+def _file_candidate_ids(
     connection: sqlite3.Connection,
-    title_rows: list[tuple[str, float]],
-    body_ids: list[int],
+    file_rows: list[tuple[str, float]],
+    lexical_ids: list[int],
 ) -> list[int]:
-    """Map title-ranked file paths to representative chunk IDs.
+    """Map file-ranked paths to representative chunk IDs.
 
-    For each title row (in order):
-    - if the file already has body BM25 candidates, pick the chunk with the
-      best body rank (earliest position in ``body_ids``);
+    For each file row (in order):
+    - if the file already has body or heading candidates, pick the chunk with
+      the best lexical rank (body IDs are supplied before heading IDs);
     - otherwise pick the chunk with the smallest ``chunk_index``;
     - files with no chunks are skipped.
     Chunk IDs are never returned twice.
     """
-    if not title_rows:
+    if not file_rows:
         return []
-    paths = [file_path for file_path, _score in title_rows]
+    paths = [file_path for file_path, _score in file_rows]
 
-    body_file: dict[str, list[int]] = {}
-    if body_ids:
-        placeholders = ",".join("?" for _ in body_ids)
+    lexical_file: dict[str, list[int]] = {}
+    if lexical_ids:
+        placeholders = ",".join("?" for _ in lexical_ids)
         rows = connection.execute(
             f"SELECT id, file_path FROM chunks WHERE id IN ({placeholders})",
-            body_ids,
+            lexical_ids,
         ).fetchall()
         for chunk_id, file_path in rows:
-            body_file.setdefault(str(file_path), []).append(int(chunk_id))
+            lexical_file.setdefault(str(file_path), []).append(int(chunk_id))
 
     placeholders = ",".join("?" for _ in paths)
     chunks = connection.execute(
@@ -271,13 +311,16 @@ def _title_candidate_ids(
 
     result: list[int] = []
     seen: set[int] = set()
-    for file_path, _score in title_rows:
+    lexical_order: dict[int, int] = {}
+    for rank, chunk_id in enumerate(lexical_ids):
+        lexical_order.setdefault(chunk_id, rank)
+    for file_path, _score in file_rows:
         if file_path not in by_file:
             continue
-        body_chunks = body_file.get(file_path, [])
-        if body_chunks:
-            body_order = {chunk_id: rank for rank, chunk_id in enumerate(body_ids)}
-            chosen = min(body_chunks, key=lambda chunk_id: body_order.get(chunk_id, 10**9))
+        lexical_chunks = lexical_file.get(file_path, [])
+        if lexical_chunks:
+            chosen = min(
+                lexical_chunks, key=lambda chunk_id: lexical_order.get(chunk_id, 10**9))
         else:
             chosen = min(by_file[file_path], key=lambda item: item[1])[0]
         if chosen in seen:
@@ -292,7 +335,7 @@ def _coalesce_file_candidates(
     representative_ids: list[int],
     ranked_ids: list[int],
 ) -> list[int]:
-    """Move same-file channel contributions onto the title representative chunk."""
+    """Move same-file channel contributions onto the file representative chunk."""
     ids = list(dict.fromkeys([*representative_ids, *ranked_ids]))
     if not representative_ids or not ranked_ids or not ids:
         return ranked_ids

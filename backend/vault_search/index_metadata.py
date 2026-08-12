@@ -9,14 +9,16 @@ from typing import Any
 
 from . import __version__
 from .config import SearchConfig
-from .database import index_counts, read_index_metadata
+from .database import index_counts, lexical_index_problems, read_index_metadata
 
 SCHEMA_VERSION = 2
+LEXICAL_SCHEMA_VERSION = 2
 
 
 def expected_metadata(config: SearchConfig, dimension: int) -> dict[str, Any]:
     return {
         "schema_version": SCHEMA_VERSION,
+        "lexical_schema_version": LEXICAL_SCHEMA_VERSION,
         "backend_version": __version__,
         "model_id": config.model_id,
         "embedding_dimension": int(dimension),
@@ -59,6 +61,7 @@ def validate_metadata(actual: dict[str, Any] | None, expected: dict[str, Any],
         return ["metadata missing"]
     keys = [
         "schema_version", "model_id", "embedding_dimension",
+        "lexical_schema_version",
         "normalize_embeddings", "query_prefix", "document_prefix",
         "chunk_chars", "chunk_overlap", "chunking_strategy", "chunker_version",
         "tokenizer_version",
@@ -80,6 +83,15 @@ def validate_index_files(config: SearchConfig, dimension: int,
         problems.append("SQLite index_metadata missing")
     elif db_metadata.get("index_generation") != actual.get("index_generation"):
         problems.append("SQLite/metadata generation mismatch")
+    if config.db_path.exists():
+        import sqlite3
+        connection = sqlite3.connect(str(config.db_path))
+        try:
+            problems.extend(lexical_index_problems(connection))
+        except sqlite3.Error as exc:
+            problems.append(f"lexical index invalid: {type(exc).__name__}: {exc}")
+        finally:
+            connection.close()
     if not config.vector_path.exists():
         problems.append("vector index missing")
         return problems
