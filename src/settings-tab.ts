@@ -82,10 +82,13 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers 모델 ID")
       .addText(text => text.setValue(draft.modelId).onChange(value => { draft.modelId = value.trim(); }));
     new Setting(containerEl).setName("디바이스")
-      .setDesc("자동은 NVIDIA GPU와 검증된 CUDA 런타임이 있으면 GPU를, 아니면 사유를 표시하고 CPU를 사용합니다.")
+      .setDesc("자동은 NVIDIA GPU와 검증된 CUDA 런타임이 있으면 GPU를, 아니면 사유를 표시하고 CPU를 사용합니다." +
+        (draft.engine === "onnx" ? " ONNX 엔진에서는 CUDA로 고정됩니다." : ""))
       .addDropdown(dropdown => dropdown
       .addOption("auto", "자동").addOption("cpu", "CPU").addOption("cuda", "CUDA")
-      .setValue(draft.device).onChange(value => { draft.device = value as typeof draft.device; }));
+      .setValue(draft.device)
+      .setDisabled(draft.engine === "onnx")
+      .onChange(value => { draft.device = value as typeof draft.device; }));
     new Setting(containerEl).setName("임베딩 엔진")
       .setDesc("ONNX는 GPU에서 풀링을 수행해 콜드 시작과 웜 검색이 빠르고 VRAM 반환이 가능하지만, 벌크 인코딩은 PyTorch보다 느립니다. ONNX를 선택하면 디바이스가 CUDA로 고정됩니다.")
       .addDropdown(dropdown => dropdown

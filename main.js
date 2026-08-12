@@ -820,7 +820,7 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID").addText((text) => text.setValue(draft.modelId).onChange((value) => {
       draft.modelId = value.trim();
     }));
-    new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9\uC740 NVIDIA GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC544\uB2C8\uBA74 \uC0AC\uC720\uB97C \uD45C\uC2DC\uD558\uACE0 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9\uC740 NVIDIA GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC544\uB2C8\uBA74 \uC0AC\uC720\uB97C \uD45C\uC2DC\uD558\uACE0 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4." + (draft.engine === "onnx" ? " ONNX \uC5D4\uC9C4\uC5D0\uC11C\uB294 CUDA\uB85C \uACE0\uC815\uB429\uB2C8\uB2E4." : "")).addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).setDisabled(draft.engine === "onnx").onChange((value) => {
       draft.device = value;
     }));
     new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC5D4\uC9C4").setDesc("ONNX\uB294 GPU\uC5D0\uC11C \uD480\uB9C1\uC744 \uC218\uD589\uD574 \uCF5C\uB4DC \uC2DC\uC791\uACFC \uC6DC \uAC80\uC0C9\uC774 \uBE60\uB974\uACE0 VRAM \uBC18\uD658\uC774 \uAC00\uB2A5\uD558\uC9C0\uB9CC, \uBC8C\uD06C \uC778\uCF54\uB529\uC740 PyTorch\uBCF4\uB2E4 \uB290\uB9BD\uB2C8\uB2E4. ONNX\uB97C \uC120\uD0DD\uD558\uBA74 \uB514\uBC14\uC774\uC2A4\uAC00 CUDA\uB85C \uACE0\uC815\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("pytorch", "PyTorch (\uAE30\uBCF8)").addOption("onnx", "ONNX Runtime (CUDA)").setValue(draft.engine).onChange((value) => {
@@ -1337,6 +1337,7 @@ var VaultSearchPlugin = class extends import_obsidian4.Plugin {
   async applyDraftSettingsInternal() {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
+    if (next.engine === "onnx") next.device = "cuda";
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
     if (previous.device !== next.device || previous.engine !== next.engine || previous.pythonExecutable !== next.pythonExecutable) {

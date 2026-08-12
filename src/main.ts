@@ -113,6 +113,7 @@ export default class VaultSearchPlugin extends Plugin {
   private async applyDraftSettingsInternal(): Promise<void> {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
+    if (next.engine === "onnx") next.device = "cuda";
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
     if (previous.device !== next.device || previous.engine !== next.engine ||

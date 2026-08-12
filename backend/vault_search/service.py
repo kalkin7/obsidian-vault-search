@@ -124,10 +124,10 @@ class SearchService:
             finally:
                 self._index_operation_active = False
             self.search_engine = SearchEngine(self.config, self.model, self.kiwi)
+            self.last_activity = time.monotonic()
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
             self.last_heartbeat = time.monotonic()
-            self.last_activity = time.monotonic()
             self.event_sink("ready", {
                 **self.status(),
                 "model_load_seconds": round(time.time() - started, 3),
