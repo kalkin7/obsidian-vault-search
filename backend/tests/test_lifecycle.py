@@ -296,3 +296,62 @@ def test_startup_lexical_migration_failure_routes_rebuild_required(tmp_path: Pat
     with pytest.raises(ServiceError) as error:
         service.call("search", {"query": "test"})
     assert error.value.code == "INDEX_REBUILD_REQUIRED"
+
+
+def test_idle_unload_releases_model_after_timeout(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.model.model = object()  # fake a loaded model
+    service.state = "ready"
+    service.last_activity = time.monotonic() - 100
+    service.config.model_idle_timeout_seconds = 5
+
+    service._maybe_unload_if_idle()
+
+    assert service.state == "idle"
+    assert service.model.model is None
+    assert service.search_engine is None
+    assert service.index is None
+
+
+def test_idle_unload_skips_recent_activity(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.model.model = object()
+    service.state = "ready"
+    service.last_activity = time.monotonic()
+    service.config.model_idle_timeout_seconds = 5
+
+    service._maybe_unload_if_idle()
+
+    assert service.state == "ready"
+    assert service.model.model is not None
+
+
+def test_idle_unload_disabled_by_default(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.model.model = object()
+    service.state = "ready"
+    service.last_activity = time.monotonic() - 1000
+
+    service._maybe_unload_if_idle()
+
+    assert service.state == "ready"
+    assert service.model.model is not None
+
+
+def test_search_updates_last_activity(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.state = "ready"
+    service.last_activity = time.monotonic() - 100
+    service.index = SimpleNamespace()  # type: ignore[assignment]
+    service.search_engine = SimpleNamespace(
+        search=lambda query, **kwargs: [])  # type: ignore[assignment]
+    (tmp_path / "data" / "index").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "data" / "index" / "chunks.db").write_text("", encoding="utf-8")
+
+    service.call("search", {"query": "test"})
+
+    assert time.monotonic() - service.last_activity < 1.0

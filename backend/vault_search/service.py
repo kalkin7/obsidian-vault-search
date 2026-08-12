@@ -28,11 +28,53 @@ class SearchService:
         self.initialization_lock = threading.Lock()
         self.initialization_requested = threading.Event()
         self.last_heartbeat = time.monotonic()
+        self.last_activity = time.monotonic()
         self.index_rebuild_reason: str | None = None
         self.pending_recovery_warning: str | None = None
         self._cached_counts: dict[str, Any] = {"files": 0, "chunks": 0, "vector_chunks": 0}
         self._count_available = False
         self._index_operation_active = False
+        self._idle_watchdog: threading.Thread | None = None
+        if self.config.model_idle_timeout_seconds > 0:
+            self._idle_watchdog = threading.Thread(target=self._watchdog, daemon=True)
+            self._idle_watchdog.start()
+
+    def _watchdog(self) -> None:
+        while True:
+            time.sleep(1.0)
+            try:
+                self._maybe_unload_if_idle()
+            except Exception:
+                pass
+
+    def _maybe_unload_if_idle(self) -> None:
+        timeout = self.config.model_idle_timeout_seconds
+        if timeout <= 0:
+            return
+        if self.state not in {"ready", "ready_no_index"}:
+            return
+        if self.model.model is None:
+            return
+        if self._index_operation_active:
+            return
+        if time.monotonic() - self.last_activity <= timeout:
+            return
+        self._unload_model()
+
+    def _unload_model(self) -> None:
+        with self.operation_lock:
+            if self.state not in {"ready", "ready_no_index"}:
+                return
+            if self.model.model is None:
+                return
+            self.event_sink("model_stage", {"stage": "unloading_model"})
+            self.model.release()
+            self.search_engine = None
+            self.index = None
+            self.state = "idle"
+            self.last_activity = time.monotonic()
+            self.event_sink("state", self.status())
+            self.event_sink("model_stage", {"stage": "model_unloaded"})
 
     def start_initialization(self) -> None:
         with self.initialization_lock:
@@ -71,6 +113,7 @@ class SearchService:
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
             self.last_heartbeat = time.monotonic()
+            self.last_activity = time.monotonic()
             self.event_sink("ready", {
                 **self.status(),
                 "model_load_seconds": round(time.time() - started, 3),
@@ -122,6 +165,7 @@ class SearchService:
             raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
 
         with self.operation_lock:
+            self.last_activity = time.monotonic()
             if method == "search":
                 if self.index_rebuild_reason:
                     raise ServiceError(

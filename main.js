@@ -79,6 +79,7 @@ var DEFAULT_SETTINGS = {
   pythonExecutable: "python",
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
+  engine: "pytorch",
   device: "auto",
   queryPrefix: "query: ",
   documentPrefix: "passage: ",
@@ -97,7 +98,8 @@ var DEFAULT_SETTINGS = {
   prefixFallback: true,
   syncDebounceMs: 1500,
   autoSync: true,
-  startupReconcile: true
+  startupReconcile: true,
+  modelIdleTimeoutSeconds: 0
 };
 
 // src/backend-protocol.ts
@@ -697,12 +699,13 @@ var VECTOR_KEYS = [
   "modelProfile",
   "modelId",
   "device",
+  "engine",
   "queryPrefix",
   "documentPrefix",
   "normalizeEmbeddings"
 ];
 var SCOPE_KEYS = ["includeGlobs", "excludeGlobs"];
-var RESTART_KEYS = ["pythonExecutable"];
+var RESTART_KEYS = ["pythonExecutable", "modelIdleTimeoutSeconds"];
 var HOT_KEYS = [
   "bm25TopK",
   "vectorTopK",
@@ -795,6 +798,9 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
       draft.loadPolicy = value;
       this.display();
     }));
+    new import_obsidian.Setting(containerEl).setName("\uC720\uD734 \uBAA8\uB378 \uC5B8\uB85C\uB4DC (\uCD08)").setDesc("0\uC774\uBA74 \uBE44\uD65C\uC131(\uB85C\uB4DC \uD6C4 \uC0C1\uC8FC). \uAC80\uC0C9\uC774 \uC5C6\uC73C\uBA74 \uC774 \uC2DC\uAC04 \uD6C4 \uBAA8\uB378\uC744 \uC5B8\uB85C\uB4DC\uD574 RAM/VRAM\uC744 \uBC18\uD658\uD558\uACE0, \uB2E4\uC74C \uAC80\uC0C9 \uC2DC \uB2E4\uC2DC \uB85C\uB4DC\uD569\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC5D0 \uAD8C\uC7A5\uB429\uB2C8\uB2E4.").addText((text) => text.setValue(String(draft.modelIdleTimeoutSeconds)).onChange((value) => {
+      draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(value, draft.modelIdleTimeoutSeconds);
+    }));
     new import_obsidian.Setting(containerEl).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc("\uC804\uC6A9 venv\uC758 python.exe\uB97C \uAD8C\uC7A5\uD569\uB2C8\uB2E4.").addText((text) => text.setValue(draft.pythonExecutable).setPlaceholder("python").onChange((value) => {
       draft.pythonExecutable = value.trim() || "python";
     }));
@@ -816,6 +822,9 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
     }));
     new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9\uC740 NVIDIA GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC544\uB2C8\uBA74 \uC0AC\uC720\uB97C \uD45C\uC2DC\uD558\uACE0 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
       draft.device = value;
+    }));
+    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC5D4\uC9C4").setDesc("ONNX\uB294 GPU\uC5D0\uC11C \uD480\uB9C1\uC744 \uC218\uD589\uD574 \uCF5C\uB4DC \uC2DC\uC791\uACFC \uC6DC \uAC80\uC0C9\uC774 \uBE60\uB974\uACE0 VRAM \uBC18\uD658\uC774 \uAC00\uB2A5\uD558\uC9C0\uB9CC, \uBC8C\uD06C \uC778\uCF54\uB529\uC740 PyTorch\uBCF4\uB2E4 \uB290\uB9BD\uB2C8\uB2E4. ONNX\uB294 device=cuda\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("pytorch", "PyTorch (\uAE30\uBCF8)").addOption("onnx", "ONNX Runtime (CUDA)").setValue(draft.engine).onChange((value) => {
+      draft.engine = value;
     }));
     new import_obsidian.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc("NVIDIA GPU\uC6A9 PyTorch\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => button.setButtonText("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58").onClick(async () => {
       try {
