@@ -17,6 +17,7 @@ class SearchConfig:
     data_dir: Path
     model_id: str = "intfloat/multilingual-e5-base"
     model_profile: str = "multilingual-e5-base"
+    engine: str = "pytorch"
     device: str = "auto"
     query_prefix: str = "query: "
     document_prefix: str = "passage: "
@@ -36,6 +37,7 @@ class SearchConfig:
     embedding_batch_size_cpu: int = 32
     embedding_batch_size_gpu: int = 64
     lazy_model: bool = False
+    model_idle_timeout_seconds: float = 0.0
     heartbeat_timeout_seconds: float = 20.0
 
     @property
@@ -106,6 +108,9 @@ def load_config(path: str | Path, vault_override: str | None = None,
 
     profile = str(raw.get("modelProfile", "multilingual-e5-base"))
     model_id = str(raw.get("modelId", "intfloat/multilingual-e5-base"))
+    engine = str(raw.get("engine", "pytorch")).lower()
+    if engine not in {"pytorch", "onnx"}:
+        engine = "pytorch"
     query_prefix = str(raw.get("queryPrefix", "query: " if profile == "multilingual-e5-base" else ""))
     document_prefix = str(raw.get("documentPrefix", "passage: " if profile == "multilingual-e5-base" else ""))
     device = str(raw.get("device", "auto")).lower()
@@ -117,6 +122,7 @@ def load_config(path: str | Path, vault_override: str | None = None,
         data_dir=data_dir,
         model_id=model_id,
         model_profile=profile,
+        engine=engine,
         device=device,
         query_prefix=query_prefix,
         document_prefix=document_prefix,
@@ -136,6 +142,7 @@ def load_config(path: str | Path, vault_override: str | None = None,
         embedding_batch_size_cpu=max(1, int(raw.get("embeddingBatchSizeCpu", 32))),
         embedding_batch_size_gpu=max(1, int(raw.get("embeddingBatchSizeGpu", 64))),
         lazy_model=bool(raw.get("lazyModel", raw.get("loadPolicy") == "first-search")),
+        model_idle_timeout_seconds=max(0.0, float(raw.get("modelIdleTimeoutSeconds", 0.0))),
         heartbeat_timeout_seconds=max(5.0, float(raw.get("heartbeatTimeoutSeconds", 20.0))),
     )
     if cfg.chunk_overlap >= cfg.chunk_chars:

@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 from typing import Any
 
 import numpy as np
 
 from .config import SearchConfig
+
+
+def _is_importable(name: str) -> bool:
+    return importlib.util.find_spec(name) is not None
 
 
 class ModelManager:
@@ -14,12 +19,17 @@ class ModelManager:
         self.model: Any | None = None
         self.device = "cpu"
         self.dimension: int | None = None
+        self.engine = config.engine
 
     def load(self) -> None:
         if self.config.model_id == "__fake__":
             self.model = _FakeSentenceTransformer(32)
             self.device = "cpu"
             self.dimension = 32
+            return
+
+        if self.engine == "onnx":
+            self._load_onnx()
             return
 
         import torch
@@ -47,6 +57,36 @@ class ModelManager:
             dimension = int(probe.shape[-1])
         self.dimension = int(dimension)
 
+    def _load_onnx(self) -> None:
+        from .direct_onnx import DirectE5Onnx
+
+        if self.config.device == "cpu":
+            raise RuntimeError("engine=onnx requires device=cuda on this build")
+        if not _is_importable("onnxruntime"):
+            raise RuntimeError("onnxruntime is not installed in this runtime")
+        model_dir = _resolve_model_dir(self.config.model_id)
+        if model_dir is None:
+            raise RuntimeError(
+                f"model snapshot not found locally: {self.config.model_id} "
+                "(inference must not download)")
+        try:
+            self.model = DirectE5Onnx(
+                model_dir,
+                provider="CUDAExecutionProvider",
+                normalize_embeddings=self.config.normalize_embeddings,
+            )
+        except OSError:
+            raise
+        self.device = "cuda"
+        self.dimension = int(self.model.dimension)
+
+    def release(self) -> None:
+        """Release model resources (e.g. ORT session VRAM for engine=onnx)."""
+        release = getattr(self.model, "release", None)
+        if release is not None:
+            release()
+        self.model = None
+
     def ensure_loaded(self) -> Any:
         if self.model is None:
             raise RuntimeError("Embedding model is not loaded")
@@ -54,6 +94,9 @@ class ModelManager:
 
     def encode_query(self, query: str) -> np.ndarray:
         model = self.ensure_loaded()
+        if self.engine == "onnx":
+            vector = model.encode(self.config.query_prefix + query, batch_size=1)
+            return np.atleast_2d(np.asarray(vector, dtype=np.float32))
         vector = model.encode(
             self.config.query_prefix + query,
             normalize_embeddings=self.config.normalize_embeddings,
@@ -66,6 +109,8 @@ class ModelManager:
         prepared = [self.config.document_prefix + text for text in texts]
         batch_size = (self.config.embedding_batch_size_gpu if self.device == "cuda"
                       else self.config.embedding_batch_size_cpu)
+        if self.engine == "onnx":
+            return np.asarray(model.encode(prepared, batch_size=batch_size), dtype=np.float32)
         vectors = model.encode(
             prepared,
             batch_size=batch_size,
@@ -111,3 +156,25 @@ def _is_huggingface_cache_miss(error: BaseException) -> bool:
             return True
         current = current.__cause__ or current.__context__
     return False
+
+
+def _resolve_model_dir(model_id: str) -> Path | None:
+    """Resolve a local HF snapshot directory for a model id without downloading."""
+    from pathlib import Path
+    import os
+
+    cache_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    hub_dir = cache_home / "hub"
+    folder = "models--" + model_id.replace("/", "--")
+    repo_dir = hub_dir / folder
+    if not repo_dir.is_dir():
+        return None
+    refs = repo_dir / "refs" / "main"
+    revision = None
+    if refs.is_file():
+        revision = refs.read_text(encoding="utf-8").strip()
+    if revision and (repo_dir / "snapshots" / revision).is_dir():
+        return repo_dir / "snapshots" / revision
+    # Fall back to whatever snapshot exists.
+    snapshots = sorted((repo_dir / "snapshots").iterdir()) if (repo_dir / "snapshots").is_dir() else []
+    return snapshots[-1] if snapshots else None

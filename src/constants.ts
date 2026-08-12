@@ -46,6 +46,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   pythonExecutable: "python",
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
+  engine: "pytorch",
   device: "auto",
   queryPrefix: "query: ",
   documentPrefix: "passage: ",
@@ -64,5 +65,6 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   prefixFallback: true,
   syncDebounceMs: 1500,
   autoSync: true,
-  startupReconcile: true
+  startupReconcile: true,
+  modelIdleTimeoutSeconds: 0
 };

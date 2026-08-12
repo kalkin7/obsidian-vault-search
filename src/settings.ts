@@ -6,10 +6,10 @@ const ALL_KEYS: (keyof VaultSearchSettings)[] = [
   "chunkChars", "chunkOverlap", "chunkingStrategy"
 ];
 const VECTOR_KEYS: (keyof VaultSearchSettings)[] = [
-  "modelProfile", "modelId", "device", "queryPrefix", "documentPrefix", "normalizeEmbeddings"
+  "modelProfile", "modelId", "device", "engine", "queryPrefix", "documentPrefix", "normalizeEmbeddings"
 ];
 const SCOPE_KEYS: (keyof VaultSearchSettings)[] = ["includeGlobs", "excludeGlobs"];
-const RESTART_KEYS: (keyof VaultSearchSettings)[] = ["pythonExecutable"];
+const RESTART_KEYS: (keyof VaultSearchSettings)[] = ["pythonExecutable", "modelIdleTimeoutSeconds"];
 const HOT_KEYS: (keyof VaultSearchSettings)[] = [
   "bm25TopK", "vectorTopK", "finalTopK", "rrfK",
   "maxChunksPerFile", "titleRrfWeight", "prefixFallback"

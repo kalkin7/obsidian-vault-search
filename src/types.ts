@@ -1,5 +1,6 @@
 export type LoadPolicy = "vault-open" | "first-search" | "manual";
 export type DevicePreference = "auto" | "cpu" | "cuda";
+export type EnginePreference = "pytorch" | "onnx";
 export type ChunkingStrategy = "paragraph-v1" | "markdown-v2";
 export type BackendState =
   | "stopped" | "starting" | "idle" | "loading_model" | "ready" | "ready_no_index"
@@ -10,6 +11,7 @@ export interface VaultSearchSettings {
   pythonExecutable: string;
   modelProfile: string;
   modelId: string;
+  engine: EnginePreference;
   device: DevicePreference;
   queryPrefix: string;
   documentPrefix: string;
@@ -29,6 +31,7 @@ export interface VaultSearchSettings {
   syncDebounceMs: number;
   autoSync: boolean;
   startupReconcile: boolean;
+  modelIdleTimeoutSeconds: number;
 }
 
 export interface BackendStatus {
