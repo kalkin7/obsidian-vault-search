@@ -31,6 +31,11 @@ class DirectE5Onnx:
                  normalize_embeddings: bool = True, max_seq_length: int = MAX_SEQ):
         model_dir = Path(model_dir)
 
+        if not normalize_embeddings:
+            raise RuntimeError(
+                "engine=onnx always produces L2-normalized embeddings; "
+                "normalize_embeddings must be true for this engine")
+
         pooling = json.loads((model_dir / "1_Pooling" / "config.json").read_text(encoding="utf-8"))
         sentence_cfg = json.loads((model_dir / "sentence_bert_config.json").read_text(encoding="utf-8"))
         if int(pooling.get("word_embedding_dimension", 0)) != POOLING_DIM:

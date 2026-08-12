@@ -20,7 +20,7 @@ function Test-Runtime([string]$Python, [string]$Kind) {
     $Marker = Join-Path (Split-Path -Parent (Split-Path -Parent $Python)) ".complete.json"
     if (-not (Test-Path $Marker)) { return $false }
     if ($Kind -eq "cuda") {
-        & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available()" 2>$null
+        & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available(); assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()" 2>$null
     } else {
         & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,vault_search; assert vault_search.__version__ == '$Version'" 2>$null
     }
@@ -60,7 +60,7 @@ try {
     & $TargetPython -X utf8 -m pip install --no-deps --force-reinstall $BackendRoot
     if ($LASTEXITCODE -ne 0) { throw "Failed to install Vault Search backend" }
     if ($Runtime -eq "cuda") {
-        & $TargetPython -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available()"
+        & $TargetPython -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available(); assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()"
     } else {
         & $TargetPython -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,vault_search; assert vault_search.__version__ == '$Version'"
     }

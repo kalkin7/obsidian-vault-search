@@ -60,10 +60,14 @@ class ModelManager:
     def _load_onnx(self) -> None:
         from .direct_onnx import DirectE5Onnx
 
-        if self.config.device == "cpu":
-            raise RuntimeError("engine=onnx requires device=cuda on this build")
         if not _is_importable("onnxruntime"):
             raise RuntimeError("onnxruntime is not installed in this runtime")
+        if self.config.device == "cpu":
+            raise RuntimeError("engine=onnx requires device=cuda on this build")
+        import onnxruntime as ort
+        if "CUDAExecutionProvider" not in ort.get_available_providers():
+            raise RuntimeError(
+                "engine=onnx requires CUDAExecutionProvider, but it is not available")
         model_dir = _resolve_model_dir(self.config.model_id)
         if model_dir is None:
             raise RuntimeError(
@@ -159,11 +163,24 @@ def _is_huggingface_cache_miss(error: BaseException) -> bool:
 
 
 def _resolve_model_dir(model_id: str) -> Path | None:
-    """Resolve a local HF snapshot directory for a model id without downloading."""
+    """Resolve a local HF snapshot directory for a model id without downloading.
+
+    Prefers huggingface_hub (respects HF_HOME / HF_HUB_CACHE), then falls back
+    to the raw cache layout for offline environments.
+    """
+    try:
+        from huggingface_hub import snapshot_download
+        path = snapshot_download(model_id, local_files_only=True)
+        if path:
+            return Path(path)
+    except Exception:
+        pass
+
     from pathlib import Path
     import os
 
-    cache_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    cache_home = Path(os.environ.get("HF_HUB_CACHE") or os.environ.get(
+        "HF_HOME", Path.home() / ".cache" / "huggingface"))
     hub_dir = cache_home / "hub"
     folder = "models--" + model_id.replace("/", "--")
     repo_dir = hub_dir / folder
@@ -175,6 +192,5 @@ def _resolve_model_dir(model_id: str) -> Path | None:
         revision = refs.read_text(encoding="utf-8").strip()
     if revision and (repo_dir / "snapshots" / revision).is_dir():
         return repo_dir / "snapshots" / revision
-    # Fall back to whatever snapshot exists.
     snapshots = sorted((repo_dir / "snapshots").iterdir()) if (repo_dir / "snapshots").is_dir() else []
     return snapshots[-1] if snapshots else None

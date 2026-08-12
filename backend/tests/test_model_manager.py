@@ -117,6 +117,9 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
         "vault_search.model_manager._is_importable",
         lambda name: name != "onnxruntime" or True)
     monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+    monkeypatch.setitem(
         sys.modules, "vault_search.direct_onnx",
         SimpleNamespace(DirectE5Onnx=DirectLoader))
     monkeypatch.setattr(
@@ -148,6 +151,22 @@ def test_load_onnx_requires_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         manager.load()
 
 
+def test_load_onnx_requires_cuda_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "vault_search.model_manager._is_importable",
+        lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
+    cfg = _config(tmp_path)
+    cfg.engine = "onnx"
+    cfg.device = "cuda"
+    manager = ModelManager(cfg)
+
+    with pytest.raises(RuntimeError, match="requires CUDAExecutionProvider"):
+        manager.load()
+
+
 def test_load_onnx_requires_onnxruntime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "vault_search.model_manager._is_importable",
@@ -174,6 +193,9 @@ def test_release_unloads_onnx_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(
         "vault_search.model_manager._is_importable",
         lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
         lambda model_id: tmp_path / "snap")
@@ -191,3 +213,19 @@ def test_release_unloads_onnx_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     assert released == [True]
     assert manager.model is None
+
+
+def test_direct_onnx_rejects_non_normalized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from vault_search.direct_onnx import DirectE5Onnx
+
+    snapshot = tmp_path / "snap"
+    (snapshot / "1_Pooling").mkdir(parents=True)
+    (snapshot / "1_Pooling" / "config.json").write_text(
+        '{"word_embedding_dimension": 768, "pooling_mode_mean_tokens": true}',
+        encoding="utf-8")
+    (snapshot / "sentence_bert_config.json").write_text(
+        '{"max_seq_length": 512, "do_lower_case": false}',
+        encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="normalize_embeddings must be true"):
+        DirectE5Onnx(snapshot, normalize_embeddings=False)

@@ -44,8 +44,14 @@ class SearchService:
             time.sleep(1.0)
             try:
                 self._maybe_unload_if_idle()
-            except Exception:
-                pass
+            except Exception as exc:
+                try:
+                    self.event_sink("warning", {
+                        "code": "IDLE_UNLOAD_FAILED",
+                        "message": f"{type(exc).__name__}: {exc}",
+                    })
+                except Exception:
+                    pass
 
     def _maybe_unload_if_idle(self) -> None:
         timeout = self.config.model_idle_timeout_seconds
@@ -148,24 +154,29 @@ class SearchService:
         if method == "load_model":
             self.start_initialization()
             return self.status()
-        if self.state == "idle":
-            if method == "search":
-                if self.index_rebuild_reason:
-                    raise ServiceError(
-                        "INDEX_REBUILD_REQUIRED", self.index_rebuild_reason,
-                        {"problems": [self.index_rebuild_reason]})
-                self.start_initialization()
-                raise ServiceError("MODEL_LOADING", "Embedding model is loading after the first search request")
-            raise ServiceError("MODEL_NOT_LOADED", "Embedding model is not loaded")
-        if self.state in {"starting", "loading_model"}:
-            raise ServiceError("MODEL_LOADING", "Embedding model is still loading")
-        if self.state == "error":
-            raise ServiceError("BACKEND_ERROR", self.error or "Backend initialization failed")
-        if self.index is None or self.search_engine is None:
-            raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
 
+        # Everything below touches mutable ready-state references (index,
+        # search_engine, state). Re-check under the operation lock so an
+        # idle-unload that runs between this method's pre-checks and the lock
+        # acquisition cannot leave us holding stale None references.
         with self.operation_lock:
             self.last_activity = time.monotonic()
+            if self.state == "idle":
+                if method == "search":
+                    if self.index_rebuild_reason:
+                        raise ServiceError(
+                            "INDEX_REBUILD_REQUIRED", self.index_rebuild_reason,
+                            {"problems": [self.index_rebuild_reason]})
+                    self.start_initialization()
+                    raise ServiceError("MODEL_LOADING", "Embedding model is loading after the first search request")
+                raise ServiceError("MODEL_NOT_LOADED", "Embedding model is not loaded")
+            if self.state in {"starting", "loading_model"}:
+                raise ServiceError("MODEL_LOADING", "Embedding model is still loading")
+            if self.state == "error":
+                raise ServiceError("BACKEND_ERROR", self.error or "Backend initialization failed")
+            if self.index is None or self.search_engine is None:
+                raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
+
             if method == "search":
                 if self.index_rebuild_reason:
                     raise ServiceError(
