@@ -262,7 +262,8 @@ class IndexManager:
             vector_index = self._build_vector_index(chunk_ids, vectors, vector_temp)
             previous = load_metadata(self.config.metadata_path)
             metadata = build_metadata(
-                self.config, dimension, vector_temp, len(vector_index), previous)
+                self.config, dimension, vector_temp, len(vector_index), previous,
+                effective_provider=self.model.effective_provider())
             self._store_db_metadata(db_temp, metadata)
             write_metadata(metadata_temp, metadata)
             self._atomic_replace(
@@ -286,7 +287,8 @@ class IndexManager:
         lexical = self.ensure_lexical_index()
         if lexical.get("rebuild_required"):
             raise RuntimeError(str(lexical.get("reason") or "Lexical migration required"))
-        expected = expected_metadata(self.config, dimension)
+        expected = expected_metadata(
+            self.config, dimension, effective_provider=self.model.effective_provider())
         structural_keys = {
             "schema_version", "lexical_schema_version", "chunking_strategy", "chunker_version",
             "chunk_chars", "chunk_overlap",
@@ -328,7 +330,8 @@ class IndexManager:
             vector_index = self._build_vector_index(ids, vectors, vector_temp)
             metadata = build_metadata(
                 self.config, dimension, vector_temp, len(vector_index),
-                load_metadata(self.config.metadata_path))
+                load_metadata(self.config.metadata_path),
+                effective_provider=self.model.effective_provider())
             self._store_db_metadata(db_temp, metadata)
             write_metadata(metadata_temp, metadata)
             self._atomic_replace(
@@ -538,7 +541,8 @@ class IndexManager:
                 raise RuntimeError("Incremental vector validation failed")
             metadata = build_metadata(
                 self.config, dimension, vector_temp, len(vector_index),
-                load_metadata(self.config.metadata_path))
+                load_metadata(self.config.metadata_path),
+                effective_provider=self.model.effective_provider())
             self._store_db_metadata(db_temp, metadata)
             write_metadata(metadata_temp, metadata)
             self._atomic_replace(

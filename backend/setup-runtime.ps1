@@ -67,10 +67,20 @@ try {
         & $TargetPython -X utf8 -m pip install "torch==2.11.0" --index-url "https://download.pytorch.org/whl/cu128"
         if ($LASTEXITCODE -ne 0) { throw "Failed to install CUDA PyTorch" }
         & $TargetPython -X utf8 -m pip install -r (Join-Path $BackendRoot "requirements-runtime.txt")
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install backend dependencies" }
+        # Optional TensorRT acceleration; failure only disables TRT (CUDA EP
+        # remains the engine=onnx fallback), it must not fail the runtime.
+        $OptionalTrt = Join-Path $BackendRoot "requirements-optional-tensorrt.txt"
+        if (Test-Path $OptionalTrt) {
+            & $TargetPython -X utf8 -m pip install -r $OptionalTrt 2>$null
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Optional TensorRT install failed; engine=onnx will use the CUDA execution provider."
+            }
+        }
     } else {
         & $TargetPython -X utf8 -m pip install -r (Join-Path $BackendRoot "requirements.txt")
+        if ($LASTEXITCODE -ne 0) { throw "Failed to install backend dependencies" }
     }
-    if ($LASTEXITCODE -ne 0) { throw "Failed to install backend dependencies" }
     & $TargetPython -X utf8 -m pip install --no-deps --force-reinstall $BackendRoot
     if ($LASTEXITCODE -ne 0) { throw "Failed to install Vault Search backend" }
     if ($Runtime -eq "cuda") {

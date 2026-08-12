@@ -1,0 +1,4 @@
+# Optional TensorRT acceleration for engine=onnx (provider=auto prefers it when
+# this installs successfully). A failed install only disables TensorRT; the
+# CUDA execution provider remains the fallback.
+tensorrt==10.16.1.11

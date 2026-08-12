@@ -7,4 +7,3 @@ usearch==2.25.1
 PyYAML==6.0.3
 tqdm>=4.65.0,<5
 onnxruntime-gpu==1.25.1
-tensorrt==10.16.1.11

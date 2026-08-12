@@ -35,6 +35,7 @@ DERIVED_REL = "onnx/model-pooled-normalized.onnx"
 
 TRT_WORKSPACE_BYTES = 4 * 1024 ** 3
 TRT_OPT_SEQ = 256
+TRT_CACHE_MAX_BYTES = 6 * 1024 ** 3
 
 
 def _find_trt_lib_dir() -> Path | None:
@@ -43,11 +44,15 @@ def _find_trt_lib_dir() -> Path | None:
     The `tensorrt` pip package installs nvinfer*.dll into a site-packages
     directory (tensorrt_libs). ORT's TensorrtExecutionProvider resolves the
     library through the DLL search path, so we prepend that directory to PATH
-    before creating the session.
+    before creating the session. Only venv-installed locations are accepted to
+    avoid picking up arbitrary DLLs from unrelated directories.
     """
+    prefix = Path(sys.prefix).resolve()
     for entry in sys.path:
         candidate = Path(entry)
         if not candidate.is_dir():
+            continue
+        if not str(candidate.resolve()).lower().startswith(str(prefix).lower()):
             continue
         libs = candidate / "tensorrt_libs"
         if libs.is_dir() and (libs / "nvinfer_10.dll").exists():
@@ -97,6 +102,52 @@ def _trt_provider_options(engine_cache_dir: Path, max_batch: int) -> dict[str, A
         "trt_profile_max_shapes": f"input_ids:{max_batch}x{MAX_SEQ},"
                                   f"attention_mask:{max_batch}x{MAX_SEQ}",
     }
+
+
+def _trt_cache_key(onnx_path: Path, max_batch: int) -> str:
+    """Cache namespace for a TRT engine.
+
+    Keys on the ONNX path plus the runtime/GPU inputs that invalidate a built
+    engine (ORT/TRT versions, batch profile). Precision is fixed fp32.
+    """
+    import onnxruntime as ort
+    parts = [
+        hashlib.sha256(str(onnx_path.resolve()).encode("utf-8")).hexdigest()[:16],
+        ort.__version__,
+    ]
+    try:
+        import tensorrt as trt
+        parts.append(trt.__version__)
+    except Exception:
+        parts.append("notrt")
+    parts.append(str(max_batch))
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:24]
+
+
+def _enforce_cache_quota(cache_root: Path, keep: Path) -> None:
+    """Best-effort cap on the TRT engine cache directory size.
+
+    Engines are ~1 GB each; without a cap repeated snapshot/runtime changes
+    would accumulate stale engines. Oldest directories are removed first, the
+    directory in active use is always kept, and low disk space failures are
+    ignored (the caller can fall back to the CUDA EP).
+    """
+    try:
+        subdirs = [d for d in cache_root.iterdir() if d.is_dir() and d != keep]
+        total = sum(f.stat().st_size for d in cache_root.iterdir()
+                    for f in d.glob("**/*") if f.is_file())
+        if total <= TRT_CACHE_MAX_BYTES:
+            return
+        for d in sorted(subdirs, key=lambda p: p.stat().st_mtime):
+            if total <= TRT_CACHE_MAX_BYTES:
+                break
+            for f in d.rglob("*"):
+                if f.is_file():
+                    total -= f.stat().st_size
+            import shutil
+            shutil.rmtree(d, ignore_errors=True)
+    except Exception:
+        pass
 
 
 def _resolve_provider(provider: str) -> str:
@@ -156,20 +207,9 @@ class DirectE5Onnx:
             raise RuntimeError(
                 f"missing derived pooled model: {onnx_path} "
                 f"(run append_e5_pooling.py on this snapshot first)")
-        resolved = _resolve_provider(provider)
-        try:
-            self.session = self._build_session(
-                onnx_path, resolved, trt_cache_dir, trt_max_batch)
-        except Exception:
-            if provider == "auto" and resolved == "TensorrtExecutionProvider":
-                resolved = "CUDAExecutionProvider"
-                self.session = self._build_session(
-                    onnx_path, resolved, trt_cache_dir, trt_max_batch)
-            else:
-                raise
-        if not self.session.get_providers() or self.session.get_providers()[0] != resolved:
-            raise RuntimeError(
-                f"provider {resolved} is not the primary EP: {self.session.get_providers()}")
+        session, resolved = self._create_session(
+            provider, onnx_path, trt_cache_dir, trt_max_batch)
+        self.session = session
         for inp in self.session.get_inputs():
             if inp.name not in {"input_ids", "attention_mask"} or inp.type != "tensor(int64)":
                 raise RuntimeError(f"unexpected session input: {inp}")
@@ -189,13 +229,52 @@ class DirectE5Onnx:
         self.model_dir = model_dir
 
     @staticmethod
+    def _create_session(requested: str, onnx_path: Path,
+                        trt_cache_dir: Path | None, trt_max_batch: int) -> tuple[Any, str]:
+        """Build the ORT session for the requested provider and return
+        (session, effective EP name).
+
+        TensorRT is preferred for "auto" and falls back to the CUDA EP both
+        when the TRT engine build raises and when ORT silently returns a CUDA
+        primary session (TRT registration failure). Explicit "tensorrt"
+        requests surface errors instead of falling back.
+        """
+        resolved = _resolve_provider(requested)
+        if resolved != "TensorrtExecutionProvider":
+            session = DirectE5Onnx._build_session(
+                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+            return session, "CUDAExecutionProvider"
+
+        try:
+            session = DirectE5Onnx._build_session(
+                onnx_path, "TensorrtExecutionProvider", trt_cache_dir, trt_max_batch)
+        except Exception:
+            if requested != "auto":
+                raise
+            return DirectE5Onnx._build_session(
+                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch), \
+                "CUDAExecutionProvider"
+
+        primary = session.get_providers()[0] if session.get_providers() else ""
+        if primary == "TensorrtExecutionProvider":
+            return session, "TensorrtExecutionProvider"
+        if requested != "auto":
+            raise RuntimeError(
+                f"provider=tensorrt requested but the primary EP is {primary!r}: "
+                f"{session.get_providers()}")
+        return DirectE5Onnx._build_session(
+            onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch), \
+            "CUDAExecutionProvider"
+
+    @staticmethod
     def _build_session(onnx_path: Path, provider: str,
                        trt_cache_dir: Path | None, trt_max_batch: int) -> Any:
         """Create the ORT session for the chosen provider.
 
-        TensorRT engines are cached per model snapshot so the one-time build is
-        amortized. CUDA is the only real fallback for TRT, so the CUDA EP is
-        always appended for the cases TRT cannot take over.
+        TensorRT engines are cached on disk keyed by the model path plus the
+        runtime/GPU/batch inputs so the one-time build is amortized and stale
+        engines are not reused. CUDA is the fallback, so it is always appended
+        for the cases TRT cannot take over.
         """
         import onnxruntime as ort
 
@@ -205,11 +284,10 @@ class DirectE5Onnx:
             if cache_dir is None:
                 cache_dir = Path(os.environ.get(
                     "LOCALAPPDATA", Path.home())) / "ObsidianVaultSearch" / "trt-cache"
-            # Key the cache by the ONNX path so a different snapshot/revision
-            # builds a separate engine instead of reusing a stale one.
-            cache_dir = cache_dir / hashlib.sha256(
-                str(onnx_path.resolve()).encode("utf-8")).hexdigest()[:16]
+            cache_root = cache_dir
+            cache_dir = cache_dir / _trt_cache_key(onnx_path, trt_max_batch)
             cache_dir.mkdir(parents=True, exist_ok=True)
+            _enforce_cache_quota(cache_root, cache_dir)
             session_options = ort.SessionOptions()
             return ort.InferenceSession(
                 str(onnx_path),

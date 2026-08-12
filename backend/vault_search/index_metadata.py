@@ -15,8 +15,9 @@ SCHEMA_VERSION = 2
 LEXICAL_SCHEMA_VERSION = 2
 
 
-def expected_metadata(config: SearchConfig, dimension: int) -> dict[str, Any]:
-    return {
+def expected_metadata(config: SearchConfig, dimension: int,
+                      effective_provider: str | None = None) -> dict[str, Any]:
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "lexical_schema_version": LEXICAL_SCHEMA_VERSION,
         "backend_version": __version__,
@@ -34,11 +35,18 @@ def expected_metadata(config: SearchConfig, dimension: int) -> dict[str, Any]:
         "tokenizer_version": "kiwi-pos-v1",
         "scope_config_hash": config.scope_hash(),
     }
+    if config.engine == "onnx":
+        if effective_provider is None:
+            from .direct_onnx import _resolve_provider
+            effective_provider = _resolve_provider(config.provider)
+        payload["effective_provider"] = effective_provider
+    return payload
 
 
 def build_metadata(config: SearchConfig, dimension: int, vector_path: Path,
-                   vector_count: int, previous: dict[str, Any] | None = None) -> dict[str, Any]:
-    payload = expected_metadata(config, dimension)
+                   vector_count: int, previous: dict[str, Any] | None = None,
+                   effective_provider: str | None = None) -> dict[str, Any]:
+    payload = expected_metadata(config, dimension, effective_provider)
     now = time.time()
     payload.update({
         "index_generation": uuid.uuid4().hex,
@@ -69,6 +77,8 @@ def validate_metadata(actual: dict[str, Any] | None, expected: dict[str, Any],
         "chunk_chars", "chunk_overlap", "chunking_strategy", "chunker_version",
         "tokenizer_version",
     ]
+    if "effective_provider" in expected:
+        keys.append("effective_provider")
     if check_scope:
         keys.append("scope_config_hash")
     return [f"{key}: expected {expected.get(key)!r}, found {actual.get(key)!r}"

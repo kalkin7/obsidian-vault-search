@@ -104,6 +104,17 @@ class ModelManager:
             raise RuntimeError("Embedding model is not loaded")
         return self.model
 
+    def effective_provider(self) -> str | None:
+        """Resolved execution provider for the ONNX engine, else None.
+
+        Used to record which EP actually built the index vectors, so a change
+        in the resolved engine (e.g. TensorRT no longer available) invalidates
+        the index even when the config still says provider=auto.
+        """
+        if self.engine == "onnx":
+            return getattr(self.model, "provider", None)
+        return None
+
     def encode_query(self, query: str) -> np.ndarray:
         model = self.ensure_loaded()
         if self.engine == "onnx":

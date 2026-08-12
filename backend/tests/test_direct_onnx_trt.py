@@ -3,10 +3,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
+from vault_search import direct_onnx
 from vault_search.direct_onnx import (
+    DirectE5Onnx,
     _find_trt_lib_dir,
     _resolve_provider,
-    _trt_available,
+    _trt_cache_key,
     _trt_provider_options,
 )
 
@@ -39,13 +43,23 @@ def test_find_trt_lib_dir_detects_site_packages(tmp_path: Path, monkeypatch) -> 
     libs = tmp_path / "tensorrt_libs"
     libs.mkdir()
     (libs / "nvinfer_10.dll").write_bytes(b"x")
-    (tmp_path / "site").mkdir()
-    monkeypatch.setattr("vault_search.direct_onnx.sys", type("S", (), {"path": [str(tmp_path)]})())
+    fake_sys = type("S", (), {"path": [str(tmp_path)], "prefix": str(tmp_path)})()
+    monkeypatch.setattr("vault_search.direct_onnx.sys", fake_sys)
     assert _find_trt_lib_dir() == libs
 
 
+def test_find_trt_lib_dir_rejects_foreign_paths(tmp_path: Path, monkeypatch) -> None:
+    outside = tmp_path.parent / "unrelated"
+    outside.mkdir(exist_ok=True)
+    libs = outside / "tensorrt_libs"
+    libs.mkdir()
+    (libs / "nvinfer_10.dll").write_bytes(b"x")
+    fake_sys = type("S", (), {"path": [str(outside)], "prefix": str(tmp_path)})()
+    monkeypatch.setattr("vault_search.direct_onnx.sys", fake_sys)
+    assert _find_trt_lib_dir() is None
+
+
 def test_encode_rejects_batch_over_trt_profile() -> None:
-    from vault_search.direct_onnx import DirectE5Onnx
     obj = DirectE5Onnx.__new__(DirectE5Onnx)
     obj.provider = "TensorrtExecutionProvider"
     obj.trt_max_batch = 64
@@ -54,3 +68,67 @@ def test_encode_rejects_batch_over_trt_profile() -> None:
         raise AssertionError("expected ValueError for batch over TRT profile max")
     except ValueError as exc:
         assert "exceeds the TensorRT engine profile max" in str(exc)
+
+
+class _FakeSession:
+    def __init__(self, providers: list[str]):
+        self._providers = providers
+
+    def get_providers(self):
+        return list(self._providers)
+
+
+def _auto_trt_resolve(provider: str) -> str:
+    return "TensorrtExecutionProvider" if provider == "auto" else \
+        "CUDAExecutionProvider" if provider == "cuda" else "TensorrtExecutionProvider"
+
+
+def test_auto_silent_cuda_fallback(monkeypatch) -> None:
+    """ORT can return a CUDA-primary session instead of raising when TRT
+    registration fails; auto must then fall back to a CUDA-only session."""
+    calls: list[str] = []
+
+    def fake_build(path, provider, cache_dir, max_batch):
+        calls.append(provider)
+        return _FakeSession(["CUDAExecutionProvider"])
+
+    monkeypatch.setattr(direct_onnx, "_resolve_provider", _auto_trt_resolve)
+    monkeypatch.setattr(DirectE5Onnx, "_build_session", staticmethod(fake_build))
+    session, resolved = DirectE5Onnx._create_session("auto", Path("x.onnx"), None, 64)
+    assert resolved == "CUDAExecutionProvider"
+    assert calls == ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+    assert session.get_providers() == ["CUDAExecutionProvider"]
+
+
+def test_explicit_tensorrt_silent_fallback_raises(monkeypatch) -> None:
+    def fake_build(path, provider, cache_dir, max_batch):
+        return _FakeSession(["CUDAExecutionProvider"])
+
+    monkeypatch.setattr(direct_onnx, "_resolve_provider", _auto_trt_resolve)
+    monkeypatch.setattr(DirectE5Onnx, "_build_session", staticmethod(fake_build))
+    with pytest.raises(RuntimeError, match="primary EP"):
+        DirectE5Onnx._create_session("tensorrt", Path("x.onnx"), None, 64)
+
+
+def test_auto_trt_build_exception_falls_back(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_build(path, provider, cache_dir, max_batch):
+        calls.append(provider)
+        if provider == "TensorrtExecutionProvider":
+            raise RuntimeError("engine build failed")
+        return _FakeSession(["CUDAExecutionProvider"])
+
+    monkeypatch.setattr(direct_onnx, "_resolve_provider", _auto_trt_resolve)
+    monkeypatch.setattr(DirectE5Onnx, "_build_session", staticmethod(fake_build))
+    session, resolved = DirectE5Onnx._create_session("auto", Path("x.onnx"), None, 64)
+    assert resolved == "CUDAExecutionProvider"
+    assert calls == ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
+
+
+def test_trt_cache_key_changes_with_batch_and_path() -> None:
+    k1 = _trt_cache_key(Path(r"C:\models\m.onnx"), 32)
+    k2 = _trt_cache_key(Path(r"C:\models\m.onnx"), 64)
+    assert k1 != k2
+    k3 = _trt_cache_key(Path(r"C:\models\other.onnx"), 32)
+    assert k1 != k3
