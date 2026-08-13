@@ -2,8 +2,10 @@ import { ChildProcessWithoutNullStreams, execFile, spawn } from "child_process";
 import { createWriteStream, existsSync } from "fs";
 import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
 import * as path from "path";
+import AdmZip from "adm-zip";
+import { requestUrl } from "obsidian";
 import type { BackendResponse, BackendStatus, PythonRuntimeInfo, RuntimeInfo, VaultSearchSettings } from "./types";
-import { BACKEND_VERSION } from "./constants";
+import { BACKEND_VERSION, GITHUB_REPO } from "./constants";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
 
@@ -33,7 +35,8 @@ export class BackendManager {
     readonly vaultPath: string,
     readonly pluginDir: string,
     private readonly getSettings: () => VaultSearchSettings,
-    private readonly statusChanged: (status: BackendStatus) => void
+    private readonly statusChanged: (status: BackendStatus) => void,
+    private readonly manifestVersion = BACKEND_VERSION
   ) {}
 
   get dataDir(): string { return vaultDataDir(this.vaultPath); }
@@ -171,6 +174,66 @@ export class BackendManager {
     });
   }
 
+  private async readBackendVersion(): Promise<string | null> {
+    try {
+      const content = await readFile(path.join(this.backendRoot, "vault_search", "__init__.py"), "utf8");
+      const match = /__version__\s*=\s*["']([^"']+)["']/.exec(content);
+      return match ? match[1] : null;
+    } catch { return null; }
+  }
+
+  /** Ensure the Python backend folder exists in the plugin directory and matches
+   *  the plugin version. BRAT only installs main.js/manifest/styles.css, so the
+   *  sidecar is self-provisioned from the release zip (or via the settings
+   *  button) instead of being carried by BRAT. */
+  async ensureBackendProvisioned(): Promise<boolean> {
+    const current = await this.readBackendVersion();
+    if (current === this.manifestVersion) return true;
+
+    const version = this.manifestVersion;
+    const zipUrl = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/obsidian-vault-search-v${version}.zip`;
+    let response;
+    try {
+      response = await requestUrl({ url: zipUrl, throw: false });
+    } catch (error) {
+      throw new Error(`백엔드 다운로드 실패: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    if (response.status !== 200) {
+      throw new Error(`백엔드 다운로드 실패 (HTTP ${response.status}): ${zipUrl}`);
+    }
+
+    const zip = new AdmZip(Buffer.from(response.arrayBuffer));
+    const backendEntries = zip.getEntries().filter(e => e.entryName.startsWith("backend/") && !e.isDirectory);
+    if (backendEntries.length === 0) {
+      throw new Error("릴리스 zip에 backend/ 폴더가 없습니다");
+    }
+
+    const tempRoot = path.join(this.pluginDir, `backend.provision-${Date.now()}`);
+    const tempBackend = path.join(tempRoot, "backend");
+    const existing = path.join(this.pluginDir, "backend");
+    const backup = `${existing}.bak`;
+    try {
+      for (const entry of backendEntries) {
+        const rel = entry.entryName.slice("backend/".length);
+        const dest = path.join(tempBackend, rel);
+        await mkdir(path.dirname(dest), { recursive: true });
+        await writeFile(dest, entry.getData());
+      }
+      await rm(backup, { recursive: true, force: true });
+      if (existsSync(existing)) await rename(existing, backup);
+      try {
+        await rename(tempBackend, existing);
+      } catch (error) {
+        await rename(backup, existing).catch(() => undefined);
+        throw error;
+      }
+      await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+    } finally {
+      await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return true;
+  }
+
   async start(lazyOverride?: boolean): Promise<void> {
     if (this.child && this.child.exitCode === null) return;
     if (this.startPromise) return this.startPromise;
@@ -184,6 +247,12 @@ export class BackendManager {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
+    try {
+      await this.ensureBackendProvisioned();
+    } catch (error) {
+      this.setStatus({ state: "error", error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
     if (!existsSync(path.join(this.backendRoot, "vault_search", "__main__.py"))) {
       throw new Error(`Python backend is missing: ${this.backendRoot}`);
     }

@@ -65,6 +65,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .setDesc("전용 venv의 python.exe를 권장합니다.")
       .addText(text => text.setValue(draft.pythonExecutable).setPlaceholder("python")
         .onChange(value => { draft.pythonExecutable = value.trim() || "python"; }));
+    new Setting(containerEl).setName("Python 백엔드")
+      .setDesc("BRAT 설치는 main.js/manifest/styles.css만 넣으므로, 백엔드는 GitHub 릴리스에서 자동으로 받습니다. 이 버튼으로 다시 받거나 버전을 맞춥니다.")
+      .addButton(button => button.setButtonText("백엔드 설치/복구").onClick(async () => {
+        try { await this.owner.provisionBackend(); } catch (error) { this.showError(error); }
+      }));
 
     new Setting(containerEl).setName("임베딩 모델").addDropdown(dropdown => {
       for (const [id, profile] of Object.entries(MODEL_PROFILES)) dropdown.addOption(id, profile.name);

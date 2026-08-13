@@ -35,7 +35,7 @@ export default class VaultSearchPlugin extends Plugin {
     const vaultPath = adapter.getBasePath();
     const pluginDir = path.join(vaultPath, this.app.vault.configDir, "plugins", this.manifest.id);
     this.backend = new BackendManager(vaultPath, pluginDir, () => this.settings,
-      status => this.handleStatus(status));
+      status => this.handleStatus(status), this.manifest.version);
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
@@ -251,6 +251,12 @@ export default class VaultSearchPlugin extends Plugin {
       "provision_onnx", {}, 600_000);
     if (!result.provisioned) throw new Error("ONNX 파생 모델 생성 실패");
     new Notice("ONNX 파생 모델을 생성했습니다. 서비스를 재시작합니다.", 8000);
+    await this.restartBackend();
+  }
+
+  async provisionBackend(): Promise<void> {
+    await this.backend.ensureBackendProvisioned();
+    new Notice("Python 백엔드를 설치했습니다. 서비스를 재시작합니다.", 8000);
     await this.restartBackend();
   }
 
