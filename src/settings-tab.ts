@@ -198,7 +198,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           this.display();
         }));
     new Setting(containerEl).setName("BM25 / 벡터 / 최종 후보 / RRF k")
-      .setDesc("최종 후보는 16~40개를 권장합니다.")
+      .setDesc("검색이 '후보를 넓게 모아 융합한 뒤 최종 결과만 반환'하는 너비를 조정합니다. "
+        + "기본값 80 / 80 / 40은 K_Notes 골드셋 기준 recall@40 0.856으로 측정해 정한 값입니다.")
       .addText(text => text.setValue(String(draft.bm25TopK)).onChange(value => {
         draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);
       })).addText(text => text.setValue(String(draft.vectorTopK)).onChange(value => {
@@ -208,6 +209,16 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       })).addText(text => text.setValue(String(draft.rrfK)).onChange(value => {
         draft.rrfK = this.positiveNumber(value, draft.rrfK);
       }));
+    containerEl.createEl("div", {
+      cls: "vault-search-setting-hint",
+      text: "• bm25TopK: 키워드(BM25)로 뽑는 후보 청크 수. 넓히면 정확한 단어가 흩어진 파일도 놓치지 않지만, "
+        + "잡음이 늘 수 있습니다.\n"
+        + "• vectorTopK: 의미(임베딩) 유사도로 뽑는 후보 청크 수. 넓히면 표현이 달라도 관련된 파일이 회수됩니다.\n"
+        + "• finalTopK: 최종 반환 결과 수. 에이전트가 넓게 조사할 때는 40개 정도가 적당합니다.\n"
+        + "• rrfK: 여러 채널 결과를 융합할 때 순위 점수를 평탄화하는 상수입니다. "
+        + "결과가 한 채널에 치우치면 이 값을 줄여 보세요.\n"
+        + "바꾸면 실행 중 서비스에 즉시 반영되며, 결과가 이상하면 기본값으로 되돌리면 됩니다."
+    });
     new Setting(containerEl).setName("검색 다양성 / 제목 가중치")
       .setDesc("파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.")
       .addText(text => text.setValue(String(draft.maxChunksPerFile)).onChange(value => {
@@ -215,6 +226,12 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       })).addText(text => text.setValue(String(draft.titleRrfWeight)).onChange(value => {
         draft.titleRrfWeight = this.nonnegativeNumber(value, draft.titleRrfWeight);
       }));
+    containerEl.createEl("div", {
+      cls: "vault-search-setting-hint",
+      text: "• maxChunksPerFile: 한 파일이 최종 결과에서 차지할 수 있는 청크 수. 1이면 각 파일은 결과 1개로 제한되어 "
+        + "다른 파일도 볼 수 있습니다. 한 파일의 여러 구절을 보려면 늘려 보세요.\n"
+        + "• titleRrfWeight: 파일명·경로·헤딩 매치가 결과 순위에 미치는 가중치. 파일 제목을 중요하게 여기려면 올리세요."
+    });
     new Setting(containerEl).setName("접두사 검색 폴백")
       .setDesc("정확 BM25 결과가 없을 때 토큰 접두사 검색으로 한 번 더 찾습니다.")
       .addToggle(toggle => toggle.setValue(draft.prefixFallback)

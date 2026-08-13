@@ -7,6 +7,18 @@
   white-space: pre-wrap;
 }
 
+.vault-search-setting-hint {
+  margin: -8px 0 16px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--interactive-accent);
+  border-radius: 0 6px 6px 0;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
 .vault-search-error {
   color: var(--text-error);
 }
