@@ -64,10 +64,10 @@ class ModelManager:
             raise RuntimeError(
                 "engine=onnx currently supports only "
                 "intfloat/multilingual-e5-base (derived pooled graph)")
-        if not _is_importable("onnxruntime"):
-            raise RuntimeError("onnxruntime is not installed in this runtime")
         if self.config.device == "cpu":
             raise RuntimeError("engine=onnx requires device=cuda on this build")
+        if not _is_importable("onnxruntime"):
+            raise RuntimeError("onnxruntime is not installed in this runtime")
         import onnxruntime as ort
         if "TensorrtExecutionProvider" not in ort.get_available_providers() and \
                 "CUDAExecutionProvider" not in ort.get_available_providers():

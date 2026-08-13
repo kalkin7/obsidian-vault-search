@@ -1,7 +1,9 @@
 """Unit tests for the TRT provider resolution in direct_onnx."""
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -130,7 +132,10 @@ def test_auto_trt_build_exception_falls_back(monkeypatch) -> None:
     assert calls == ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
 
 
-def test_trt_cache_key_changes_with_batch_and_path() -> None:
+def test_trt_cache_key_changes_with_batch_and_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(__version__="1.25.1"))
     k1 = _trt_cache_key(Path(r"C:\models\m.onnx"), 32)
     k2 = _trt_cache_key(Path(r"C:\models\m.onnx"), 64)
     assert k1 != k2
