@@ -1,6 +1,6 @@
 param(
     [string]$PythonExecutable = "python",
-    [string]$Version = "0.1.2",
+    [string]$Version = "0.1.3",
     [ValidateSet("cpu", "cuda")][string]$Runtime,
     [switch]$Force
 )

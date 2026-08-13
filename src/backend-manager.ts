@@ -1,6 +1,6 @@
 import { ChildProcessWithoutNullStreams, execFile, spawn } from "child_process";
 import { createWriteStream, existsSync } from "fs";
-import { mkdir, readFile, rename, rm, writeFile } from "fs/promises";
+import { mkdir, readFile, readdir, rename, rm, writeFile } from "fs/promises";
 import * as path from "path";
 import AdmZip from "adm-zip";
 import { requestUrl } from "obsidian";
@@ -28,6 +28,7 @@ export class BackendManager {
   private runtimeInstaller: ChildProcessWithoutNullStreams | null = null;
   private machineWrite: Promise<void> = Promise.resolve();
   private startPromise: Promise<void> | null = null;
+  private backendProvision: Promise<boolean> | null = null;
   private startGeneration = 0;
   private statusValue: BackendStatus = { state: "stopped" };
 
@@ -185,10 +186,31 @@ export class BackendManager {
   /** Ensure the Python backend folder exists in the plugin directory and matches
    *  the plugin version. BRAT only installs main.js/manifest/styles.css, so the
    *  sidecar is self-provisioned from the release zip (or via the settings
-   *  button) instead of being carried by BRAT. */
-  async ensureBackendProvisioned(): Promise<boolean> {
+   *  button) instead of being carried by BRAT. Serialized so automatic startup
+   *  and the manual repair button cannot race each other. */
+  ensureBackendProvisioned(opts: { force?: boolean } = {}): Promise<boolean> {
+    if (!this.backendProvision) {
+      this.backendProvision = this.provisionBackendFiles(opts.force ?? false)
+        .finally(() => { this.backendProvision = null; });
+    }
+    return this.backendProvision;
+  }
+
+  private async provisionBackendFiles(force: boolean): Promise<boolean> {
     const current = await this.readBackendVersion();
-    if (current === this.manifestVersion) return true;
+    if (!force && current === this.manifestVersion) return true;
+
+    const existing = path.join(this.pluginDir, "backend");
+    // Recover a valid backup first if the live backend is missing (e.g. a
+    // crash happened between the backup and install steps last time).
+    if (!existsSync(existing)) {
+      const backups = await readdir(this.pluginDir).catch(() => []);
+      const candidates = backups.filter(n => n.startsWith("backend.bak.")).sort();
+      for (const name of candidates.reverse()) {
+        const backupPath = path.join(this.pluginDir, name);
+        try { await rename(backupPath, existing); break; } catch { /* try older */ }
+      }
+    }
 
     const version = this.manifestVersion;
     const zipUrl = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/obsidian-vault-search-v${version}.zip`;
@@ -210,24 +232,37 @@ export class BackendManager {
 
     const tempRoot = path.join(this.pluginDir, `backend.provision-${Date.now()}`);
     const tempBackend = path.join(tempRoot, "backend");
-    const existing = path.join(this.pluginDir, "backend");
-    const backup = `${existing}.bak`;
     try {
       for (const entry of backendEntries) {
         const rel = entry.entryName.slice("backend/".length);
-        const dest = path.join(tempBackend, rel);
+        const dest = path.resolve(tempBackend, rel);
+        const inside = path.relative(tempBackend, dest);
+        if (path.isAbsolute(rel) || inside === "" || inside.startsWith("..")) {
+          throw new Error(`안전하지 않은 zip 항목이 감지되어 중단합니다: ${entry.entryName}`);
+        }
         await mkdir(path.dirname(dest), { recursive: true });
         await writeFile(dest, entry.getData());
       }
-      await rm(backup, { recursive: true, force: true });
+
+      const backup = path.join(this.pluginDir, `backend.bak.${Date.now()}`);
       if (existsSync(existing)) await rename(existing, backup);
       try {
         await rename(tempBackend, existing);
       } catch (error) {
-        await rename(backup, existing).catch(() => undefined);
+        let rollbackError: unknown;
+        try { await rename(backup, existing); } catch (e) { rollbackError = e; }
+        if (rollbackError) {
+          throw new Error(
+            `백엔드 교체 실패: ${error instanceof Error ? error.message : String(error)}; ` +
+            `복구도 실패 — 백업을 유지합니다: ${backup}`);
+        }
         throw error;
       }
-      await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+      // Success: clean up older backups.
+      const backups = await readdir(this.pluginDir).catch(() => []);
+      for (const name of backups.filter(n => n.startsWith("backend.bak."))) {
+        await rm(path.join(this.pluginDir, name), { recursive: true, force: true }).catch(() => undefined);
+      }
     } finally {
       await rm(tempRoot, { recursive: true, force: true }).catch(() => undefined);
     }
@@ -247,6 +282,7 @@ export class BackendManager {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
+    await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
     } catch (error) {
@@ -256,7 +292,6 @@ export class BackendManager {
     if (!existsSync(path.join(this.backendRoot, "vault_search", "__main__.py"))) {
       throw new Error(`Python backend is missing: ${this.backendRoot}`);
     }
-    await this.stopStaleRuntime();
     await this.writeServiceConfig(lazyOverride);
     if (generation !== this.startGeneration || this.stopping) return;
 

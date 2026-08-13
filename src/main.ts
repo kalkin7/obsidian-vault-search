@@ -255,7 +255,8 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async provisionBackend(): Promise<void> {
-    await this.backend.ensureBackendProvisioned();
+    await this.backend.stop();
+    await this.backend.ensureBackendProvisioned({ force: true });
     new Notice("Python 백엔드를 설치했습니다. 서비스를 재시작합니다.", 8000);
     await this.restartBackend();
   }

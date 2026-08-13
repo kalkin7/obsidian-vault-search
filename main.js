@@ -2399,10 +2399,10 @@ var require_adm_zip = __commonJS({
          * @param {function|string} [props.namefix] - optional function to help fix filename
          */
         addLocalFolderPromise: function(localPath, props) {
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             this.addLocalFolderAsync2(Object.assign({ localPath }, props), (err, done) => {
               if (err) reject(err);
-              if (done) resolve2(this);
+              if (done) resolve3(this);
             });
           });
         },
@@ -2589,12 +2589,12 @@ var require_adm_zip = __commonJS({
           keepOriginalPermission = get_Bool(false, keepOriginalPermission);
           overwrite = get_Bool(false, overwrite);
           if (!callback) {
-            return new Promise((resolve2, reject) => {
+            return new Promise((resolve3, reject) => {
               this.extractAllToAsync(targetPath, overwrite, keepOriginalPermission, function(err) {
                 if (err) {
                   reject(err);
                 } else {
-                  resolve2(this);
+                  resolve3(this);
                 }
               });
             });
@@ -2692,11 +2692,11 @@ var require_adm_zip = __commonJS({
                  */
         writeZipPromise: function(targetFileName, props) {
           const { overwrite, perm } = Object.assign({ overwrite: true }, props);
-          return new Promise((resolve2, reject) => {
+          return new Promise((resolve3, reject) => {
             if (!targetFileName && opts.filename) targetFileName = opts.filename;
             if (!targetFileName) reject("ADM-ZIP: ZIP File Name Missing");
             this.toBufferPromise().then((zipData) => {
-              const ret = (done) => done ? resolve2(done) : reject("ADM-ZIP: Wasn't able to write zip file");
+              const ret = (done) => done ? resolve3(done) : reject("ADM-ZIP: Wasn't able to write zip file");
               filetools.writeFileToAsync(targetFileName, zipData, overwrite, perm, ret);
             }, reject);
           });
@@ -2705,8 +2705,8 @@ var require_adm_zip = __commonJS({
          * @returns {Promise<Buffer>} A promise to the Buffer.
          */
         toBufferPromise: function() {
-          return new Promise((resolve2, reject) => {
-            _zip.toAsyncBuffer(resolve2, reject);
+          return new Promise((resolve3, reject) => {
+            _zip.toAsyncBuffer(resolve3, reject);
           });
         },
         /**
@@ -2749,7 +2749,7 @@ var import_obsidian = require("obsidian");
 
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
-var BACKEND_VERSION = "0.1.2";
+var BACKEND_VERSION = "0.1.3";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -2814,7 +2814,7 @@ var DEFAULT_SETTINGS = {
 var net = __toESM(require("net"));
 var import_crypto = require("crypto");
 function requestBackend(runtime, method, params = {}, timeoutMs = 3e3) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     const requestId = (0, import_crypto.randomUUID)();
     const socket = net.createConnection({ host: runtime.host || "127.0.0.1", port: runtime.port });
     let buffer = "";
@@ -2845,7 +2845,7 @@ function requestBackend(runtime, method, params = {}, timeoutMs = 3e3) {
         if (response.request_id !== requestId) throw new Error("Mismatched backend request ID");
         settled = true;
         socket.end();
-        resolve2(response);
+        resolve3(response);
       } catch (error) {
         finishError(error instanceof Error ? error : new Error(String(error)));
       }
@@ -2891,6 +2891,7 @@ var BackendManager = class {
   runtimeInstaller = null;
   machineWrite = Promise.resolve();
   startPromise = null;
+  backendProvision = null;
   startGeneration = 0;
   statusValue = { state: "stopped" };
   get dataDir() {
@@ -3005,7 +3006,7 @@ var BackendManager = class {
   async runRuntimeInstall(kind, basePython, progress) {
     const script = path2.join(this.backendRoot, "setup-runtime.ps1");
     if (!(0, import_fs.existsSync)(script)) throw new Error(`Runtime installer is missing: ${script}`);
-    const executable = await new Promise((resolve2, reject) => {
+    const executable = await new Promise((resolve3, reject) => {
       const child = (0, import_child_process.spawn)("powershell.exe", [
         "-NoProfile",
         "-ExecutionPolicy",
@@ -3036,7 +3037,7 @@ var BackendManager = class {
       child.on("exit", (code) => {
         this.runtimeInstaller = null;
         if (code !== 0) reject(new Error(stderr.trim() || `Runtime installer exited with code ${code}`));
-        else resolve2(stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || "");
+        else resolve3(stdout.trim().split(/\r?\n/).filter(Boolean).at(-1) || "");
       });
     });
     const info = await this.inspectPython(executable);
@@ -3048,12 +3049,12 @@ var BackendManager = class {
     return info;
   }
   execFileText(executable, args, timeout) {
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       (0, import_child_process.execFile)(
         executable,
         args,
         { timeout, windowsHide: true, encoding: "utf8" },
-        (error, stdout) => error ? reject(error) : resolve2(stdout)
+        (error, stdout) => error ? reject(error) : resolve3(stdout)
       );
     });
   }
@@ -3069,10 +3070,32 @@ var BackendManager = class {
   /** Ensure the Python backend folder exists in the plugin directory and matches
    *  the plugin version. BRAT only installs main.js/manifest/styles.css, so the
    *  sidecar is self-provisioned from the release zip (or via the settings
-   *  button) instead of being carried by BRAT. */
-  async ensureBackendProvisioned() {
+   *  button) instead of being carried by BRAT. Serialized so automatic startup
+   *  and the manual repair button cannot race each other. */
+  ensureBackendProvisioned(opts = {}) {
+    if (!this.backendProvision) {
+      this.backendProvision = this.provisionBackendFiles(opts.force ?? false).finally(() => {
+        this.backendProvision = null;
+      });
+    }
+    return this.backendProvision;
+  }
+  async provisionBackendFiles(force) {
     const current = await this.readBackendVersion();
-    if (current === this.manifestVersion) return true;
+    if (!force && current === this.manifestVersion) return true;
+    const existing = path2.join(this.pluginDir, "backend");
+    if (!(0, import_fs.existsSync)(existing)) {
+      const backups = await (0, import_promises.readdir)(this.pluginDir).catch(() => []);
+      const candidates = backups.filter((n) => n.startsWith("backend.bak.")).sort();
+      for (const name of candidates.reverse()) {
+        const backupPath = path2.join(this.pluginDir, name);
+        try {
+          await (0, import_promises.rename)(backupPath, existing);
+          break;
+        } catch {
+        }
+      }
+    }
     const version = this.manifestVersion;
     const zipUrl = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/obsidian-vault-search-v${version}.zip`;
     let response;
@@ -3091,24 +3114,39 @@ var BackendManager = class {
     }
     const tempRoot = path2.join(this.pluginDir, `backend.provision-${Date.now()}`);
     const tempBackend = path2.join(tempRoot, "backend");
-    const existing = path2.join(this.pluginDir, "backend");
-    const backup = `${existing}.bak`;
     try {
       for (const entry of backendEntries) {
         const rel = entry.entryName.slice("backend/".length);
-        const dest = path2.join(tempBackend, rel);
+        const dest = path2.resolve(tempBackend, rel);
+        const inside = path2.relative(tempBackend, dest);
+        if (path2.isAbsolute(rel) || inside === "" || inside.startsWith("..")) {
+          throw new Error(`\uC548\uC804\uD558\uC9C0 \uC54A\uC740 zip \uD56D\uBAA9\uC774 \uAC10\uC9C0\uB418\uC5B4 \uC911\uB2E8\uD569\uB2C8\uB2E4: ${entry.entryName}`);
+        }
         await (0, import_promises.mkdir)(path2.dirname(dest), { recursive: true });
         await (0, import_promises.writeFile)(dest, entry.getData());
       }
-      await (0, import_promises.rm)(backup, { recursive: true, force: true });
+      const backup = path2.join(this.pluginDir, `backend.bak.${Date.now()}`);
       if ((0, import_fs.existsSync)(existing)) await (0, import_promises.rename)(existing, backup);
       try {
         await (0, import_promises.rename)(tempBackend, existing);
       } catch (error) {
-        await (0, import_promises.rename)(backup, existing).catch(() => void 0);
+        let rollbackError;
+        try {
+          await (0, import_promises.rename)(backup, existing);
+        } catch (e) {
+          rollbackError = e;
+        }
+        if (rollbackError) {
+          throw new Error(
+            `\uBC31\uC5D4\uB4DC \uAD50\uCCB4 \uC2E4\uD328: ${error instanceof Error ? error.message : String(error)}; \uBCF5\uAD6C\uB3C4 \uC2E4\uD328 \u2014 \uBC31\uC5C5\uC744 \uC720\uC9C0\uD569\uB2C8\uB2E4: ${backup}`
+          );
+        }
         throw error;
       }
-      await (0, import_promises.rm)(backup, { recursive: true, force: true }).catch(() => void 0);
+      const backups = await (0, import_promises.readdir)(this.pluginDir).catch(() => []);
+      for (const name of backups.filter((n) => n.startsWith("backend.bak."))) {
+        await (0, import_promises.rm)(path2.join(this.pluginDir, name), { recursive: true, force: true }).catch(() => void 0);
+      }
     } finally {
       await (0, import_promises.rm)(tempRoot, { recursive: true, force: true }).catch(() => void 0);
     }
@@ -3129,6 +3167,7 @@ var BackendManager = class {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await (0, import_promises.mkdir)(this.dataDir, { recursive: true });
+    await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
     } catch (error) {
@@ -3138,7 +3177,6 @@ var BackendManager = class {
     if (!(0, import_fs.existsSync)(path2.join(this.backendRoot, "vault_search", "__main__.py"))) {
       throw new Error(`Python backend is missing: ${this.backendRoot}`);
     }
-    await this.stopStaleRuntime();
     await this.writeServiceConfig(lazyOverride);
     if (generation !== this.startGeneration || this.stopping) return;
     const settings = this.getSettings();
@@ -3211,7 +3249,7 @@ var BackendManager = class {
       const state = this.statusValue.state;
       if (["idle", "loading_model", "ready", "ready_no_index"].includes(state)) return this.status;
       if (state === "error") throw new Error(this.statusValue.error || "Backend failed");
-      await new Promise((resolve2) => setTimeout(resolve2, 100));
+      await new Promise((resolve3) => setTimeout(resolve3, 100));
     }
     throw new Error("Backend did not start listening");
   }
@@ -3221,7 +3259,7 @@ var BackendManager = class {
       const state = this.statusValue.state;
       if (state === "ready" || state === "ready_no_index") return this.status;
       if (state === "error") throw new Error(this.statusValue.error || "Backend failed");
-      await new Promise((resolve2) => setTimeout(resolve2, 250));
+      await new Promise((resolve3) => setTimeout(resolve3, 250));
     }
     throw new Error("Backend model loading timed out");
   }
@@ -3232,8 +3270,8 @@ var BackendManager = class {
     if (installer && installer.exitCode === null) {
       installer.kill();
       if (process.platform === "win32" && installer.pid) {
-        await new Promise((resolve2) => {
-          (0, import_child_process.execFile)("taskkill.exe", ["/PID", String(installer.pid), "/T", "/F"], () => resolve2());
+        await new Promise((resolve3) => {
+          (0, import_child_process.execFile)("taskkill.exe", ["/PID", String(installer.pid), "/T", "/F"], () => resolve3());
         });
       }
       this.runtimeInstaller = null;
@@ -3256,8 +3294,8 @@ var BackendManager = class {
       if (!exited) {
         child.kill();
         if (process.platform === "win32" && child.pid) {
-          await new Promise((resolve2) => {
-            (0, import_child_process.execFile)("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], () => resolve2());
+          await new Promise((resolve3) => {
+            (0, import_child_process.execFile)("taskkill.exe", ["/PID", String(child.pid), "/T", "/F"], () => resolve3());
           });
         }
       }
@@ -3423,7 +3461,7 @@ var BackendManager = class {
     }
     const deadline = Date.now() + 1e4;
     while (this.pidRunning(runtime.pid) && Date.now() < deadline) {
-      await new Promise((resolve2) => setTimeout(resolve2, 200));
+      await new Promise((resolve3) => setTimeout(resolve3, 200));
     }
     if (this.pidRunning(runtime.pid)) {
       throw new Error(`Existing Vault Search backend did not stop: PID ${runtime.pid}`);
@@ -3441,11 +3479,11 @@ var BackendManager = class {
   }
   waitForExit(child, timeoutMs) {
     if (child.exitCode !== null) return Promise.resolve(true);
-    return new Promise((resolve2) => {
-      const timer = setTimeout(() => resolve2(false), timeoutMs);
+    return new Promise((resolve3) => {
+      const timer = setTimeout(() => resolve3(false), timeoutMs);
       child.once("exit", () => {
         clearTimeout(timer);
-        resolve2(true);
+        resolve3(true);
       });
     });
   }
@@ -4024,7 +4062,7 @@ var RuntimeInstallModal = class extends import_obsidian4.Modal {
   }
 };
 function confirmRuntimeInstall(app, explicitCuda) {
-  return new Promise((resolve2) => new RuntimeInstallModal(app, explicitCuda, resolve2).open());
+  return new Promise((resolve3) => new RuntimeInstallModal(app, explicitCuda, resolve3).open());
 }
 
 // src/runtime-selection.ts
@@ -4292,7 +4330,8 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
     await this.restartBackend();
   }
   async provisionBackend() {
-    await this.backend.ensureBackendProvisioned();
+    await this.backend.stop();
+    await this.backend.ensureBackendProvisioned({ force: true });
     new import_obsidian5.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
