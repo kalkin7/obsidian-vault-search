@@ -1,11 +1,11 @@
 # Architecture
 
-Obsidian is the process supervisor; Python owns the model, SQLite FTS5, and USEARCH index.
+Obsidian is the process supervisor for plugin-owned backends; Python owns the model, SQLite FTS5, and USEARCH index.
 
 1. The desktop-only plugin computes a path-derived vault ID.
-2. It starts Python with `detached: false`, an open stdin pipe, and a dynamic loopback port.
-3. Runtime, machine settings, logs, and indexes live under `%LOCALAPPDATA%/ObsidianVaultSearch`.
-4. The backend exits on authenticated shutdown, stdin EOF, or heartbeat timeout.
+2. It starts Python with `detached: false`, an open stdin pipe, and a dynamic loopback port. Runtime, machine settings, logs, and indexes live under `%LOCALAPPDATA%/ObsidianVaultSearch`.
+3. The backend exits on authenticated shutdown, stdin EOF, or heartbeat timeout.
+4. **Standalone mode (2026-08-13)**: the CLI can start a detached backend with `--owner standalone` when Obsidian is closed. A standalone server skips the stdin/parent/heartbeat watchers and instead exits after `--idle-exit-seconds` (default 1800s) of inactivity. The plugin attaches to a healthy standalone runtime on startup (`owner: "standalone"` in runtime.json) instead of killing it, so plugin reloads do not interrupt CLI-managed daemons. Explicit "stop" and settings-driven restarts stop attached standalone backends too. One backend writer per data directory is still enforced by the ServiceLock.
 5. Search and index writes share one process and an operation lock, so the model is loaded once.
 6. A file-level FTS5 index ranks basename, directory, aliases, tags, and properties with initial field weights `10, 7, 8, 3, 2`. A separate chunk-level FTS5 index maps heading matches directly to `chunks.id`; the body FTS contains body tokens only.
 7. `LEXICAL_SCHEMA_VERSION=2` is independent from core `SCHEMA_VERSION=2`. Older lexical indexes migrate in a temporary DB copy, validate row counts and SQLite integrity, then atomically replace only the DB and metadata generation. `vectors.usearch` is never rewritten by this migration, and failures leave the prior generation intact.
@@ -21,5 +21,7 @@ Obsidian is the process supervisor; Python owns the model, SQLite FTS5, and USEA
 17. Status and heartbeat never open SQLite. Worker-controlled initialization and index-operation boundaries refresh cached counts; incompatible or unreadable future schemas report counts as unavailable instead of aborting before compatibility checks.
 18. Startup recovery removes UUID-suffixed stale operation temps and backups only after processing any replacement manifest. Files named by an active manifest are protected until rollback completes.
 19. `engine=onnx` uses a direct ONNX Runtime backend for the fixed e5-base model. `provider=auto` prefers TensorRT (when its runtime is installed) and otherwise falls back to the CUDA EP; ORT can silently return a CUDA-primary session, which `auto` also treats as a fallback and rebuilds as a CUDA-only session. TRT engines are cached under `dataDir/trt-cache/<key>` (keyed by ONNX path, ORT/TRT versions, batch profile) with a size cap. The metadata records both the requested and the effective provider, and the effective provider participates in the index compatibility gate, so an environment change invalidates the index even under `provider=auto`. See [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
+20. Index compatibility problems are classified into a recovery action (`rebuild_vectors` vs `rebuild_all`) and cached on the service. `status` exposes `index_validation_state`, `index_problems`, and `recommended_action` so the settings tab, CLI, and startup notice recommend the same minimal recovery. Full validation (which restores USEARCH) runs only at initialization/reconcile/rebuild boundaries, never per status call.
+21. Search responses include optional top-level diagnostics (`candidate_pool_size`, `requested_top_k`, `returned_count`). The CLI prints a warning on stderr when the requested top-K exceeds the candidate pool.
 
 `vault-open` loads the model after layout readiness. `first-search` starts only the lightweight sidecar; the first CLI search triggers model loading. `manual` starts nothing automatically.

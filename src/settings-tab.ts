@@ -25,6 +25,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       status.model_load_seconds !== undefined ? `최근 모델 로딩: ${status.model_load_seconds}초` : "",
       status.progress ? `진행: ${status.progress}` : "",
       status.pending_recovery_required ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}` : "",
+      status.index_rebuild_required ? `인덱스 호환성 문제: ${status.recommended_action === "rebuild_vectors" ? "벡터 재구축 필요" : "전체 재구축 필요"}` : "",
       status.error ? `오류: ${status.error}` : ""
       , this.owner.runtimeSummary
       , this.owner.runtimeWarning || ""

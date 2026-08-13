@@ -4,8 +4,8 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "fs/promises";
 import * as path from "path";
 import AdmZip from "adm-zip";
 import { requestUrl } from "obsidian";
-import type { BackendResponse, BackendStatus, PythonRuntimeInfo, RuntimeInfo, VaultSearchSettings } from "./types";
-import { BACKEND_VERSION, GITHUB_REPO } from "./constants";
+import type { BackendResponse, BackendState, BackendStatus, PythonRuntimeInfo, RuntimeInfo, VaultSearchSettings } from "./types";
+import { BACKEND_VERSION, GITHUB_REPO, PROTOCOL_VERSION } from "./constants";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
 
@@ -31,6 +31,7 @@ export class BackendManager {
   private backendProvision: Promise<boolean> | null = null;
   private startGeneration = 0;
   private statusValue: BackendStatus = { state: "stopped" };
+  private ownership: "none" | "child" | "attached" = "none";
 
   constructor(
     readonly vaultPath: string,
@@ -282,6 +283,7 @@ export class BackendManager {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
+    if (await this.tryAttachStandalone()) return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -317,6 +319,7 @@ export class BackendManager {
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.child = child;
+    this.ownership = "child";
 
     const log = createWriteStream(path.join(this.dataDir, "backend.log"), { flags: "a" });
     let stdoutBuffer = "";
@@ -354,6 +357,7 @@ export class BackendManager {
   async waitUntilAvailable(timeoutMs = 10_000): Promise<BackendStatus> {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (this.ownership === "attached") await this.refreshStatus().catch(() => undefined);
       const state = this.statusValue.state;
       if (["idle", "loading_model", "ready", "ready_no_index"].includes(state)) return this.status;
       if (state === "error") throw new Error(this.statusValue.error || "Backend failed");
@@ -365,6 +369,7 @@ export class BackendManager {
   async waitUntilReady(timeoutMs = 180_000): Promise<BackendStatus> {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (this.ownership === "attached") await this.refreshStatus().catch(() => undefined);
       const state = this.statusValue.state;
       if (state === "ready" || state === "ready_no_index") return this.status;
       if (state === "error") throw new Error(this.statusValue.error || "Backend failed");
@@ -373,7 +378,16 @@ export class BackendManager {
     throw new Error("Backend model loading timed out");
   }
 
-  async stop(): Promise<void> {
+  private async refreshStatus(): Promise<void> {
+    const runtime = this.runtime || await this.readRuntime();
+    if (!runtime) return;
+    const response = await requestBackend<BackendStatus>(runtime, "status", {}, 3000);
+    if (response.ok) {
+      this.setStatus({ ...(response.data || {}), pid: runtime.pid, port: runtime.port });
+    }
+  }
+
+  async stop(preserveAttached = false): Promise<void> {
     this.stopping = true;
     ++this.startGeneration;
     const installer = this.runtimeInstaller;
@@ -390,11 +404,32 @@ export class BackendManager {
     if (starting) await starting.catch(() => undefined);
     this.clearHeartbeat();
     const child = this.child;
-    if (child?.stdin.writable) child.stdin.end();
     const runtime = this.runtime || await this.readRuntime();
+
+    if (this.ownership === "attached" && preserveAttached) {
+      // Plugin unload: detach from a standalone daemon and let it live on.
+      this.runtime = null;
+      this.child = null;
+      this.ownership = "none";
+      this.setStatus({ state: "stopped" });
+      return;
+    }
+
+    if (child?.stdin.writable) child.stdin.end();
     const ownedPid = runtime?.pid ?? child?.pid;
     if (runtime) {
       try { await requestBackend(runtime, "shutdown", {}, 2000); } catch { /* force below */ }
+    }
+    if (runtime && !child) {
+      // Attached standalone: wait for the daemon to actually exit so a follow-up
+      // start cannot race a still-running writer holding the ServiceLock.
+      const deadline = Date.now() + 10_000;
+      while (this.pidRunning(ownedPid as number) && Date.now() < deadline) {
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+      if (this.pidRunning(ownedPid as number)) {
+        throw new Error(`Standalone backend did not stop: PID ${ownedPid}`);
+      }
     }
     if (child && child.exitCode === null) {
       const exited = await this.waitForExit(child, 5000);
@@ -413,6 +448,7 @@ export class BackendManager {
     } catch { /* ignore */ }
     this.runtime = null;
     this.child = null;
+    this.ownership = "none";
     this.setStatus({ state: "stopped" });
   }
 
@@ -432,7 +468,15 @@ export class BackendManager {
       throw new BackendCallError(response.error?.code || "BACKEND_ERROR",
         response.error?.message || "Backend request failed", response.error?.details);
     }
-    return response.data as T;
+    const data = response.data as T;
+    // Attached standalone backends emit no stdout events, so status transitions
+    // (load_model -> ready) never reach handleBackendLine. Sync from any status
+    // response so waitUntilReady can observe them.
+    if (data && typeof data === "object" && "state" in (data as Record<string, unknown>)) {
+      this.setStatus({ ...(data as unknown as BackendStatus),
+        pid: runtime.pid, port: runtime.port });
+    }
+    return data;
   }
 
   async ensureStarted(): Promise<void> {
@@ -482,7 +526,12 @@ export class BackendManager {
         port: Number(event.data.port),
         model_id: String(event.data.model_id || "")
       });
-      this.startHeartbeat();
+      // The server redacts the token from the listening event; read the full
+      // runtime (including the token) from disk for authenticated requests.
+      void this.readRuntime().then(runtime => {
+        if (runtime) this.runtime = runtime;
+        this.startHeartbeat();
+      });
       return;
     }
     if (event.event === "idle") {
@@ -549,9 +598,57 @@ export class BackendManager {
     } catch { return null; }
   }
 
-  private async stopStaleRuntime(): Promise<void> {
+  /** Attach to a healthy standalone backend instead of spawning a child.
+   *  A standalone daemon started by the CLI must survive plugin reloads, so it
+   *  is adopted (heartbeat kept, ownership "attached") and never killed by the
+   *  plugin lifecycle. */
+  private async tryAttachStandalone(): Promise<boolean> {
+    const runtime = await this.readRuntime();
+    if (!runtime) return false;
+    if (runtime.owner !== "standalone") return false;
+    if (runtime.protocol_version !== PROTOCOL_VERSION) return false;
+    if (runtime.backend_version && runtime.backend_version !== this.manifestVersion) return false;
+    if (runtime.vault_path && this.vaultPath) {
+      const normalized = (value: string) => value.replace(/\\/g, "/").toLowerCase();
+      if (normalized(runtime.vault_path) !== normalized(this.vaultPath)) return false;
+    }
+    if (!this.pidRunning(runtime.pid)) return false;
+    let statusData: BackendStatus;
+    try {
+      const response = await requestBackend<BackendStatus>(runtime, "status", {}, 2000);
+      if (!response.ok) return false;
+      statusData = response.data ?? { state: "stopped" };
+    } catch { return false; }
+    this.runtime = runtime;
+    this.child = null;
+    this.ownership = "attached";
+    this.setStatus({ ...statusData, pid: runtime.pid, port: runtime.port });
+    this.startHeartbeat();
+    return true;
+  }
+
+  private stopStaleRuntime(): Promise<void> {
+    return this.stopExistingRuntime(false);
+  }
+
+  private async stopExistingRuntime(preserveAttached: boolean): Promise<void> {
     const runtime = await this.readRuntime();
     if (!runtime) return;
+    // Verify the runtime is genuinely ours before touching its PID. A PID can
+    // be reused by an unrelated process; an inauthentic runtime file must not
+    // block startup on a process we cannot and should not kill.
+    let authentic = false;
+    if (this.pidRunning(runtime.pid)) {
+      try {
+        const status = await requestBackend(runtime, "status", {}, 2000);
+        authentic = status.ok;
+      } catch { authentic = false; }
+    }
+    if (runtime.owner === "standalone" && preserveAttached && authentic) return;
+    if (!authentic) {
+      await rm(this.runtimePath, { force: true }).catch(() => undefined);
+      return;
+    }
     try {
       await requestBackend(runtime, "shutdown", {}, 1000);
     } catch { /* stale file */ }

@@ -7,6 +7,7 @@ from typing import Any, Callable
 
 from .config import SearchConfig
 from .database import index_counts
+from .index_metadata import classify_index_problems, validate_index_files
 from .indexing import IndexManager
 from .model_manager import ModelManager
 from .search import IndexCompatibilityError, SearchEngine
@@ -31,6 +32,9 @@ class SearchService:
         self.last_activity = time.monotonic()
         self.index_rebuild_reason: str | None = None
         self.pending_recovery_warning: str | None = None
+        self.index_validation_state: str = "pending"
+        self.index_problems: list[str] = []
+        self.recommended_action: str | None = None
         self._cached_counts: dict[str, Any] = {"files": 0, "chunks": 0, "vector_chunks": 0}
         self._count_available = False
         self._index_operation_active = False
@@ -129,6 +133,12 @@ class SearchService:
             self.state = "ready" if self.config.db_path.exists() else "ready_no_index"
             self.error = None
             self.last_heartbeat = time.monotonic()
+            if self.index_rebuild_reason is None:
+                self._refresh_index_compatibility()
+            else:
+                self.index_problems = [self.index_rebuild_reason]
+                self.recommended_action = classify_index_problems([self.index_rebuild_reason])
+                self.index_validation_state = "incompatible"
             self.event_sink("ready", {
                 **self.status(),
                 "model_load_seconds": round(time.time() - started, 3),
@@ -206,6 +216,10 @@ class SearchService:
             "pending_recovery_required": self.pending_recovery_warning is not None,
             "count_available": self._count_available,
             "capabilities": self.capabilities(),
+            "index_validation_state": self.index_validation_state,
+            "index_rebuild_required": self.index_rebuild_reason is not None,
+            "index_problems": self.index_problems,
+            "recommended_action": self.recommended_action,
             **self._cached_counts,
         }
 
@@ -232,7 +246,8 @@ class SearchService:
                     if self.index_rebuild_reason:
                         raise ServiceError(
                             "INDEX_REBUILD_REQUIRED", self.index_rebuild_reason,
-                            {"problems": [self.index_rebuild_reason]})
+                            {"problems": self.index_problems,
+                             "recommended_action": self.recommended_action})
                     self.start_initialization()
                     raise ServiceError("MODEL_LOADING", "Embedding model is loading after the first search request")
                 raise ServiceError("MODEL_NOT_LOADED", "Embedding model is not loaded")
@@ -247,7 +262,8 @@ class SearchService:
                 if self.index_rebuild_reason:
                     raise ServiceError(
                         "INDEX_REBUILD_REQUIRED", self.index_rebuild_reason,
-                        {"problems": [self.index_rebuild_reason]})
+                        {"problems": self.index_problems,
+                         "recommended_action": self.recommended_action})
                 query = str(params.get("query", "")).strip()
                 if not query:
                     raise ServiceError("INVALID_QUERY", "Query must not be empty")
@@ -261,7 +277,7 @@ class SearchService:
                                   "value", "korean-morphology"}:
                     raise ServiceError("INVALID_PARAMS", "intent is invalid")
                 try:
-                    results = self.search_engine.search(
+                    outcome = self.search_engine.search_detailed(
                         query,
                         top_k=int(params.get("top_k") or self.config.final_top_k),
                         verbose=bool(params.get("verbose", False)),
@@ -271,12 +287,18 @@ class SearchService:
                 except FileNotFoundError as exc:
                     raise ServiceError("INDEX_MISSING", str(exc)) from exc
                 except IndexCompatibilityError as exc:
-                    raise ServiceError("INDEX_REBUILD_REQUIRED", str(exc), {"problems": exc.problems}) from exc
+                    self.index_problems = list(exc.problems)
+                    self.recommended_action = classify_index_problems(exc.problems)
+                    self.index_validation_state = "incompatible"
+                    self.index_rebuild_reason = str(exc)
+                    raise ServiceError("INDEX_REBUILD_REQUIRED", str(exc),
+                                       {"problems": exc.problems,
+                                        "recommended_action": self.recommended_action}) from exc
                 return {
                     "mode": "hybrid",
                     "model": self.config.model_id,
                     "device": self.model.device,
-                    "results": results,
+                    **outcome.to_dict(),
                 }
             if method == "preview_scope":
                 return self.index.preview_scope()
@@ -297,7 +319,7 @@ class SearchService:
             if method == "rebuild_all":
                 return self._run_index_operation("rebuilding", self._rebuild_all)
             if method == "rebuild_vectors":
-                return self._run_index_operation("rebuilding_vectors", self.index.rebuild_vectors)
+                return self._run_index_operation("rebuilding_vectors", self._rebuild_vectors)
             if method == "apply_search_config":
                 return self._apply_search_config(params)
         raise ServiceError("UNKNOWN_METHOD", f"Unknown method: {method}")
@@ -326,22 +348,45 @@ class SearchService:
             raise RuntimeError("Search index is unavailable")
         result = self.index.rebuild_all()
         self.index_rebuild_reason = None
+        self._refresh_index_compatibility()
+        return result
+
+    def _rebuild_vectors(self) -> dict[str, Any]:
+        if self.index is None:
+            raise RuntimeError("Search index is unavailable")
+        result = self.index.rebuild_vectors()
+        self.index_rebuild_reason = None
+        self._refresh_index_compatibility()
         return result
 
     def _reconcile(self, mode: str) -> dict[str, Any]:
         if self.index is None:
             raise RuntimeError("Search index is unavailable")
         result = self.index.reconcile(mode=mode)
-        if not result.get("rebuild_required"):
+        if result.get("rebuild_required"):
+            reason = str(result.get("reason") or "index rebuild required")
+            self.index_rebuild_reason = reason
+            self.index_problems = [reason]
+            self.recommended_action = classify_index_problems([reason])
+            self.index_validation_state = "incompatible"
+        else:
             self.pending_recovery_warning = None
+            self._refresh_index_compatibility()
         return result
 
     def _sync_paths(self, changed: list[str], deleted: list[str]) -> dict[str, Any]:
         if self.index is None:
             raise RuntimeError("Search index is unavailable")
         result = self.index.sync_paths(changed, deleted)
-        if not result.get("rebuild_required"):
+        if result.get("rebuild_required"):
+            reason = str(result.get("reason") or "index rebuild required")
+            self.index_rebuild_reason = reason
+            self.index_problems = [reason]
+            self.recommended_action = classify_index_problems([reason])
+            self.index_validation_state = "incompatible"
+        else:
             self.pending_recovery_warning = None
+            self._refresh_index_compatibility()
         return result
 
     def _run_index_operation(self, state: str, operation: Callable[[], Any]) -> Any:
@@ -361,6 +406,10 @@ class SearchService:
         except Exception as exc:
             self.state = previous if previous.startswith("ready") else "ready"
             self.error = f"{type(exc).__name__}: {exc}"
+            self.index_rebuild_reason = None
+            self.index_problems = []
+            self.recommended_action = None
+            self.index_validation_state = "pending"
             raise
         finally:
             self._refresh_cached_counts()
@@ -374,6 +423,36 @@ class SearchService:
         except (sqlite3.Error, OSError):
             self._cached_counts = {"files": 0, "chunks": 0, "vector_chunks": 0}
             self._count_available = False
+
+    def _refresh_index_compatibility(self) -> None:
+        """Validate the on-disk index and cache the result.
+
+        Full validation restores the USEARCH vector index, which is expensive,
+        so it must only run at initialization/reconcile/rebuild boundaries and
+        never on every status call. When the model is not loaded (fresh lazy
+        start) the dimension is unknown and the state stays ``pending``.
+        """
+        if self.search_engine is None or self.index is None \
+                or self.model.dimension is None:
+            if self.index_rebuild_reason is None:
+                self.index_validation_state = "pending"
+            return
+        try:
+            problems = validate_index_files(
+                self.config, self.model.dimension, check_scope=False,
+                effective_provider=self.model.effective_provider())
+        except Exception as exc:
+            problems = [f"index validation failed: {type(exc).__name__}: {exc}"]
+        if problems:
+            self.index_problems = list(problems)
+            self.recommended_action = classify_index_problems(problems)
+            self.index_validation_state = "incompatible"
+            self.index_rebuild_reason = "; ".join(problems)
+        else:
+            self.index_problems = []
+            self.recommended_action = None
+            self.index_validation_state = "compatible"
+            self.index_rebuild_reason = None
 
     def _recover_pending_paths(self) -> dict[str, Any]:
         if self.index is None:

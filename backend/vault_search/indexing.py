@@ -203,7 +203,12 @@ class IndexManager:
         if self.config.db_path.exists():
             state = self.ensure_state_schema()
             if state.get("rebuild_required"):
-                raise RuntimeError(str(state.get("reason") or "State schema migration failed"))
+                # A future (or structurally broken) state schema cannot be
+                # migrated in place. rebuild_all builds a fresh DB from the
+                # vault anyway, so back up the unreadable DB and continue
+                # instead of blocking the recovery the UI recommends.
+                reason = str(state.get("reason") or "State schema migration failed")
+                self._archive_unreadable_db(reason)
         dimension = self._dimension()
         files = iter_vault_files(
             self.config.vault_path, self.config.include_globs, self.config.exclude_globs)
@@ -292,7 +297,7 @@ class IndexManager:
             self.config, dimension, effective_provider=self.model.effective_provider())
         structural_keys = {
             "schema_version", "lexical_schema_version", "chunking_strategy", "chunker_version",
-            "chunk_chars", "chunk_overlap",
+            "chunk_chars", "chunk_overlap", "tokenizer_version", "scope_config_hash",
         }
         structural_problems: list[str] = []
         for source, metadata in (
@@ -304,7 +309,7 @@ class IndexManager:
                 continue
             structural_problems.extend(
                 f"{source} {problem}"
-                for problem in validate_metadata(metadata, expected)
+                for problem in validate_metadata(metadata, expected, check_scope=True)
                 if problem.split(":", 1)[0] in structural_keys
             )
         if structural_problems:
@@ -572,6 +577,20 @@ class IndexManager:
         if self.model.dimension is None:
             raise RuntimeError("Model must be loaded before indexing")
         return int(self.model.dimension)
+
+    def _archive_unreadable_db(self, reason: str) -> None:
+        """Move an unreadable/future-schema DB aside so rebuild_all can start fresh.
+
+        The replacement below writes a brand-new generation; the archived file
+        keeps forensic evidence without blocking recovery. The archive name is
+        deterministic per reason so repeated rebuilds do not accumulate files.
+        """
+        target = self.config.db_path
+        if not target.exists():
+            return
+        archive = target.with_name(f"chunks.db.unreadable-{uuid.uuid4().hex[:12]}.bak")
+        shutil.copy2(target, archive)
+        LOGGER.warning("Archived unreadable state DB (%s) to %s", reason, archive.name)
 
     def _chunks(self, text: str, relative: str) -> list[DocumentChunk]:
         return chunk_document(

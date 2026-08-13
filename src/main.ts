@@ -3,7 +3,7 @@ import * as path from "path";
 import { BackendManager } from "./backend-manager";
 import { DEFAULT_SETTINGS } from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
-import { cloneSettings, defaultLoadPolicy, hotConfig, settingsImpact } from "./settings";
+import { cloneSettings, defaultLoadPolicy, hotConfig, migrateSettings, settingsImpact } from "./settings";
 import type { BackendStatus, VaultSearchSettings } from "./types";
 import { VaultEventQueue } from "./vault-event-queue";
 import { VaultSearchModal } from "./search-modal";
@@ -81,7 +81,9 @@ export default class VaultSearchPlugin extends Plugin {
 
   onunload(): void {
     this.queue?.clear();
-    if (this.backend) void this.backend.stop();
+    // Plugin unload must not kill a standalone daemon started by the CLI; it
+    // only detaches from it (heartbeat stops, process survives).
+    if (this.backend) void this.backend.stop(true);
   }
 
   async loadSettings(): Promise<void> {
@@ -89,10 +91,14 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings = { ...DEFAULT_SETTINGS, ...(loaded || {}) };
     this.settings.includeGlobs = loaded?.includeGlobs || [...DEFAULT_SETTINGS.includeGlobs];
     this.settings.excludeGlobs = loaded?.excludeGlobs || [...DEFAULT_SETTINGS.excludeGlobs];
+    const migrated = migrateSettings(this.settings);
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
     this.draftSettings = cloneSettings(this.settings);
+    if (migrated || loaded?.loadPolicy === undefined) {
+      await this.saveSettings();
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -266,7 +272,6 @@ export default class VaultSearchPlugin extends Plugin {
     await this.backend.stop();
     this.settingTab?.display();
   }
-
   async restartBackend(): Promise<void> {
     this.startupPrepared = false;
     await this.prepareRuntime(this.settings, false);
@@ -394,7 +399,9 @@ export default class VaultSearchPlugin extends Plugin {
         const result = await this.backend.call<Record<string, unknown>>(
           "reconcile", { mode: "fast" }, 600_000);
         if (result.rebuild_required) {
-          new Notice("Vault Search 인덱스가 없습니다. 설정에서 전체 재구축을 실행하세요.", 8000);
+          const status = this.backend.status;
+          const action = status.recommended_action === "rebuild_vectors" ? "벡터 재구축" : "전체 재구축";
+          new Notice(`Vault Search 인덱스에 호환성 문제가 있습니다. 설정에서 ${action}을 실행하세요.`, 8000);
         }
       }
       this.startupPrepared = true;

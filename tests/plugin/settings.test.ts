@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/constants";
-import { cloneSettings, defaultLoadPolicy, settingsImpact } from "../../src/settings";
+import { SETTINGS_VERSION, cloneSettings, defaultLoadPolicy, migrateSettings, settingsImpact } from "../../src/settings";
 
 describe("default load policy", () => {
   it("follows the engine: onnx -> first-search, pytorch -> vault-open", () => {
@@ -17,7 +17,7 @@ describe("default load policy", () => {
 describe("settings impact", () => {
   it("classifies hot, vector, and complete rebuild changes", () => {
     const current = cloneSettings(DEFAULT_SETTINGS);
-    const hot = cloneSettings(current); hot.finalTopK = 40;
+    const hot = cloneSettings(current); hot.rrfK = 80;
     expect(settingsImpact(current, hot)).toBe("hot");
     const diversity = cloneSettings(current); diversity.maxChunksPerFile = 2;
     expect(settingsImpact(current, diversity)).toBe("hot");
@@ -42,5 +42,36 @@ describe("settings impact", () => {
     const copy = cloneSettings(DEFAULT_SETTINGS);
     copy.includeGlobs.push("extra/**");
     expect(DEFAULT_SETTINGS.includeGlobs).not.toContain("extra/**");
+  });
+});
+
+describe("settings migration", () => {
+  it("migrates untouched legacy defaults to benchmarked defaults", () => {
+    const legacy = { ...DEFAULT_SETTINGS, bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
+    delete (legacy as { settingsVersion?: number }).settingsVersion;
+    migrateSettings(legacy);
+    expect(legacy.bm25TopK).toBe(80);
+    expect(legacy.vectorTopK).toBe(80);
+    expect(legacy.finalTopK).toBe(40);
+    expect(legacy.settingsVersion).toBe(SETTINGS_VERSION);
+  });
+
+  it("preserves user-customized candidate widths", () => {
+    const custom = { ...DEFAULT_SETTINGS, bm25TopK: 60, vectorTopK: 60, finalTopK: 30 };
+    delete (custom as { settingsVersion?: number }).settingsVersion;
+    migrateSettings(custom);
+    expect(custom.bm25TopK).toBe(60);
+    expect(custom.vectorTopK).toBe(60);
+    expect(custom.finalTopK).toBe(30);
+  });
+
+  it("is idempotent once versioned", () => {
+    const migrated = { ...DEFAULT_SETTINGS, bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
+    delete (migrated as { settingsVersion?: number }).settingsVersion;
+    migrateSettings(migrated);
+    const stamped = cloneSettings(migrated);
+    migrateSettings(stamped);
+    expect(stamped.bm25TopK).toBe(80);
+    expect(stamped.settingsVersion).toBe(SETTINGS_VERSION);
   });
 });

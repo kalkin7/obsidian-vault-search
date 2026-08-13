@@ -34,6 +34,7 @@ export interface VaultSearchSettings {
   autoSync: boolean;
   startupReconcile: boolean;
   modelIdleTimeoutSeconds: number;
+  settingsVersion?: number;
 }
 
 export interface BackendStatus {
@@ -52,6 +53,10 @@ export interface BackendStatus {
   pending_recovery_required?: boolean;
   pending_recovery_warning?: string | null;
   runtime_warning?: string | null;
+  index_validation_state?: "pending" | "compatible" | "incompatible";
+  index_rebuild_required?: boolean;
+  index_problems?: string[];
+  recommended_action?: "rebuild_vectors" | "rebuild_all" | null;
   capabilities?: {
     onnx_available?: boolean;
     cuda_available?: boolean;
@@ -71,13 +76,19 @@ export interface PythonRuntimeInfo {
 }
 
 export interface RuntimeInfo {
+  runtime_schema?: number;
   protocol_version: number;
+  backend_version?: string;
+  vault_id?: string;
+  vault_path?: string;
   host: string;
   port: number;
   token: string;
   pid: number;
   state: string;
   model_id: string;
+  owner?: "plugin" | "standalone";
+  parent_pid?: number;
 }
 
 export interface BackendResponse<T = unknown> {

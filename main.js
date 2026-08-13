@@ -2749,7 +2749,7 @@ var import_obsidian = require("obsidian");
 
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
-var BACKEND_VERSION = "0.1.3";
+var BACKEND_VERSION = "0.1.4";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -2797,9 +2797,9 @@ var DEFAULT_SETTINGS = {
   chunkChars: 400,
   chunkOverlap: 60,
   chunkingStrategy: "paragraph-v1",
-  bm25TopK: 30,
-  vectorTopK: 30,
-  finalTopK: 20,
+  bm25TopK: 80,
+  vectorTopK: 80,
+  finalTopK: 40,
   rrfK: 60,
   maxChunksPerFile: 1,
   titleRrfWeight: 1,
@@ -2894,6 +2894,7 @@ var BackendManager = class {
   backendProvision = null;
   startGeneration = 0;
   statusValue = { state: "stopped" };
+  ownership = "none";
   get dataDir() {
     return vaultDataDir(this.vaultPath);
   }
@@ -3167,6 +3168,7 @@ var BackendManager = class {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await (0, import_promises.mkdir)(this.dataDir, { recursive: true });
+    if (await this.tryAttachStandalone()) return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -3209,6 +3211,7 @@ var BackendManager = class {
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.child = child;
+    this.ownership = "child";
     const log = (0, import_fs.createWriteStream)(path2.join(this.dataDir, "backend.log"), { flags: "a" });
     let stdoutBuffer = "";
     child.stdout.on("data", (chunk) => {
@@ -3246,6 +3249,7 @@ var BackendManager = class {
   async waitUntilAvailable(timeoutMs = 1e4) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (this.ownership === "attached") await this.refreshStatus().catch(() => void 0);
       const state = this.statusValue.state;
       if (["idle", "loading_model", "ready", "ready_no_index"].includes(state)) return this.status;
       if (state === "error") throw new Error(this.statusValue.error || "Backend failed");
@@ -3256,6 +3260,7 @@ var BackendManager = class {
   async waitUntilReady(timeoutMs = 18e4) {
     const started = Date.now();
     while (Date.now() - started < timeoutMs) {
+      if (this.ownership === "attached") await this.refreshStatus().catch(() => void 0);
       const state = this.statusValue.state;
       if (state === "ready" || state === "ready_no_index") return this.status;
       if (state === "error") throw new Error(this.statusValue.error || "Backend failed");
@@ -3263,7 +3268,15 @@ var BackendManager = class {
     }
     throw new Error("Backend model loading timed out");
   }
-  async stop() {
+  async refreshStatus() {
+    const runtime = this.runtime || await this.readRuntime();
+    if (!runtime) return;
+    const response = await requestBackend(runtime, "status", {}, 3e3);
+    if (response.ok) {
+      this.setStatus({ ...response.data || {}, pid: runtime.pid, port: runtime.port });
+    }
+  }
+  async stop(preserveAttached = false) {
     this.stopping = true;
     ++this.startGeneration;
     const installer = this.runtimeInstaller;
@@ -3280,13 +3293,29 @@ var BackendManager = class {
     if (starting) await starting.catch(() => void 0);
     this.clearHeartbeat();
     const child = this.child;
-    if (child?.stdin.writable) child.stdin.end();
     const runtime = this.runtime || await this.readRuntime();
+    if (this.ownership === "attached" && preserveAttached) {
+      this.runtime = null;
+      this.child = null;
+      this.ownership = "none";
+      this.setStatus({ state: "stopped" });
+      return;
+    }
+    if (child?.stdin.writable) child.stdin.end();
     const ownedPid = runtime?.pid ?? child?.pid;
     if (runtime) {
       try {
         await requestBackend(runtime, "shutdown", {}, 2e3);
       } catch {
+      }
+    }
+    if (runtime && !child) {
+      const deadline = Date.now() + 1e4;
+      while (this.pidRunning(ownedPid) && Date.now() < deadline) {
+        await new Promise((resolve3) => setTimeout(resolve3, 200));
+      }
+      if (this.pidRunning(ownedPid)) {
+        throw new Error(`Standalone backend did not stop: PID ${ownedPid}`);
       }
     }
     if (child && child.exitCode === null) {
@@ -3307,6 +3336,7 @@ var BackendManager = class {
     }
     this.runtime = null;
     this.child = null;
+    this.ownership = "none";
     this.setStatus({ state: "stopped" });
   }
   async restart() {
@@ -3326,7 +3356,15 @@ var BackendManager = class {
         response.error?.details
       );
     }
-    return response.data;
+    const data = response.data;
+    if (data && typeof data === "object" && "state" in data) {
+      this.setStatus({
+        ...data,
+        pid: runtime.pid,
+        port: runtime.port
+      });
+    }
+    return data;
   }
   async ensureStarted() {
     if (!this.child || this.child.exitCode !== null) await this.start(false);
@@ -3378,7 +3416,10 @@ var BackendManager = class {
         port: Number(event.data.port),
         model_id: String(event.data.model_id || "")
       });
-      this.startHeartbeat();
+      void this.readRuntime().then((runtime) => {
+        if (runtime) this.runtime = runtime;
+        this.startHeartbeat();
+      });
       return;
     }
     if (event.event === "idle") {
@@ -3452,9 +3493,56 @@ var BackendManager = class {
       return null;
     }
   }
-  async stopStaleRuntime() {
+  /** Attach to a healthy standalone backend instead of spawning a child.
+   *  A standalone daemon started by the CLI must survive plugin reloads, so it
+   *  is adopted (heartbeat kept, ownership "attached") and never killed by the
+   *  plugin lifecycle. */
+  async tryAttachStandalone() {
+    const runtime = await this.readRuntime();
+    if (!runtime) return false;
+    if (runtime.owner !== "standalone") return false;
+    if (runtime.protocol_version !== PROTOCOL_VERSION) return false;
+    if (runtime.backend_version && runtime.backend_version !== this.manifestVersion) return false;
+    if (runtime.vault_path && this.vaultPath) {
+      const normalized = (value) => value.replace(/\\/g, "/").toLowerCase();
+      if (normalized(runtime.vault_path) !== normalized(this.vaultPath)) return false;
+    }
+    if (!this.pidRunning(runtime.pid)) return false;
+    let statusData;
+    try {
+      const response = await requestBackend(runtime, "status", {}, 2e3);
+      if (!response.ok) return false;
+      statusData = response.data ?? { state: "stopped" };
+    } catch {
+      return false;
+    }
+    this.runtime = runtime;
+    this.child = null;
+    this.ownership = "attached";
+    this.setStatus({ ...statusData, pid: runtime.pid, port: runtime.port });
+    this.startHeartbeat();
+    return true;
+  }
+  stopStaleRuntime() {
+    return this.stopExistingRuntime(false);
+  }
+  async stopExistingRuntime(preserveAttached) {
     const runtime = await this.readRuntime();
     if (!runtime) return;
+    let authentic = false;
+    if (this.pidRunning(runtime.pid)) {
+      try {
+        const status = await requestBackend(runtime, "status", {}, 2e3);
+        authentic = status.ok;
+      } catch {
+        authentic = false;
+      }
+    }
+    if (runtime.owner === "standalone" && preserveAttached && authentic) return;
+    if (!authentic) {
+      await (0, import_promises.rm)(this.runtimePath, { force: true }).catch(() => void 0);
+      return;
+    }
     try {
       await requestBackend(runtime, "shutdown", {}, 1e3);
     } catch {
@@ -3560,6 +3648,24 @@ function hotConfig(settings) {
     excludeGlobs: settings.excludeGlobs
   };
 }
+var SETTINGS_VERSION = 1;
+var LEGACY_DEFAULT_TOP = { bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
+function migrateSettings(settings) {
+  if ((settings.settingsVersion ?? 0) >= SETTINGS_VERSION) return false;
+  const top = {
+    bm25TopK: settings.bm25TopK,
+    vectorTopK: settings.vectorTopK,
+    finalTopK: settings.finalTopK
+  };
+  const untouched = top.bm25TopK === LEGACY_DEFAULT_TOP.bm25TopK && top.vectorTopK === LEGACY_DEFAULT_TOP.vectorTopK && top.finalTopK === LEGACY_DEFAULT_TOP.finalTopK;
+  if (untouched) {
+    settings.bm25TopK = 80;
+    settings.vectorTopK = 80;
+    settings.finalTopK = 40;
+  }
+  settings.settingsVersion = SETTINGS_VERSION;
+  return true;
+}
 
 // src/settings-tab.ts
 var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
@@ -3583,6 +3689,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       status.model_load_seconds !== void 0 ? `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08` : "",
       status.progress ? `\uC9C4\uD589: ${status.progress}` : "",
       status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
+      status.index_rebuild_required ? `\uC778\uB371\uC2A4 \uD638\uD658\uC131 \uBB38\uC81C: ${status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uD544\uC694" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uD544\uC694"}` : "",
       status.error ? `\uC624\uB958: ${status.error}` : "",
       this.owner.runtimeSummary,
       this.owner.runtimeWarning || ""
@@ -4158,17 +4265,21 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
   }
   onunload() {
     this.queue?.clear();
-    if (this.backend) void this.backend.stop();
+    if (this.backend) void this.backend.stop(true);
   }
   async loadSettings() {
     const loaded = await this.loadData();
     this.settings = { ...DEFAULT_SETTINGS, ...loaded || {} };
     this.settings.includeGlobs = loaded?.includeGlobs || [...DEFAULT_SETTINGS.includeGlobs];
     this.settings.excludeGlobs = loaded?.excludeGlobs || [...DEFAULT_SETTINGS.excludeGlobs];
+    const migrated = migrateSettings(this.settings);
     if (loaded?.loadPolicy === void 0) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
     this.draftSettings = cloneSettings(this.settings);
+    if (migrated || loaded?.loadPolicy === void 0) {
+      await this.saveSettings();
+    }
   }
   async saveSettings() {
     const { pythonExecutable, ...portable } = this.settings;
@@ -4462,7 +4573,9 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
           6e5
         );
         if (result.rebuild_required) {
-          new import_obsidian5.Notice("Vault Search \uC778\uB371\uC2A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uC804\uCCB4 \uC7AC\uAD6C\uCD95\uC744 \uC2E4\uD589\uD558\uC138\uC694.", 8e3);
+          const status = this.backend.status;
+          const action = status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95";
+          new import_obsidian5.Notice(`Vault Search \uC778\uB371\uC2A4\uC5D0 \uD638\uD658\uC131 \uBB38\uC81C\uAC00 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C ${action}\uC744 \uC2E4\uD589\uD558\uC138\uC694.`, 8e3);
         }
       }
       this.startupPrepared = true;

@@ -90,6 +90,16 @@ class SearchEngine:
     def search(self, query: str, top_k: int | None = None,
                verbose: bool = False, match_mode: str = "any",
                intent: str | None = None) -> list[dict[str, Any]]:
+        return self._run_search(query, top_k, verbose, match_mode, intent).results
+
+    def search_detailed(self, query: str, top_k: int | None = None,
+                        verbose: bool = False, match_mode: str = "any",
+                        intent: str | None = None) -> SearchOutcome:
+        return self._run_search(query, top_k, verbose, match_mode, intent)
+
+    def _run_search(self, query: str, top_k: int | None = None,
+                    verbose: bool = False, match_mode: str = "any",
+                    intent: str | None = None) -> SearchOutcome:
         if not self.config.db_path.exists() or not self.config.vector_path.exists():
             raise FileNotFoundError("Search index is missing; run rebuild_all")
         if self.model.dimension is None:
@@ -139,7 +149,7 @@ class SearchEngine:
             channels.append(("vector", vector_ids, 1.0))
             ranked, sources = weighted_rrf(channels, self.config.rrf_k)
             if not ranked:
-                return []
+                return SearchOutcome([], 0, int(top_k or self.config.final_top_k), 0)
 
             candidate_ids = [chunk_id for chunk_id, _score in ranked]
             placeholders = ",".join("?" for _ in candidate_ids)
@@ -198,9 +208,10 @@ class SearchEngine:
                             1.0 / (self.config.rrf_k + vector_rank[chunk_id]), 6)
                     entry["rrf_contributions"] = contributions
                 results.append(entry)
-            return expand_wiki_sources(
+            results = expand_wiki_sources(
                 connection, self.config, results, query, intent, requested,
                 verbose, query_tokens, match_mode)
+            return SearchOutcome(results, len(candidate_ids), requested, len(results))
         finally:
             connection.close()
 
@@ -373,3 +384,29 @@ class IndexCompatibilityError(RuntimeError):
     def __init__(self, problems: list[str]):
         self.problems = problems
         super().__init__("Index rebuild required: " + "; ".join(problems))
+
+
+class SearchOutcome:
+    """Search results plus diagnostics about the candidate pool.
+
+    ``candidate_pool_size`` is the number of distinct chunk IDs that reached
+    the RRF merge before the final diversity selection, so callers can detect
+    when ``top_k`` exceeds the pool and explain a short result list.
+    """
+
+    def __init__(self, results: list[dict[str, Any]], candidate_pool_size: int,
+                 requested_top_k: int, returned_count: int):
+        self.results = results
+        self.candidate_pool_size = candidate_pool_size
+        self.requested_top_k = requested_top_k
+        self.returned_count = returned_count
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "results": self.results,
+            "diagnostics": {
+                "candidate_pool_size": self.candidate_pool_size,
+                "requested_top_k": self.requested_top_k,
+                "returned_count": self.returned_count,
+            },
+        }

@@ -98,15 +98,21 @@ def validate_index_files(config: SearchConfig, dimension: int,
                          check_scope: bool = False,
                          effective_provider: str | None = None) -> list[str]:
     actual = load_metadata(config.metadata_path)
-    problems = validate_metadata(
-        actual, expected_metadata(config, dimension, effective_provider), check_scope)
+    expected = expected_metadata(config, dimension, effective_provider)
+    problems = validate_metadata(actual, expected, check_scope)
     if actual is None:
         return problems
     db_metadata = read_index_metadata(config.db_path)
     if db_metadata is None:
         problems.append("SQLite index_metadata missing")
-    elif db_metadata.get("index_generation") != actual.get("index_generation"):
-        problems.append("SQLite/metadata generation mismatch")
+    else:
+        if db_metadata.get("index_generation") != actual.get("index_generation"):
+            problems.append("SQLite/metadata generation mismatch")
+        # Cross-check the SQLite metadata against the expected engine/model
+        # contract too. A generation match alone is insufficient: the SQLite
+        # copy could have been written by a different engine or tokenizer.
+        sqlite_problems = validate_metadata(db_metadata, expected, check_scope)
+        problems.extend(sqlite_problems)
     if config.db_path.exists():
         import sqlite3
         connection = sqlite3.connect(str(config.db_path))
@@ -136,6 +142,41 @@ def validate_index_files(config: SearchConfig, dimension: int,
     except Exception as exc:
         problems.append(f"vector index invalid: {type(exc).__name__}: {exc}")
     return problems
+
+
+REBUILD_VECTORS_PREFIXES = (
+    "engine:", "provider:", "effective_provider:", "model_id:",
+    "embedding_dimension:", "normalize_embeddings:", "query_prefix:", "document_prefix:",
+    "vector ", "metadata/vector",
+)
+REBUILD_ALL_PREFIXES = (
+    "schema_version:", "lexical_schema_version:", "chunking_strategy:", "chunker_version:",
+    "chunk_chars:", "chunk_overlap:", "tokenizer_version:", "scope_config_hash:",
+    "SQLite ", "metadata missing", "generation mismatch", "lexical ", "missing lexical",
+    "file lexical", "body lexical", "heading lexical", "chunk_headings_fts",
+    "index missing", "Unsupported future state schema version",
+    "Lexical migration", "State migration", "state schema", "core schema",
+)
+
+
+def classify_index_problems(problems: list[str]) -> str:
+    """Classify compatibility problems into the minimal recovery action.
+
+    ``rebuild_vectors`` re-embeds the same chunks (engine/provider/model/
+    normalization/vector-file mismatches); ``rebuild_all`` re-chunks the vault
+    (schema/chunking/tokenizer/scope/lexical mismatches). Any structural
+    problem forces ``rebuild_all`` even if vector-only problems are also
+    present.
+    """
+    if not problems:
+        return "none"
+    for problem in problems:
+        if any(problem.startswith(prefix) for prefix in REBUILD_ALL_PREFIXES):
+            return "rebuild_all"
+    for problem in problems:
+        if any(problem.startswith(prefix) for prefix in REBUILD_VECTORS_PREFIXES):
+            return "rebuild_vectors"
+    return "rebuild_all"
 
 
 def write_metadata(path: Path, metadata: dict[str, Any]) -> None:

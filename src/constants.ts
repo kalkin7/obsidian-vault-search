@@ -2,7 +2,7 @@ import type { VaultSearchSettings } from "./types";
 
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
-export const BACKEND_VERSION = "0.1.3";
+export const BACKEND_VERSION = "0.1.4";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
 export const MODEL_PROFILES: Record<string, {
@@ -58,9 +58,9 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   chunkChars: 400,
   chunkOverlap: 60,
   chunkingStrategy: "paragraph-v1",
-  bm25TopK: 30,
-  vectorTopK: 30,
-  finalTopK: 20,
+  bm25TopK: 80,
+  vectorTopK: 80,
+  finalTopK: 40,
   rrfK: 60,
   maxChunksPerFile: 1,
   titleRrfWeight: 1,
