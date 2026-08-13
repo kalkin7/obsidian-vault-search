@@ -47,6 +47,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
   engine: "pytorch",
+  provider: "auto",
   device: "auto",
   queryPrefix: "query: ",
   documentPrefix: "passage: ",

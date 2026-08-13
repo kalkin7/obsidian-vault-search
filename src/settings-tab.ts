@@ -99,6 +99,15 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           if (draft.engine === "onnx") draft.device = "cuda";
           this.display();
         }));
+    new Setting(containerEl).setName("ONNX 실행 제공자 (provider)")
+      .setDesc("auto는 TensorRT가 설치되어 있으면 TensorRT를 우선하고, 아니면 CUDA로 폴백합니다. tensorrt를 명시하면 TensorRT가 없을 때 오류로 표시됩니다. ONNX 엔진에서만 사용됩니다.")
+      .addDropdown(dropdown => dropdown
+        .addOption("auto", "자동 (TensorRT 우선)")
+        .addOption("cuda", "CUDA")
+        .addOption("tensorrt", "TensorRT")
+        .setValue(draft.provider)
+        .setDisabled(draft.engine !== "onnx")
+        .onChange(value => { draft.provider = value as typeof draft.provider; }));
     new Setting(containerEl).setName("CUDA 런타임")
       .setDesc("NVIDIA GPU용 PyTorch를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.")
       .addButton(button => button.setButtonText("CUDA 런타임 설치").onClick(async () => {

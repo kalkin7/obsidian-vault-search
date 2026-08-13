@@ -80,6 +80,7 @@ var DEFAULT_SETTINGS = {
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
   engine: "pytorch",
+  provider: "auto",
   device: "auto",
   queryPrefix: "query: ",
   documentPrefix: "passage: ",
@@ -720,7 +721,8 @@ function equal(a, b) {
 }
 function settingsImpact(current, next) {
   if (ALL_KEYS.some((key) => !equal(current[key], next[key]))) return "all";
-  if (VECTOR_KEYS.some((key) => !equal(current[key], next[key]))) return "vectors";
+  const providerChangedForOnnx = (current.engine === "onnx" || next.engine === "onnx") && !equal(current.provider, next.provider);
+  if (VECTOR_KEYS.some((key) => !equal(current[key], next[key])) || providerChangedForOnnx) return "vectors";
   if (RESTART_KEYS.some((key) => !equal(current[key], next[key]))) return "restart";
   if (SCOPE_KEYS.some((key) => !equal(current[key], next[key]))) return "scope";
   if (HOT_KEYS.some((key) => !equal(current[key], next[key]))) return "hot";
@@ -827,6 +829,9 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
       draft.engine = value;
       if (draft.engine === "onnx") draft.device = "cuda";
       this.display();
+    }));
+    new import_obsidian.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc("auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 TensorRT\uB97C \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4. tensorrt\uB97C \uBA85\uC2DC\uD558\uBA74 TensorRT\uAC00 \uC5C6\uC744 \uB54C \uC624\uB958\uB85C \uD45C\uC2DC\uB429\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9 (TensorRT \uC6B0\uC120)").addOption("cuda", "CUDA").addOption("tensorrt", "TensorRT").setValue(draft.provider).setDisabled(draft.engine !== "onnx").onChange((value) => {
+      draft.provider = value;
     }));
     new import_obsidian.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc("NVIDIA GPU\uC6A9 PyTorch\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => button.setButtonText("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58").onClick(async () => {
       try {

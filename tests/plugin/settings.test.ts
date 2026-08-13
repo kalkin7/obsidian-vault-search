@@ -11,6 +11,14 @@ describe("settings impact", () => {
     expect(settingsImpact(current, diversity)).toBe("hot");
     const vector = cloneSettings(current); vector.queryPrefix = "";
     expect(settingsImpact(current, vector)).toBe("vectors");
+    const providerOnnx = cloneSettings(current); providerOnnx.engine = "onnx";
+    providerOnnx.provider = "tensorrt";
+    expect(settingsImpact(current, providerOnnx)).toBe("vectors");
+    const pytorchWithProvider = cloneSettings(current);
+    pytorchWithProvider.provider = "tensorrt";
+    const providerIgnoredForPytorch = cloneSettings(pytorchWithProvider);
+    providerIgnoredForPytorch.provider = "auto";
+    expect(settingsImpact(pytorchWithProvider, providerIgnoredForPytorch)).toBe("hot");
     const all = cloneSettings(current); all.chunkChars = 500;
     expect(settingsImpact(current, all)).toBe("all");
     const strategy = cloneSettings(current); strategy.chunkingStrategy = "markdown-v2";

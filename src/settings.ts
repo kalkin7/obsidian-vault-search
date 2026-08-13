@@ -21,7 +21,9 @@ function equal(a: unknown, b: unknown): boolean {
 
 export function settingsImpact(current: VaultSearchSettings, next: VaultSearchSettings): SettingsImpact {
   if (ALL_KEYS.some(key => !equal(current[key], next[key]))) return "all";
-  if (VECTOR_KEYS.some(key => !equal(current[key], next[key]))) return "vectors";
+  const providerChangedForOnnx = (current.engine === "onnx" || next.engine === "onnx")
+    && !equal(current.provider, next.provider);
+  if (VECTOR_KEYS.some(key => !equal(current[key], next[key])) || providerChangedForOnnx) return "vectors";
   if (RESTART_KEYS.some(key => !equal(current[key], next[key]))) return "restart";
   if (SCOPE_KEYS.some(key => !equal(current[key], next[key]))) return "scope";
   if (HOT_KEYS.some(key => !equal(current[key], next[key]))) return "hot";
