@@ -152,6 +152,7 @@ describe("backend provisioning", () => {
       requestUrlMock.mockResolvedValue({
         status: 200,
         arrayBuffer: buildRawZip([
+          ["backend/vault_search/__init__.py", `__version__ = "${VERSION}"`],
           ["backend/ok.txt", "fine"],
           ["backend/../../escaped.txt", "evil"],
         ]),

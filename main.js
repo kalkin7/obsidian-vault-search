@@ -3118,6 +3118,15 @@ var BackendManager = class {
     if (backendEntries.length === 0) {
       throw new Error("\uB9B4\uB9AC\uC2A4 zip\uC5D0 backend/ \uD3F4\uB354\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4");
     }
+    const initEntry = zip.getEntries().find(
+      (e) => e.entryName === "backend/vault_search/__init__.py"
+    );
+    const versionMatch = initEntry ? /__version__\s*=\s*["']([^"']+)["']/.exec(initEntry.getData().toString("utf8")) : null;
+    if (!versionMatch || versionMatch[1] !== this.manifestVersion) {
+      throw new Error(
+        `\uB9B4\uB9AC\uC2A4 zip\uC758 \uBC31\uC5D4\uB4DC \uBC84\uC804\uC774 \uC77C\uCE58\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4: \uAE30\uB300 ${this.manifestVersion}, \uBC1C\uACAC ${versionMatch ? versionMatch[1] : "\uC5C6\uC74C"}. ${zipUrl}`
+      );
+    }
     const tempRoot = path2.join(this.pluginDir, `backend.provision-${Date.now()}`);
     const tempBackend = path2.join(tempRoot, "backend");
     try {

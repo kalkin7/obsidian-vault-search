@@ -135,6 +135,33 @@ def _windowless_python(python: str) -> str:
     return python
 
 
+def _terminate_startup_process(process: subprocess.Popen) -> None:
+    """Kill a standalone process we spawned that never published a runtime.
+
+    Best effort: kill the whole process tree (Windows taskkill /T, POSIX
+    process group) and reap so repeated CLI calls cannot accumulate zombies.
+    """
+    try:
+        if process.poll() is not None:
+            return
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True, timeout=5,
+            )
+        else:
+            try:
+                os.killpg(os.getpgid(process.pid), 9)
+            except ProcessLookupError:
+                pass
+        process.wait(timeout=5)
+    except Exception:
+        try:
+            process.kill()
+        except Exception:
+            pass
+
+
 def _spawn_standalone(vault: Path, timeout: float, idle_exit_seconds: float) -> dict[str, Any]:
     """Start a detached standalone backend and wait until it is listening.
 
@@ -202,6 +229,7 @@ def _spawn_standalone(vault: Path, timeout: float, idle_exit_seconds: float) -> 
             raise ServiceUnavailable(
                 f"Standalone backend exited during startup (code {process.returncode}); see {log_path}")
         time.sleep(0.1)
+    _terminate_startup_process(process)
     raise ServiceUnavailable("Standalone backend did not start listening in time")
 
 

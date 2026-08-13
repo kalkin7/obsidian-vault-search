@@ -241,6 +241,20 @@ export class BackendManager {
       throw new Error("릴리스 zip에 backend/ 폴더가 없습니다");
     }
 
+    // Integrity check: the downloaded backend must report the same version the
+    // plugin expects. A stale or tampered zip (even from the same URL) would
+    // otherwise install code that inspectPython then rejects — or worse.
+    const initEntry = zip.getEntries().find(
+      e => e.entryName === "backend/vault_search/__init__.py");
+    const versionMatch = initEntry
+      ? /__version__\s*=\s*["']([^"']+)["']/.exec(initEntry.getData().toString("utf8"))
+      : null;
+    if (!versionMatch || versionMatch[1] !== this.manifestVersion) {
+      throw new Error(
+        `릴리스 zip의 백엔드 버전이 일치하지 않습니다: 기대 ${this.manifestVersion}, ` +
+        `발견 ${versionMatch ? versionMatch[1] : "없음"}. ${zipUrl}`);
+    }
+
     const tempRoot = path.join(this.pluginDir, `backend.provision-${Date.now()}`);
     const tempBackend = path.join(tempRoot, "backend");
     try {

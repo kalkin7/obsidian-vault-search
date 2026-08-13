@@ -1,8 +1,7 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [switch]$SkipBuild,
-    [switch]$SkipPublish,
-    [switch]$ForceRerelease
+    [switch]$SkipPublish
 )
 
 $ErrorActionPreference = "Stop"
@@ -85,6 +84,9 @@ try {
     # as main.js is expected to be committed as its own commit).
     Write-Host "==> Checking working tree is clean" -ForegroundColor Cyan
     $dirty = @(git status --porcelain)
+    if ($LASTEXITCODE -ne 0) {
+        throw "git status failed; cannot verify the working tree."
+    }
     if ($dirty.Count -gt 0) {
         Write-Host "    working tree is dirty:" -ForegroundColor Yellow
         $dirty | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
@@ -113,35 +115,25 @@ try {
         exit 0
     }
 
-    # 4. Tag + push. Refuse to re-tag an already-published version unless the
-    # caller explicitly opts in; re-tagging moves the remote tag and is unsafe
-    # for released versions.
-    $remoteTagExists = gh release view $Tag --json tagName 2>$null
-    if ($remoteTagExists -and -not $ForceRerelease) {
-        throw "$Tag already exists on the remote; bump the version or pass -ForceRerelease."
+    # 4. Tag + push. Published versions are immutable: never re-tag or overwrite
+    # an existing remote tag/release. Fixes ship as a new version.
+    gh release view $Tag --json tagName *> $null
+    if ($LASTEXITCODE -eq 0) {
+        throw "$Tag already exists on the remote; bump the version. Published assets are immutable."
+    }
+    if ($LASTEXITCODE -gt 1) {
+        throw "Could not query remote release $Tag (gh exit $LASTEXITCODE); aborting."
     }
     Write-Host "==> Tagging $Tag" -ForegroundColor Cyan
-    if (git tag -l $Tag) { git tag -d $Tag }
     Invoke-Checked { git tag -a $Tag -m "$Tag" } "git tag"
-    if ($remoteTagExists) {
-        Invoke-Checked { git push --force origin $Tag } "git push tag (forced)"
-    } else {
-        Invoke-Checked { git push origin $Tag } "git push tag"
-    }
+    Invoke-Checked { git push origin $Tag } "git push tag"
 
     # 5. Create release with all assets (zip + individual files)
     Write-Host "==> Creating GitHub release $Tag" -ForegroundColor Cyan
-    if ($remoteTagExists) {
-        Write-Host "    release already exists; uploading assets" -ForegroundColor Yellow
-        Invoke-Checked {
-            gh release upload $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" --clobber
-        } "gh release upload"
-    } else {
-        Invoke-Checked {
-            gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" `
-                --title $Tag --notes "BRAT-compatible release $Tag (zip + individual assets)"
-        } "gh release create"
-    }
+    Invoke-Checked {
+        gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" `
+            --title $Tag --notes "BRAT-compatible release $Tag (zip + individual assets)"
+    } "gh release create"
 
     # 6. Verify asset completeness
     Write-Host "==> Verifying release assets" -ForegroundColor Cyan

@@ -406,10 +406,16 @@ class SearchService:
         except Exception as exc:
             self.state = previous if previous.startswith("ready") else "ready"
             self.error = f"{type(exc).__name__}: {exc}"
-            self.index_rebuild_reason = None
-            self.index_problems = []
-            self.recommended_action = None
-            self.index_validation_state = "pending"
+            # Do not blindly clear the incompatibility cache: a rejected
+            # rebuild (e.g. tokenizer/scope mismatch) leaves the on-disk index
+            # unchanged, so re-validate against the actual disk state instead
+            # of reporting a false "compatible" immediately after.
+            try:
+                self._refresh_index_compatibility()
+            except Exception:
+                # Validation itself failed; keep any prior incompatibility
+                # rather than hiding it.
+                pass
             raise
         finally:
             self._refresh_cached_counts()
