@@ -2,6 +2,8 @@
 
 Portable settings are stored in plugin `data.json`. The Python executable is machine-local and stored in `%LOCALAPPDATA%/ObsidianVaultSearch/vaults/<vault-id>/machine.json`.
 
+- `loadPolicy` defaults are engine-aware: `first-search` for `engine=onnx` (fast cold start), `vault-open` for `engine=pytorch` (slow cold start). The default applies only when the setting is not explicitly chosen; changing the engine also updates the load policy while it is still at the previous engine's default.
+
 - Search top-k, RRF, `maxChunksPerFile`, `titleRrfWeight`, and `prefixFallback` changes are hot-applied.
 - `maxChunksPerFile` defaults to 1 to maximize distinct-file coverage for agent retrieval.
 - `titleRrfWeight` is the independent title retrieval channel weight; 0 disables the channel so only body/vector candidates remain.

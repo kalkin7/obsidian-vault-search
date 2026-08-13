@@ -75,7 +75,7 @@ var MODEL_PROFILES = {
   }
 };
 var DEFAULT_SETTINGS = {
-  loadPolicy: "vault-open",
+  loadPolicy: "first-search",
   pythonExecutable: "python",
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
@@ -719,6 +719,9 @@ var HOT_KEYS = [
 function equal(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+function defaultLoadPolicy(engine) {
+  return engine === "onnx" ? "first-search" : "vault-open";
+}
 function settingsImpact(current, next) {
   if (ALL_KEYS.some((key) => !equal(current[key], next[key]))) return "all";
   const providerChangedForOnnx = (current.engine === "onnx" || next.engine === "onnx") && !equal(current.provider, next.provider);
@@ -796,7 +799,7 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
         this.showError(error);
       }
     })).addButton((button) => button.setButtonText("\uBCC0\uACBD \uCDE8\uC18C").onClick(() => this.owner.resetDraftSettings()));
-    new import_obsidian.Setting(containerEl).setName("\uC2DC\uC791 \uC815\uCC45").addDropdown((dropdown) => dropdown.addOption("vault-open", "\uBCFC\uD2B8\uB97C \uC5F4 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("first-search", "\uCCAB \uAC80\uC0C9 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("manual", "\uC218\uB3D9 \uC2DC\uC791").setValue(draft.loadPolicy).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uC2DC\uC791 \uC815\uCC45").setDesc("\uAE30\uBCF8\uAC12\uC740 \uC5D4\uC9C4\uC5D0 \uB530\uB77C \uC790\uB3D9 \uC870\uC815\uB429\uB2C8\uB2E4: ONNX\uB294 \uCCAB \uAC80\uC0C9 \uC2DC \uB85C\uB4DC, PyTorch\uB294 \uBCFC\uD2B8 \uC5F4 \uB54C \uB85C\uB4DC. \uC5EC\uAE30\uC11C \uC9C1\uC811 \uC120\uD0DD\uD558\uBA74 \uADF8 \uAC12\uC774 \uC720\uC9C0\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("vault-open", "\uBCFC\uD2B8\uB97C \uC5F4 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("first-search", "\uCCAB \uAC80\uC0C9 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("manual", "\uC218\uB3D9 \uC2DC\uC791").setValue(draft.loadPolicy).onChange((value) => {
       draft.loadPolicy = value;
       this.display();
     }));
@@ -822,8 +825,12 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID").addText((text) => text.setValue(draft.modelId).onChange((value) => {
       draft.modelId = value.trim();
     }));
-    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc("ONNX Runtime(\uAE30\uBCF8): \uC9C1\uC811 ONNX \uACBD\uB85C\uB85C \uC2DC\uC791\uC774 \uBE60\uB974\uACE0 \uC720\uD734 \uC2DC VRAM/RAM\uC744 \uD574\uC81C\uD569\uB2C8\uB2E4. GPU\uAC00 \uC788\uC73C\uBA74 TensorRT/CUDA\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC790\uB3D9 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. PyTorch: \uBC8C\uD06C \uC778\uB371\uC2F1\uC774 \uAC00\uC7A5 \uBE60\uB974\uC9C0\uB9CC \uC2DC\uC791\uC774 \uB290\uB9BD\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("onnx", "ONNX Runtime (\uAE30\uBCF8, \uAD8C\uC7A5)").addOption("pytorch", "PyTorch").setValue(draft.engine).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc("ONNX Runtime(\uAE30\uBCF8): \uC9C1\uC811 ONNX \uACBD\uB85C\uB85C \uC2DC\uC791\uC774 \uBE60\uB974\uACE0 \uC720\uD734 \uC2DC VRAM/RAM\uC744 \uD574\uC81C\uD569\uB2C8\uB2E4. GPU\uAC00 \uC788\uC73C\uBA74 TensorRT/CUDA\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC790\uB3D9 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. PyTorch: \uBC8C\uD06C \uC778\uB371\uC2F1\uC774 \uAC00\uC7A5 \uBE60\uB974\uC9C0\uB9CC \uC2DC\uC791\uC774 \uB290\uB9BD\uB2C8\uB2E4. \uBC31\uC5D4\uB4DC\uB97C \uBC14\uAFB8\uBA74 \uC2DC\uC791 \uC815\uCC45 \uAE30\uBCF8\uAC12\uB3C4 \uD568\uAED8 \uC870\uC815\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("onnx", "ONNX Runtime (\uAE30\uBCF8, \uAD8C\uC7A5)").addOption("pytorch", "PyTorch").setValue(draft.engine).onChange((value) => {
+      const previous = draft.engine;
       draft.engine = value;
+      if (draft.loadPolicy === defaultLoadPolicy(previous)) {
+        draft.loadPolicy = defaultLoadPolicy(draft.engine);
+      }
       this.display();
     }));
     containerEl.createEl("h3", { text: "\uACE0\uAE09 \uC124\uC815" });
@@ -1341,6 +1348,9 @@ var VaultSearchPlugin = class extends import_obsidian4.Plugin {
     this.settings = { ...DEFAULT_SETTINGS, ...loaded || {} };
     this.settings.includeGlobs = loaded?.includeGlobs || [...DEFAULT_SETTINGS.includeGlobs];
     this.settings.excludeGlobs = loaded?.excludeGlobs || [...DEFAULT_SETTINGS.excludeGlobs];
+    if (loaded?.loadPolicy === void 0) {
+      this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
+    }
     this.draftSettings = cloneSettings(this.settings);
   }
   async saveSettings() {

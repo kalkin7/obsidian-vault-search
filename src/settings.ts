@@ -1,4 +1,4 @@
-import type { VaultSearchSettings } from "./types";
+import type { EnginePreference, LoadPolicy, VaultSearchSettings } from "./types";
 
 export type SettingsImpact = "none" | "hot" | "scope" | "restart" | "vectors" | "all";
 
@@ -17,6 +17,13 @@ const HOT_KEYS: (keyof VaultSearchSettings)[] = [
 
 function equal(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+/** Engine-aware load policy default. ONNX starts fast (~1.5 s CPU) so it
+ * defaults to loading on first search; PyTorch cold start is slow (~9 s), so
+ * it defaults to preloading at vault open. Explicit choices are respected. */
+export function defaultLoadPolicy(engine: EnginePreference): LoadPolicy {
+  return engine === "onnx" ? "first-search" : "vault-open";
 }
 
 export function settingsImpact(current: VaultSearchSettings, next: VaultSearchSettings): SettingsImpact {

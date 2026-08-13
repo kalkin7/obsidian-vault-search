@@ -3,7 +3,7 @@ import * as path from "path";
 import { BackendManager } from "./backend-manager";
 import { DEFAULT_SETTINGS } from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
-import { cloneSettings, hotConfig, settingsImpact } from "./settings";
+import { cloneSettings, defaultLoadPolicy, hotConfig, settingsImpact } from "./settings";
 import type { BackendStatus, VaultSearchSettings } from "./types";
 import { VaultEventQueue } from "./vault-event-queue";
 import { VaultSearchModal } from "./search-modal";
@@ -89,6 +89,9 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings = { ...DEFAULT_SETTINGS, ...(loaded || {}) };
     this.settings.includeGlobs = loaded?.includeGlobs || [...DEFAULT_SETTINGS.includeGlobs];
     this.settings.excludeGlobs = loaded?.excludeGlobs || [...DEFAULT_SETTINGS.excludeGlobs];
+    if (loaded?.loadPolicy === undefined) {
+      this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
+    }
     this.draftSettings = cloneSettings(this.settings);
   }
 

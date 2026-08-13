@@ -1,6 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../../src/constants";
-import { cloneSettings, settingsImpact } from "../../src/settings";
+import { cloneSettings, defaultLoadPolicy, settingsImpact } from "../../src/settings";
+
+describe("default load policy", () => {
+  it("follows the engine: onnx -> first-search, pytorch -> vault-open", () => {
+    expect(defaultLoadPolicy("onnx")).toBe("first-search");
+    expect(defaultLoadPolicy("pytorch")).toBe("vault-open");
+  });
+
+  it("defaults to first-search for the default onnx engine", () => {
+    expect(DEFAULT_SETTINGS.engine).toBe("onnx");
+    expect(DEFAULT_SETTINGS.loadPolicy).toBe("first-search");
+  });
+});
 
 describe("settings impact", () => {
   it("classifies hot, vector, and complete rebuild changes", () => {

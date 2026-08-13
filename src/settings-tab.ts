@@ -1,7 +1,7 @@
 import { Notice, PluginSettingTab, Setting } from "obsidian";
 import type VaultSearchPlugin from "./main";
 import { MODEL_PROFILES } from "./constants";
-import { settingsImpact } from "./settings";
+import { defaultLoadPolicy, settingsImpact } from "./settings";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
   constructor(private readonly owner: VaultSearchPlugin) {
@@ -46,7 +46,9 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       }))
       .addButton(button => button.setButtonText("변경 취소").onClick(() => this.owner.resetDraftSettings()));
 
-    new Setting(containerEl).setName("시작 정책").addDropdown(dropdown => dropdown
+    new Setting(containerEl).setName("시작 정책")
+      .setDesc("기본값은 엔진에 따라 자동 조정됩니다: ONNX는 첫 검색 시 로드, PyTorch는 볼트 열 때 로드. 여기서 직접 선택하면 그 값이 유지됩니다.")
+      .addDropdown(dropdown => dropdown
       .addOption("vault-open", "볼트를 열 때 모델 로드")
       .addOption("first-search", "첫 검색 때 모델 로드")
       .addOption("manual", "수동 시작")
@@ -82,12 +84,16 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers 모델 ID")
       .addText(text => text.setValue(draft.modelId).onChange(value => { draft.modelId = value.trim(); }));
     new Setting(containerEl).setName("임베딩 백엔드")
-      .setDesc("ONNX Runtime(기본): 직접 ONNX 경로로 시작이 빠르고 유휴 시 VRAM/RAM을 해제합니다. GPU가 있으면 TensorRT/CUDA를, 없으면 CPU를 자동 사용합니다. PyTorch: 벌크 인덱싱이 가장 빠르지만 시작이 느립니다.")
+      .setDesc("ONNX Runtime(기본): 직접 ONNX 경로로 시작이 빠르고 유휴 시 VRAM/RAM을 해제합니다. GPU가 있으면 TensorRT/CUDA를, 없으면 CPU를 자동 사용합니다. PyTorch: 벌크 인덱싱이 가장 빠르지만 시작이 느립니다. 백엔드를 바꾸면 시작 정책 기본값도 함께 조정됩니다.")
       .addDropdown(dropdown => dropdown
         .addOption("onnx", "ONNX Runtime (기본, 권장)")
         .addOption("pytorch", "PyTorch")
         .setValue(draft.engine).onChange(value => {
+          const previous = draft.engine;
           draft.engine = value as typeof draft.engine;
+          if (draft.loadPolicy === defaultLoadPolicy(previous)) {
+            draft.loadPolicy = defaultLoadPolicy(draft.engine);
+          }
           this.display();
         }));
 

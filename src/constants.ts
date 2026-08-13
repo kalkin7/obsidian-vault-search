@@ -42,7 +42,7 @@ export const MODEL_PROFILES: Record<string, {
 };
 
 export const DEFAULT_SETTINGS: VaultSearchSettings = {
-  loadPolicy: "vault-open",
+  loadPolicy: "first-search",
   pythonExecutable: "python",
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
