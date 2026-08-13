@@ -81,35 +81,56 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("모델 ID")
       .setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers 모델 ID")
       .addText(text => text.setValue(draft.modelId).onChange(value => { draft.modelId = value.trim(); }));
+    new Setting(containerEl).setName("임베딩 백엔드")
+      .setDesc("ONNX Runtime(기본): 직접 ONNX 경로로 시작이 빠르고 유휴 시 VRAM/RAM을 해제합니다. GPU가 있으면 TensorRT/CUDA를, 없으면 CPU를 자동 사용합니다. PyTorch: 벌크 인덱싱이 가장 빠르지만 시작이 느립니다.")
+      .addDropdown(dropdown => dropdown
+        .addOption("onnx", "ONNX Runtime (기본, 권장)")
+        .addOption("pytorch", "PyTorch")
+        .setValue(draft.engine).onChange(value => {
+          draft.engine = value as typeof draft.engine;
+          this.display();
+        }));
+
+    containerEl.createEl("h3", { text: "고급 설정" });
+
     new Setting(containerEl).setName("디바이스")
-      .setDesc("자동은 NVIDIA GPU와 검증된 CUDA 런타임이 있으면 GPU를, 아니면 사유를 표시하고 CPU를 사용합니다." +
-        (draft.engine === "onnx" ? " ONNX 엔진에서는 CUDA로 고정됩니다." : ""))
+      .setDesc("자동(기본)은 GPU와 검증된 CUDA 런타임이 있으면 GPU를, 없으면 CPU를 사용합니다. CUDA를 명시하면 대용량 런타임 다운로드가 필요할 수 있습니다.")
       .addDropdown(dropdown => dropdown
       .addOption("auto", "자동").addOption("cpu", "CPU").addOption("cuda", "CUDA")
       .setValue(draft.device)
-      .setDisabled(draft.engine === "onnx")
       .onChange(value => { draft.device = value as typeof draft.device; }));
-    new Setting(containerEl).setName("임베딩 엔진")
-      .setDesc("ONNX는 GPU에서 풀링을 수행해 콜드 시작과 웜 검색이 빠르고 VRAM 반환이 가능하지만, 벌크 인코딩은 PyTorch보다 느립니다. ONNX를 선택하면 디바이스가 CUDA로 고정됩니다.")
-      .addDropdown(dropdown => dropdown
-        .addOption("pytorch", "PyTorch (기본)")
-        .addOption("onnx", "ONNX Runtime (CUDA)")
-        .setValue(draft.engine).onChange(value => {
-          draft.engine = value as typeof draft.engine;
-          if (draft.engine === "onnx") draft.device = "cuda";
-          this.display();
-        }));
+    const caps = status.capabilities;
+    if (draft.engine === "onnx" && caps && caps.derived_model_available === false) {
+      new Setting(containerEl).setName("ONNX 파생 모델 준비")
+        .setDesc(caps.model_available === false
+          ? "e5-base 모델 스냅샷이 로컬에 없습니다. 먼저 intfloat/multilingual-e5-base를 받아 주세요."
+          : "로컬 스냅샷에 파생 풀링 그래프(onnx/model-pooled-normalized.onnx)가 없습니다. 생성을 실행하면 ONNX 엔진을 사용할 수 있습니다.")
+        .addButton(button => {
+          button.setButtonText("파생 모델 생성").setCta();
+          if (caps.model_available === false) button.setDisabled(true);
+          button.onClick(async () => {
+            try { await this.owner.provisionOnnx(); } catch (error) { this.showError(error); }
+          });
+        });
+    }
+    const providerOptions: Array<[string, string]> = [["auto", "자동"]];
+    if (caps?.cuda_available) providerOptions.push(["cuda", "CUDA"]);
+    if (caps?.tensorrt_available) providerOptions.push(["tensorrt", "TensorRT"]);
+    const supported = caps
+      ? [caps.cuda_available && "CUDA", caps.tensorrt_available && "TensorRT"].filter(Boolean).join(", ") || "CPU만"
+      : "서비스 시작 후 확인";
+    const providerValue = providerOptions.some(([value]) => value === draft.provider)
+      ? draft.provider : "auto";
     new Setting(containerEl).setName("ONNX 실행 제공자 (provider)")
-      .setDesc("auto는 TensorRT가 설치되어 있으면 TensorRT를 우선하고, 아니면 CUDA로 폴백합니다. tensorrt를 명시하면 TensorRT가 없을 때 오류로 표시됩니다. ONNX 엔진에서만 사용됩니다.")
-      .addDropdown(dropdown => dropdown
-        .addOption("auto", "자동 (TensorRT 우선)")
-        .addOption("cuda", "CUDA")
-        .addOption("tensorrt", "TensorRT")
-        .setValue(draft.provider)
-        .setDisabled(draft.engine !== "onnx")
-        .onChange(value => { draft.provider = value as typeof draft.provider; }));
+      .setDesc(`CUDA에서만 사용됩니다. 이 머신 지원: ${supported}. auto는 TensorRT가 설치되어 있으면 우선하고, 아니면 CUDA로 폴백합니다.`)
+      .addDropdown(dropdown => {
+        for (const [value, label] of providerOptions) dropdown.addOption(value, label);
+        dropdown.setValue(providerValue)
+          .setDisabled(draft.engine !== "onnx" || draft.device !== "cuda")
+          .onChange(value => { draft.provider = value as typeof draft.provider; });
+      });
     new Setting(containerEl).setName("CUDA 런타임")
-      .setDesc("NVIDIA GPU용 PyTorch를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.")
+      .setDesc("NVIDIA GPU용 PyTorch와 onnxruntime-gpu를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.")
       .addButton(button => button.setButtonText("CUDA 런타임 설치").onClick(async () => {
         try { await this.owner.installCudaRuntime(); } catch (error) { this.showError(error); }
       }));

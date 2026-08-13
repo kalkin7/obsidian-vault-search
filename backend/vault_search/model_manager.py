@@ -64,32 +64,52 @@ class ModelManager:
             raise RuntimeError(
                 "engine=onnx currently supports only "
                 "intfloat/multilingual-e5-base (derived pooled graph)")
-        if self.config.device == "cpu":
-            raise RuntimeError("engine=onnx requires device=cuda on this build")
         if not _is_importable("onnxruntime"):
             raise RuntimeError("onnxruntime is not installed in this runtime")
         import onnxruntime as ort
-        if "TensorrtExecutionProvider" not in ort.get_available_providers() and \
-                "CUDAExecutionProvider" not in ort.get_available_providers():
+        available = ort.get_available_providers()
+        has_cuda = ("CUDAExecutionProvider" in available
+                    or "TensorrtExecutionProvider" in available)
+        requested = self.config.device
+        use_cuda = requested == "cuda" or (requested == "auto" and has_cuda)
+        if requested == "cuda" and not has_cuda:
             raise RuntimeError(
-                "engine=onnx requires a CUDA-capable execution provider "
-                "(TensorRT or CUDA), but none is available")
+                "engine=onnx with device=cuda requires a CUDA-capable "
+                "execution provider (TensorRT or CUDA), but none is available")
         model_dir = _resolve_model_dir(self.config.model_id)
         if model_dir is None:
             raise RuntimeError(
                 f"model snapshot not found locally: {self.config.model_id} "
                 "(inference must not download)")
+        provider_choice = self.config.provider if use_cuda else "cpu"
         try:
             self.model = DirectE5Onnx(
                 model_dir,
-                provider=self.config.provider,
+                provider=provider_choice,
                 normalize_embeddings=self.config.normalize_embeddings,
                 trt_cache_dir=self.config.data_dir / "trt-cache",
                 trt_max_batch=self.config.embedding_batch_size_gpu,
             )
         except OSError:
             raise
-        self.device = "cuda"
+        except RuntimeError:
+            if requested != "auto":
+                raise
+            # device=auto means "use the best available". A CUDA EP can be
+            # registered yet still fail to create a session (driver/initialization
+            # issues), so retry on the CPU provider instead of hard-failing.
+            try:
+                self.model = DirectE5Onnx(
+                    model_dir,
+                    provider="cpu",
+                    normalize_embeddings=self.config.normalize_embeddings,
+                    trt_cache_dir=self.config.data_dir / "trt-cache",
+                    trt_max_batch=self.config.embedding_batch_size_gpu,
+                )
+            except Exception:
+                raise
+            use_cuda = False
+        self.device = "cuda" if use_cuda else "cpu"
         self.dimension = int(self.model.dimension)
 
     def release(self) -> None:

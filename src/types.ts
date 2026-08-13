@@ -52,6 +52,13 @@ export interface BackendStatus {
   pending_recovery_required?: boolean;
   pending_recovery_warning?: string | null;
   runtime_warning?: string | null;
+  capabilities?: {
+    onnx_available?: boolean;
+    cuda_available?: boolean;
+    tensorrt_available?: boolean;
+    model_available?: boolean;
+    derived_model_available?: boolean;
+  };
 }
 
 export interface PythonRuntimeInfo {

@@ -43,7 +43,7 @@ var path2 = __toESM(require("path"));
 
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
-var BACKEND_VERSION = "0.1.1";
+var BACKEND_VERSION = "0.1.2";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
     name: "Multilingual E5 Base (\uAD8C\uC7A5, \uC800\uC790\uC6D0)",
@@ -79,7 +79,7 @@ var DEFAULT_SETTINGS = {
   pythonExecutable: "python",
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
-  engine: "pytorch",
+  engine: "onnx",
   provider: "auto",
   device: "auto",
   queryPrefix: "query: ",
@@ -253,7 +253,7 @@ var BackendManager = class {
   async inspectPython(pythonExecutable) {
     const code = [
       "import importlib.util,json,sys,torch,vault_search",
-      "required=['transformers','tokenizers','sentence_transformers','kiwipiepy','usearch','numpy']",
+      "required=['transformers','tokenizers','sentence_transformers','kiwipiepy','usearch','numpy','onnxruntime']",
       "assert all(importlib.util.find_spec(name) for name in required)",
       "print(json.dumps({'base':sys._base_executable,'torch':torch.__version__,'backend':vault_search.__version__,'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available(),'device_name':torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))"
     ].join(";");
@@ -822,18 +822,40 @@ var VaultSearchSettingTab = class extends import_obsidian.PluginSettingTab {
     new import_obsidian.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID").addText((text) => text.setValue(draft.modelId).onChange((value) => {
       draft.modelId = value.trim();
     }));
-    new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9\uC740 NVIDIA GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC544\uB2C8\uBA74 \uC0AC\uC720\uB97C \uD45C\uC2DC\uD558\uACE0 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4." + (draft.engine === "onnx" ? " ONNX \uC5D4\uC9C4\uC5D0\uC11C\uB294 CUDA\uB85C \uACE0\uC815\uB429\uB2C8\uB2E4." : "")).addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).setDisabled(draft.engine === "onnx").onChange((value) => {
-      draft.device = value;
-    }));
-    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC5D4\uC9C4").setDesc("ONNX\uB294 GPU\uC5D0\uC11C \uD480\uB9C1\uC744 \uC218\uD589\uD574 \uCF5C\uB4DC \uC2DC\uC791\uACFC \uC6DC \uAC80\uC0C9\uC774 \uBE60\uB974\uACE0 VRAM \uBC18\uD658\uC774 \uAC00\uB2A5\uD558\uC9C0\uB9CC, \uBC8C\uD06C \uC778\uCF54\uB529\uC740 PyTorch\uBCF4\uB2E4 \uB290\uB9BD\uB2C8\uB2E4. ONNX\uB97C \uC120\uD0DD\uD558\uBA74 \uB514\uBC14\uC774\uC2A4\uAC00 CUDA\uB85C \uACE0\uC815\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("pytorch", "PyTorch (\uAE30\uBCF8)").addOption("onnx", "ONNX Runtime (CUDA)").setValue(draft.engine).onChange((value) => {
+    new import_obsidian.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc("ONNX Runtime(\uAE30\uBCF8): \uC9C1\uC811 ONNX \uACBD\uB85C\uB85C \uC2DC\uC791\uC774 \uBE60\uB974\uACE0 \uC720\uD734 \uC2DC VRAM/RAM\uC744 \uD574\uC81C\uD569\uB2C8\uB2E4. GPU\uAC00 \uC788\uC73C\uBA74 TensorRT/CUDA\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC790\uB3D9 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. PyTorch: \uBC8C\uD06C \uC778\uB371\uC2F1\uC774 \uAC00\uC7A5 \uBE60\uB974\uC9C0\uB9CC \uC2DC\uC791\uC774 \uB290\uB9BD\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("onnx", "ONNX Runtime (\uAE30\uBCF8, \uAD8C\uC7A5)").addOption("pytorch", "PyTorch").setValue(draft.engine).onChange((value) => {
       draft.engine = value;
-      if (draft.engine === "onnx") draft.device = "cuda";
       this.display();
     }));
-    new import_obsidian.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc("auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 TensorRT\uB97C \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4. tensorrt\uB97C \uBA85\uC2DC\uD558\uBA74 TensorRT\uAC00 \uC5C6\uC744 \uB54C \uC624\uB958\uB85C \uD45C\uC2DC\uB429\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uB429\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9 (TensorRT \uC6B0\uC120)").addOption("cuda", "CUDA").addOption("tensorrt", "TensorRT").setValue(draft.provider).setDisabled(draft.engine !== "onnx").onChange((value) => {
-      draft.provider = value;
+    containerEl.createEl("h3", { text: "\uACE0\uAE09 \uC124\uC815" });
+    new import_obsidian.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc("\uC790\uB3D9(\uAE30\uBCF8)\uC740 GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4. CUDA\uB97C \uBA85\uC2DC\uD558\uBA74 \uB300\uC6A9\uB7C9 \uB7F0\uD0C0\uC784 \uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uD544\uC694\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addDropdown((dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
+      draft.device = value;
     }));
-    new import_obsidian.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc("NVIDIA GPU\uC6A9 PyTorch\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => button.setButtonText("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58").onClick(async () => {
+    const caps = status.capabilities;
+    if (draft.engine === "onnx" && caps && caps.derived_model_available === false) {
+      new import_obsidian.Setting(containerEl).setName("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC900\uBE44").setDesc(caps.model_available === false ? "e5-base \uBAA8\uB378 \uC2A4\uB0C5\uC0F7\uC774 \uB85C\uCEEC\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4. \uBA3C\uC800 intfloat/multilingual-e5-base\uB97C \uBC1B\uC544 \uC8FC\uC138\uC694." : "\uB85C\uCEEC \uC2A4\uB0C5\uC0F7\uC5D0 \uD30C\uC0DD \uD480\uB9C1 \uADF8\uB798\uD504(onnx/model-pooled-normalized.onnx)\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC0DD\uC131\uC744 \uC2E4\uD589\uD558\uBA74 ONNX \uC5D4\uC9C4\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => {
+        button.setButtonText("\uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131").setCta();
+        if (caps.model_available === false) button.setDisabled(true);
+        button.onClick(async () => {
+          try {
+            await this.owner.provisionOnnx();
+          } catch (error) {
+            this.showError(error);
+          }
+        });
+      });
+    }
+    const providerOptions = [["auto", "\uC790\uB3D9"]];
+    if (caps?.cuda_available) providerOptions.push(["cuda", "CUDA"]);
+    if (caps?.tensorrt_available) providerOptions.push(["tensorrt", "TensorRT"]);
+    const supported = caps ? [caps.cuda_available && "CUDA", caps.tensorrt_available && "TensorRT"].filter(Boolean).join(", ") || "CPU\uB9CC" : "\uC11C\uBE44\uC2A4 \uC2DC\uC791 \uD6C4 \uD655\uC778";
+    const providerValue = providerOptions.some(([value]) => value === draft.provider) ? draft.provider : "auto";
+    new import_obsidian.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc(`CUDA\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uB429\uB2C8\uB2E4. \uC774 \uBA38\uC2E0 \uC9C0\uC6D0: ${supported}. auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4.`).addDropdown((dropdown) => {
+      for (const [value, label] of providerOptions) dropdown.addOption(value, label);
+      dropdown.setValue(providerValue).setDisabled(draft.engine !== "onnx" || draft.device !== "cuda").onChange((value) => {
+        draft.provider = value;
+      });
+    });
+    new import_obsidian.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc("NVIDIA GPU\uC6A9 PyTorch\uC640 onnxruntime-gpu\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.").addButton((button) => button.setButtonText("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58").onClick(async () => {
       try {
         await this.owner.installCudaRuntime();
       } catch (error) {
@@ -1342,7 +1364,6 @@ var VaultSearchPlugin = class extends import_obsidian4.Plugin {
   async applyDraftSettingsInternal() {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
-    if (next.engine === "onnx") next.device = "cuda";
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
     if (previous.device !== next.device || previous.engine !== next.engine || previous.pythonExecutable !== next.pythonExecutable) {
@@ -1462,6 +1483,24 @@ var VaultSearchPlugin = class extends import_obsidian4.Plugin {
       await this.prepareRuntime(this.settings, false);
     }
     await this.backend.ensureStarted();
+  }
+  async provisionOnnx() {
+    if (this.backend.status.state === "stopped") {
+      await this.prepareRuntime(this.settings, false);
+      await this.backend.start(false);
+      try {
+        await this.backend.waitUntilAvailable();
+      } catch {
+      }
+    }
+    const result = await this.backend.call(
+      "provision_onnx",
+      {},
+      6e5
+    );
+    if (!result.provisioned) throw new Error("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131 \uC2E4\uD328");
+    new import_obsidian4.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    await this.restartBackend();
   }
   async stopBackend() {
     this.startupPrepared = false;

@@ -141,14 +141,144 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert manager.dimension == 768
 
 
-def test_load_onnx_requires_cuda(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_onnx_builds_cpu_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    built: list[dict[str, object]] = []
+
+    class DirectLoader:
+        def __init__(self, model_dir, provider=None, **kwargs):
+            built.append({"provider": provider})
+            self.dimension = 768
+            self.provider = "CPUExecutionProvider"
+
+        def encode(self, texts, batch_size=32):
+            import numpy as np
+            count = 1 if isinstance(texts, str) else len(texts)
+            return np.zeros((count, 768), dtype=np.float32)
+
+    monkeypatch.setattr(
+        "vault_search.model_manager._is_importable",
+        lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
+    monkeypatch.setitem(
+        sys.modules, "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader))
+    monkeypatch.setattr(
+        "vault_search.model_manager._resolve_model_dir",
+        lambda model_id: tmp_path / "snap")
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cpu"
     manager = ModelManager(cfg)
 
-    with pytest.raises(RuntimeError, match="requires device=cuda"):
+    manager.load()
+
+    assert built[0]["provider"] == "cpu"
+    assert manager.device == "cpu"
+    assert manager.dimension == 768
+    assert manager.effective_provider() == "CPUExecutionProvider"
+
+
+def test_load_onnx_auto_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    built: list[dict[str, object]] = []
+
+    class DirectLoader:
+        def __init__(self, model_dir, provider=None, **kwargs):
+            built.append({"provider": provider})
+            self.dimension = 768
+
+    monkeypatch.setattr(
+        "vault_search.model_manager._is_importable",
+        lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
+    monkeypatch.setitem(
+        sys.modules, "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader))
+    monkeypatch.setattr(
+        "vault_search.model_manager._resolve_model_dir",
+        lambda model_id: tmp_path / "snap")
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
+    cfg.engine = "onnx"
+    cfg.device = "auto"
+    manager = ModelManager(cfg)
+
+    manager.load()
+
+    assert built[0]["provider"] == "cpu"
+    assert manager.device == "cpu"
+
+
+def test_load_onnx_auto_retries_cpu_on_session_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    attempts: list[str] = []
+
+    class DirectLoader:
+        def __init__(self, model_dir, provider=None, **kwargs):
+            attempts.append(provider)
+            if provider != "cpu":
+                raise RuntimeError("CUDA session creation failed")
+            self.dimension = 768
+            self.provider = "CPUExecutionProvider"
+
+        def encode(self, texts, batch_size=32):
+            import numpy as np
+            count = 1 if isinstance(texts, str) else len(texts)
+            return np.zeros((count, 768), dtype=np.float32)
+
+    monkeypatch.setattr(
+        "vault_search.model_manager._is_importable",
+        lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+    monkeypatch.setitem(
+        sys.modules, "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader))
+    monkeypatch.setattr(
+        "vault_search.model_manager._resolve_model_dir",
+        lambda model_id: tmp_path / "snap")
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
+    cfg.engine = "onnx"
+    cfg.device = "auto"
+    manager = ModelManager(cfg)
+
+    manager.load()
+
+    assert attempts == ["auto", "cpu"]
+    assert manager.device == "cpu"
+    assert manager.effective_provider() == "CPUExecutionProvider"
+
+
+def test_load_onnx_cuda_explicit_does_not_fall_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    attempts: list[str] = []
+
+    class DirectLoader:
+        def __init__(self, model_dir, provider=None, **kwargs):
+            attempts.append(provider)
+            raise RuntimeError("CUDA session creation failed")
+
+    monkeypatch.setattr(
+        "vault_search.model_manager._is_importable",
+        lambda name: True)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+    monkeypatch.setitem(
+        sys.modules, "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader))
+    monkeypatch.setattr(
+        "vault_search.model_manager._resolve_model_dir",
+        lambda model_id: tmp_path / "snap")
+    cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
+    cfg.engine = "onnx"
+    cfg.device = "cuda"
+    manager = ModelManager(cfg)
+
+    with pytest.raises(RuntimeError, match="CUDA session creation failed"):
         manager.load()
+    assert attempts == ["auto"]
 
 
 def test_load_onnx_requires_cuda_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

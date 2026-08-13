@@ -113,7 +113,6 @@ export default class VaultSearchPlugin extends Plugin {
   private async applyDraftSettingsInternal(): Promise<void> {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
-    if (next.engine === "onnx") next.device = "cuda";
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
     if (previous.device !== next.device || previous.engine !== next.engine ||
@@ -236,6 +235,20 @@ export default class VaultSearchPlugin extends Plugin {
       await this.prepareRuntime(this.settings, false);
     }
     await this.backend.ensureStarted();
+  }
+
+  async provisionOnnx(): Promise<void> {
+    if (this.backend.status.state === "stopped") {
+      await this.prepareRuntime(this.settings, false);
+      await this.backend.start(false);
+      try { await this.backend.waitUntilAvailable(); }
+      catch { /* sidecar may be in error state until the derived graph exists */ }
+    }
+    const result = await this.backend.call<{ provisioned: boolean; path?: string }>(
+      "provision_onnx", {}, 600_000);
+    if (!result.provisioned) throw new Error("ONNX 파생 모델 생성 실패");
+    new Notice("ONNX 파생 모델을 생성했습니다. 서비스를 재시작합니다.", 8000);
+    await this.restartBackend();
   }
 
   async stopBackend(): Promise<void> {

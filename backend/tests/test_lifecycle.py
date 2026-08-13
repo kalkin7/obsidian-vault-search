@@ -355,3 +355,56 @@ def test_search_updates_last_activity(tmp_path: Path):
     service.call("search", {"query": "test"})
 
     assert time.monotonic() - service.last_activity < 1.0
+
+
+def test_status_includes_capabilities(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service._capabilities = None
+
+    status = service.status()
+
+    assert set(status["capabilities"]) == {
+        "onnx_available", "cuda_available", "tensorrt_available",
+        "model_available", "derived_model_available"}
+    assert set(status["capabilities"].values()) <= {True, False}
+
+
+def test_provision_onnx_requires_onnx_engine(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+
+    with pytest.raises(ServiceError) as error:
+        service.provision_onnx()
+    assert error.value.code == "INVALID_PARAMS"
+
+
+def test_provision_onnx_generates_derived(monkeypatch, tmp_path: Path):
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data",
+        model_id="intfloat/multilingual-e5-base", engine="onnx")
+    service = SearchService(config, lambda _event, _data: None)
+    monkeypatch.setattr(
+        "vault_search.model_manager._resolve_model_dir", lambda model_id: tmp_path)
+    target = tmp_path / "onnx" / "model-pooled-normalized.onnx"
+    monkeypatch.setattr(
+        "vault_search.onnx_provision.provision", lambda model_dir, verify_graph=True: target)
+
+    result = service.provision_onnx()
+
+    assert result["provisioned"] is True
+    assert result["path"] == str(target)
+    assert service._capabilities is None
+
+
+def test_provision_onnx_model_not_found(monkeypatch, tmp_path: Path):
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data",
+        model_id="intfloat/multilingual-e5-base", engine="onnx")
+    service = SearchService(config, lambda _event, _data: None)
+    monkeypatch.setattr(
+        "vault_search.model_manager._resolve_model_dir", lambda model_id: None)
+
+    with pytest.raises(ServiceError) as error:
+        service.provision_onnx()
+    assert error.value.code == "MODEL_NOT_FOUND"

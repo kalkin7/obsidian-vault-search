@@ -34,6 +34,7 @@ class SearchService:
         self._cached_counts: dict[str, Any] = {"files": 0, "chunks": 0, "vector_chunks": 0}
         self._count_available = False
         self._index_operation_active = False
+        self._capabilities: dict[str, bool] | None = None
         self._idle_watchdog: threading.Thread | None = None
         if self.config.model_idle_timeout_seconds > 0:
             self._idle_watchdog = threading.Thread(target=self._watchdog, daemon=True)
@@ -139,6 +140,60 @@ class SearchService:
         finally:
             self.ready_event.set()
 
+    def capabilities(self) -> dict[str, bool]:
+        """Execution capabilities of the current managed runtime, cached."""
+        if self._capabilities is None:
+            base = {
+                "onnx_available": False,
+                "cuda_available": False,
+                "tensorrt_available": False,
+                "model_available": False,
+                "derived_model_available": False,
+            }
+            try:
+                from .direct_onnx import runtime_capabilities
+                base.update(runtime_capabilities())
+            except Exception:
+                pass
+            try:
+                from .model_manager import _resolve_model_dir
+                model_dir = _resolve_model_dir(self.config.model_id)
+            except Exception:
+                model_dir = None
+            if model_dir is not None:
+                base["model_available"] = (
+                    (model_dir / "tokenizer.json").is_file()
+                    and (model_dir / "onnx" / "model.onnx").is_file())
+                base["derived_model_available"] = (
+                    (model_dir / "onnx" / "model-pooled-normalized.onnx").is_file())
+            self._capabilities = base
+        return self._capabilities
+
+    def provision_onnx(self) -> dict[str, Any]:
+        """Generate the derived pooled ONNX graph when it is missing."""
+        if self.config.engine != "onnx":
+            raise ServiceError("INVALID_PARAMS", "provision_onnx requires engine=onnx")
+        try:
+            from .model_manager import _resolve_model_dir
+            model_dir = _resolve_model_dir(self.config.model_id)
+        except Exception:
+            model_dir = None
+        if model_dir is None:
+            raise ServiceError(
+                "MODEL_NOT_FOUND",
+                "e5-base model snapshot is not in the local cache; "
+                "download intfloat/multilingual-e5-base first")
+        try:
+            from .onnx_provision import provision
+            path = provision(model_dir)
+        except ServiceError:
+            raise
+        except Exception as exc:
+            raise ServiceError(
+                "PROVISION_FAILED", f"{type(exc).__name__}: {exc}") from exc
+        self._capabilities = None
+        return {"provisioned": True, "path": str(path)}
+
     def status(self) -> dict[str, Any]:
         return {
             "state": self.state,
@@ -150,6 +205,7 @@ class SearchService:
             "pending_recovery_warning": self.pending_recovery_warning,
             "pending_recovery_required": self.pending_recovery_warning is not None,
             "count_available": self._count_available,
+            "capabilities": self.capabilities(),
             **self._cached_counts,
         }
 
@@ -162,6 +218,8 @@ class SearchService:
         if method == "load_model":
             self.start_initialization()
             return self.status()
+        if method == "provision_onnx":
+            return self.provision_onnx()
 
         # Everything below touches mutable ready-state references (index,
         # search_engine, state). Re-check under the operation lock so an

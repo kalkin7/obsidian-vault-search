@@ -2,7 +2,7 @@ import type { VaultSearchSettings } from "./types";
 
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
-export const BACKEND_VERSION = "0.1.1";
+export const BACKEND_VERSION = "0.1.2";
 
 export const MODEL_PROFILES: Record<string, {
   name: string;
@@ -46,7 +46,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   pythonExecutable: "python",
   modelProfile: "multilingual-e5-base",
   modelId: "intfloat/multilingual-e5-base",
-  engine: "pytorch",
+  engine: "onnx",
   provider: "auto",
   device: "auto",
   queryPrefix: "query: ",

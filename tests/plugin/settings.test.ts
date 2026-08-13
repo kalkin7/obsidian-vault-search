@@ -15,6 +15,7 @@ describe("settings impact", () => {
     providerOnnx.provider = "tensorrt";
     expect(settingsImpact(current, providerOnnx)).toBe("vectors");
     const pytorchWithProvider = cloneSettings(current);
+    pytorchWithProvider.engine = "pytorch";
     pytorchWithProvider.provider = "tensorrt";
     const providerIgnoredForPytorch = cloneSettings(pytorchWithProvider);
     providerIgnoredForPytorch.provider = "auto";

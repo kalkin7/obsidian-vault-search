@@ -91,7 +91,7 @@ export class BackendManager {
   async inspectPython(pythonExecutable: string): Promise<PythonRuntimeInfo | null> {
     const code = [
       "import importlib.util,json,sys,torch,vault_search",
-      "required=['transformers','tokenizers','sentence_transformers','kiwipiepy','usearch','numpy']",
+      "required=['transformers','tokenizers','sentence_transformers','kiwipiepy','usearch','numpy','onnxruntime']",
       "assert all(importlib.util.find_spec(name) for name in required)",
       "print(json.dumps({'base':sys._base_executable,'torch':torch.__version__,'backend':vault_search.__version__,'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available(),'device_name':torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))"
     ].join(";");

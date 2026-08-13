@@ -8,8 +8,9 @@ Portable settings are stored in plugin `data.json`. The Python executable is mac
 - `prefixFallback` retries FTS5 with token prefixes only when exact BM25 returns no results.
 - Include/exclude changes are hot-applied and reconciled.
 - Model, device, engine, provider, prefixes, and normalization trigger an atomic vector rebuild.
-- `engine` selects the embedding backend: `pytorch` (default) or `onnx` (direct ONNX Runtime, requires `device=cuda` and the `intfloat/multilingual-e5-base` model).
-- `provider` (used when `engine=onnx`) is `auto` (default), `cuda`, or `tensorrt`. `auto` prefers TensorRT when installed and falls back to the CUDA EP. Selectable in the settings tab as **ONNX 실행 제공자 (provider)**; the dropdown is disabled unless `engine=onnx`. See [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
+- `engine` selects the embedding backend: `onnx` (default) or `pytorch`. `onnx` is a direct ONNX Runtime path for the `intfloat/multilingual-e5-base` model and runs on CPU or CUDA; see [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
+- `device` is `auto` (default), `cpu`, or `cuda`. With `engine=onnx`, `auto` uses CUDA when a CUDA-capable execution provider exists and CPU otherwise.
+- `provider` (used only when `engine=onnx` and `device=cuda`) is `auto` (default), `cuda`, or `tensorrt`. `auto` prefers TensorRT when installed and falls back to the CUDA EP. The plugin exposes only the provider options the running runtime reports as usable (status `capabilities`). See [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
 - `chunkingStrategy` defaults to `paragraph-v1`, which preserves the original paragraph chunker.
 - `markdown-v2` keeps Markdown headings as embedding breadcrumbs and groups fences, tables, lists, and callouts at atom boundaries.
 - Changing the chunking strategy, chunk size, or overlap triggers an atomic complete rebuild.

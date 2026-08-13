@@ -37,8 +37,17 @@ def expected_metadata(config: SearchConfig, dimension: int,
     }
     if config.engine == "onnx":
         if effective_provider is None:
-            from .direct_onnx import _resolve_provider
-            effective_provider = _resolve_provider(config.provider)
+            if config.device == "cpu":
+                effective_provider = "CPUExecutionProvider"
+            else:
+                import onnxruntime as ort
+                available = ort.get_available_providers()
+                if ("CUDAExecutionProvider" not in available
+                        and "TensorrtExecutionProvider" not in available):
+                    effective_provider = "CPUExecutionProvider"
+                else:
+                    from .direct_onnx import _resolve_provider
+                    effective_provider = _resolve_provider(config.provider)
         payload["effective_provider"] = effective_provider
     return payload
 

@@ -53,3 +53,21 @@ def test_provider_change_requires_rebuild(tmp_path: Path):
     actual = dict(expected)
     actual["provider"] = "tensorrt"
     assert validate_metadata(actual, expected)
+
+
+def test_onnx_cpu_metadata_records_cpu_provider(tmp_path: Path):
+    cfg = config(tmp_path)
+    cfg.engine = "onnx"
+    cfg.device = "cpu"
+    metadata = expected_metadata(cfg, 768)
+    assert metadata["effective_provider"] == "CPUExecutionProvider"
+
+
+def test_onnx_cpu_provider_change_invalidates_index(tmp_path: Path):
+    cfg = config(tmp_path)
+    cfg.engine = "onnx"
+    cfg.device = "cpu"
+    expected = expected_metadata(cfg, 768, effective_provider="CPUExecutionProvider")
+    actual = dict(expected)
+    actual["effective_provider"] = "CUDAExecutionProvider"
+    assert validate_metadata(actual, expected)
