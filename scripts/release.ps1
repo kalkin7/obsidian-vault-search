@@ -1,3 +1,11 @@
+param(
+    [Parameter(Mandatory = $true)][string]$Version,
+    [switch]$SkipBuild,
+    [switch]$SkipPublish
+)
+
+$ErrorActionPreference = "Stop"
+
 # BRAT-compatible release automation.
 #
 # BRAT requires every release to carry BOTH the plugin zip AND the individual
@@ -13,12 +21,6 @@
 #   3. Build obsidian-vault-search-v<ver>.zip with backend/
 #   4. Create annotated tag v<ver> and push it
 #   5. gh release create with zip + main.js + manifest.json + styles.css + versions.json
-$ErrorActionPreference = "Stop"
-param(
-    [Parameter(Mandatory = $true)][string]$Version,
-    [switch]$SkipBuild,
-    [switch]$SkipPublish
-)
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Tag = "v$Version"
@@ -26,9 +28,16 @@ $ZipName = "obsidian-vault-search-v$Version.zip"
 
 function Assert-JsonVersion($Path, $Field, [switch]$IsKey) {
     $json = Get-Content -Raw -Encoding UTF8 $Path | ConvertFrom-Json
-    $actual = if ($IsKey) { $json.PSObject.Properties.Name } else { $json.$Field }
+    if ($IsKey) {
+        $keys = @($json.PSObject.Properties.Name)
+        if ($keys -notcontains $Version) {
+            throw "Missing version key $Version in ${Path}: found $($keys -join ', ')"
+        }
+        return
+    }
+    $actual = $json.$Field
     if ($actual -ne $Version) {
-        throw "Version mismatch in $Path: expected $Version, found $actual"
+        throw "Version mismatch in ${Path}: expected $Version, found $actual"
     }
 }
 

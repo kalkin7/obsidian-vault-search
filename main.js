@@ -2749,7 +2749,7 @@ var import_obsidian = require("obsidian");
 
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
-var BACKEND_VERSION = "0.1.4";
+var BACKEND_VERSION = "0.1.5";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
