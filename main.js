@@ -4511,6 +4511,7 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
     this.addCommand({ id: "rebuild-vectors", name: "Rebuild vector index", callback: () => void this.rebuildVectors() });
   }
   async prepareRuntime(target, interactive) {
+    await this.backend.ensureBackendProvisioned();
     const current = await this.backend.inspectPython(target.pythonExecutable);
     const cpu = await this.backend.managedRuntime("cpu");
     const cuda = await this.backend.managedRuntime("cuda");

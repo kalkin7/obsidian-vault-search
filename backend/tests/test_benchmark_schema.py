@@ -11,6 +11,7 @@ benchmark_search = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(benchmark_search)
 
 SchemaError = benchmark_search.SchemaError
+SearchRequestError = benchmark_search.SearchRequestError
 compare_baseline = benchmark_search.compare_baseline
 load_cases = benchmark_search.load_cases
 normalize_path = benchmark_search.normalize_path
@@ -209,3 +210,58 @@ def test_compare_baseline_latency_increase():
 
     passed, _failures = compare_baseline(report(124.0), report(100.0))
     assert passed
+
+
+def test_search_retries_model_loading_until_ready(monkeypatch, tmp_path: Path):
+    calls: list[str] = []
+    search_count = 0
+    search_ok = {"ok": True, "data": {"results": [{"rank": 1, "file_path": "a.md"}]}}
+
+    def fake_call(_vault, method, _params, _timeout):
+        nonlocal search_count
+        calls.append(method)
+        if method == "search":
+            search_count += 1
+            if search_count == 1:
+                return {"ok": False, "error": {"code": "MODEL_LOADING", "message": "loading"}}
+            return search_ok
+        if method == "status":
+            return {"ok": True, "data": {"state": "ready"}}
+        raise AssertionError(f"unexpected method {method}")
+
+    monkeypatch.setattr(benchmark_search, "call_runtime", fake_call)
+    result = benchmark_search._search(tmp_path, {"query": "q", "top_k": 5}, 5.0)
+    assert result == search_ok["data"]["results"]
+    assert calls[0] == "search"
+    assert "status" in calls
+    assert calls[-1] == "search"
+
+
+def test_search_retry_times_out_when_backend_stays_loading(monkeypatch, tmp_path: Path):
+    def fake_call(_vault, method, _params, _timeout):
+        if method == "search":
+            return {"ok": False, "error": {"code": "MODEL_LOADING", "message": "loading"}}
+        return {"ok": True, "data": {"state": "loading_model"}}
+
+    monkeypatch.setattr(benchmark_search, "call_runtime", fake_call)
+    monkeypatch.setattr(benchmark_search, "STARTUP_TIMEOUT", 0.5)
+    try:
+        benchmark_search._search(tmp_path, {"query": "q", "top_k": 5}, 5.0)
+        raise AssertionError("expected SearchRequestError")
+    except SearchRequestError as exc:
+        assert "startup timed out" in str(exc)
+
+
+def test_search_retry_reports_backend_error_on_state_error(monkeypatch, tmp_path: Path):
+    def fake_call(_vault, method, _params, _timeout):
+        if method == "search":
+            return {"ok": False, "error": {"code": "MODEL_LOADING", "message": "loading"}}
+        return {"ok": True, "data": {"state": "error", "error": "boom"}}
+
+    monkeypatch.setattr(benchmark_search, "call_runtime", fake_call)
+    try:
+        benchmark_search._search(tmp_path, {"query": "q", "top_k": 5}, 5.0)
+        raise AssertionError("expected SearchRequestError")
+    except SearchRequestError as exc:
+        assert "BACKEND_ERROR" in str(exc)
+        assert "boom" in str(exc)

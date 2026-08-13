@@ -123,3 +123,34 @@ def test_ensure_search_runtime_no_start_raises(monkeypatch: pytest.MonkeyPatch, 
     monkeypatch.setattr(cli, "_runtime_is_valid", lambda _vault: False)
     with pytest.raises(cli.ServiceUnavailable):
         cli._ensure_search_runtime(tmp_path, 1.0, 1800.0, no_start=True)
+
+
+def test_windowless_python_prefers_configured_sibling(tmp_path: Path):
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    python = script_dir / "python.exe"
+    python.write_bytes(b"x")
+    pythonw = script_dir / "pythonw.exe"
+    pythonw.write_bytes(b"x")
+    assert cli._windowless_python(str(python)) == str(pythonw)
+
+
+def test_windowless_python_falls_back_when_absent(tmp_path: Path):
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    python = script_dir / "python.exe"
+    python.write_bytes(b"x")
+    assert cli._windowless_python(str(python)) == str(python)
+
+
+def test_windowless_python_ignores_unrelated_pythonw(tmp_path: Path):
+    # A pythonw.exe in some other directory must never be selected: only the
+    # sibling of the configured executable is a valid windowless build.
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "pythonw.exe").write_bytes(b"x")
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    python = script_dir / "python.exe"
+    python.write_bytes(b"x")
+    assert cli._windowless_python(str(python)) == str(python)

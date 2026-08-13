@@ -325,6 +325,10 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   private async prepareRuntime(target: VaultSearchSettings, interactive: boolean): Promise<void> {
+    // Ensure the plugin-side backend matches the manifest before inspecting it:
+    // inspectPython resolves vault_search via the backend folder, so a stale
+    // (or not-yet-provisioned) folder would be read and every runtime rejected.
+    await this.backend.ensureBackendProvisioned();
     const current = await this.backend.inspectPython(target.pythonExecutable);
     const cpu = await this.backend.managedRuntime("cpu");
     const cuda = await this.backend.managedRuntime("cuda");

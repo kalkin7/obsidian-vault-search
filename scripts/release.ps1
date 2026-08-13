@@ -1,7 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Version,
     [switch]$SkipBuild,
-    [switch]$SkipPublish
+    [switch]$SkipPublish,
+    [switch]$ForceRerelease
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +26,17 @@ $ErrorActionPreference = "Stop"
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 $Tag = "v$Version"
 $ZipName = "obsidian-vault-search-v$Version.zip"
+
+# $ErrorActionPreference = "Stop" does not turn native command failures into
+# terminating errors. Run every external command through this helper and fail
+# the release as soon as one of them exits non-zero.
+function Invoke-Checked {
+    param([scriptblock]$Script, [string]$Label)
+    & $Script
+    if ($LASTEXITCODE -ne 0) {
+        throw "$Label failed with exit code $LASTEXITCODE"
+    }
+}
 
 function Assert-JsonVersion($Path, $Field, [switch]$IsKey) {
     $json = Get-Content -Raw -Encoding UTF8 $Path | ConvertFrom-Json
@@ -55,18 +67,30 @@ try {
     Assert-JsonVersion "manifest.json" "version"
     Assert-JsonVersion "package.json" "version"
     Assert-JsonVersion "versions.json" $Version -IsKey
-    Assert-TextVersion "backend/vault_search/__init__.py" '__version__ = "' + [regex]::Escape($Version) + '"'
-    Assert-TextVersion "src/constants.ts" 'BACKEND_VERSION = "' + [regex]::Escape($Version) + '"'
-    Assert-TextVersion "backend/pyproject.toml" 'version = "' + [regex]::Escape($Version) + '"'
+    Assert-TextVersion "backend/vault_search/__init__.py" ('__version__ = "' + [regex]::Escape($Version) + '"')
+    Assert-TextVersion "src/constants.ts" ('BACKEND_VERSION = "' + [regex]::Escape($Version) + '"')
+    Assert-TextVersion "backend/pyproject.toml" ('version = "' + [regex]::Escape($Version) + '"')
     Write-Host "    version consistent." -ForegroundColor Green
 
     # 2. Build + tests
     if (-not $SkipBuild) {
         Write-Host "==> Building" -ForegroundColor Cyan
-        npm run build
+        Invoke-Checked { npm run build } "npm run build"
         Write-Host "==> Backend tests" -ForegroundColor Cyan
-        python -X utf8 -m pytest backend/tests -q
+        Invoke-Checked { python -X utf8 -m pytest backend/tests -q } "backend pytest"
     }
+
+    # 2b. The release zip must be built from committed artifacts so the tag and
+    # the published files match. Refuse to tag a dirty tree (build output such
+    # as main.js is expected to be committed as its own commit).
+    Write-Host "==> Checking working tree is clean" -ForegroundColor Cyan
+    $dirty = @(git status --porcelain)
+    if ($dirty.Count -gt 0) {
+        Write-Host "    working tree is dirty:" -ForegroundColor Yellow
+        $dirty | ForEach-Object { Write-Host "      $_" -ForegroundColor Yellow }
+        throw "Working tree is dirty; commit build artifacts before releasing."
+    }
+    Write-Host "    clean." -ForegroundColor Green
 
     # 3. Build the release zip (backend/ + main.js + manifest.json + styles.css)
     Write-Host "==> Building $ZipName" -ForegroundColor Cyan
@@ -89,20 +113,34 @@ try {
         exit 0
     }
 
-    # 4. Tag + push
+    # 4. Tag + push. Refuse to re-tag an already-published version unless the
+    # caller explicitly opts in; re-tagging moves the remote tag and is unsafe
+    # for released versions.
+    $remoteTagExists = gh release view $Tag --json tagName 2>$null
+    if ($remoteTagExists -and -not $ForceRerelease) {
+        throw "$Tag already exists on the remote; bump the version or pass -ForceRerelease."
+    }
     Write-Host "==> Tagging $Tag" -ForegroundColor Cyan
     if (git tag -l $Tag) { git tag -d $Tag }
-    git tag -a $Tag -m "$Tag"
-    git push origin $Tag
+    Invoke-Checked { git tag -a $Tag -m "$Tag" } "git tag"
+    if ($remoteTagExists) {
+        Invoke-Checked { git push --force origin $Tag } "git push tag (forced)"
+    } else {
+        Invoke-Checked { git push origin $Tag } "git push tag"
+    }
 
     # 5. Create release with all assets (zip + individual files)
     Write-Host "==> Creating GitHub release $Tag" -ForegroundColor Cyan
-    if (gh release view $Tag --json tagName 2>$null) {
+    if ($remoteTagExists) {
         Write-Host "    release already exists; uploading assets" -ForegroundColor Yellow
-        gh release upload $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" --clobber
+        Invoke-Checked {
+            gh release upload $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" --clobber
+        } "gh release upload"
     } else {
-        gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" `
-            --title $Tag --notes "BRAT-compatible release $Tag (zip + individual assets)"
+        Invoke-Checked {
+            gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" `
+                --title $Tag --notes "BRAT-compatible release $Tag (zip + individual assets)"
+        } "gh release create"
     }
 
     # 6. Verify asset completeness

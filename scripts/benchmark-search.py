@@ -156,6 +156,7 @@ def _search(vault: Path, params: dict[str, Any], timeout: float) -> dict[str, An
         deadline = time.monotonic() + max(1.0, STARTUP_TIMEOUT)
         while time.monotonic() < deadline:
             time.sleep(0.25)
+            status: dict[str, Any] | None = None
             try:
                 status = call_runtime(vault, "status", {}, timeout)
             except ServiceUnavailable:
@@ -169,7 +170,8 @@ def _search(vault: Path, params: dict[str, Any], timeout: float) -> dict[str, An
                     raise SearchRequestError(str(exc)) from exc
                 break
             if state == "error":
-                message = str((status.get("data") or {}).get("error") or "Backend initialization failed")
+                status_data = (status or {}).get("data") or {}
+                message = status_data.get("error") or "Backend initialization failed"
                 raise SearchRequestError(f"[BACKEND_ERROR] {message}")
         else:
             raise SearchRequestError("[MODEL_LOADING] Model startup timed out")

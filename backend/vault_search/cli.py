@@ -121,20 +121,17 @@ def _windowless_python(python: str) -> str:
     """Return a Python executable that never opens a console window.
 
     pythonw.exe is the Windows GUI-subsystem build of python.exe; spawning it
-    with redirected stdout/stderr runs headless with no conhost at all. Falls
-    back to python.exe on non-Windows or when pythonw.exe is absent.
+    with redirected stdout/stderr runs headless with no conhost at all. Only the
+    sibling of the *configured* executable is used so the runtime (dependencies,
+    version) stays identical to what the user selected; falls back to python.exe
+    on non-Windows or when pythonw.exe is absent.
     """
     if os.name != "nt":
         return python
-    executable = Path(python)
+    executable = Path(python).resolve()
     windowless = executable.with_name("pythonw.exe")
     if windowless.exists():
         return str(windowless)
-    # python.exe may have been found via PATH; probe for a sibling pythonw.exe.
-    for directory in (executable.parent, Path(sys.executable).parent):
-        candidate = directory / "pythonw.exe"
-        if candidate.exists():
-            return str(candidate)
     return python
 
 
