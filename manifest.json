@@ -1,7 +1,7 @@
 {
   "id": "obsidian-vault-search",
   "name": "Vault Search Service",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "minAppVersion": "1.7.0",
   "description": "Loads a local hybrid-search model only while this vault is open and exposes it to CLI tools.",
   "author": "K_Notes",
