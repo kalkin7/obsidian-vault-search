@@ -117,6 +117,27 @@ def _backend_root_for(vault: Path) -> Path:
     return Path(vault_search.__file__).resolve().parents[1]
 
 
+def _windowless_python(python: str) -> str:
+    """Return a Python executable that never opens a console window.
+
+    pythonw.exe is the Windows GUI-subsystem build of python.exe; spawning it
+    with redirected stdout/stderr runs headless with no conhost at all. Falls
+    back to python.exe on non-Windows or when pythonw.exe is absent.
+    """
+    if os.name != "nt":
+        return python
+    executable = Path(python)
+    windowless = executable.with_name("pythonw.exe")
+    if windowless.exists():
+        return str(windowless)
+    # python.exe may have been found via PATH; probe for a sibling pythonw.exe.
+    for directory in (executable.parent, Path(sys.executable).parent):
+        candidate = directory / "pythonw.exe"
+        if candidate.exists():
+            return str(candidate)
+    return python
+
+
 def _spawn_standalone(vault: Path, timeout: float, idle_exit_seconds: float) -> dict[str, Any]:
     """Start a detached standalone backend and wait until it is listening.
 
@@ -142,8 +163,8 @@ def _spawn_standalone(vault: Path, timeout: float, idle_exit_seconds: float) -> 
     env["PYTHONPATH"] = str(backend_root) + (
         os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     env["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
-    args = [
-        python, "-X", "utf8", "-m", "vault_search", "serve",
+    server_args = [
+        "-X", "utf8", "-m", "vault_search", "serve",
         "--config", str(config_path),
         "--vault", str(vault),
         "--data-dir", str(data_dir),
@@ -152,18 +173,22 @@ def _spawn_standalone(vault: Path, timeout: float, idle_exit_seconds: float) -> 
         "--model-idle-seconds", "300",
     ]
     if idle_exit_seconds > 0:
-        args.extend(["--idle-exit-seconds", str(idle_exit_seconds)])
+        server_args.extend(["--idle-exit-seconds", str(idle_exit_seconds)])
     log_path = data_dir / "backend.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    # Use pythonw.exe when available so the detached server never attaches a
+    # console window (CREATE_NO_WINDOW still leaves a conhost on some builds).
+    server_python = _windowless_python(python)
     with open(log_path, "a", encoding="utf-8") as log:
         creationflags = 0
         start_new_session = False
         if os.name == "nt":
-            creationflags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            creationflags = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
         else:
             start_new_session = True
         process = subprocess.Popen(
-            args, cwd=str(backend_root), env=env,
+            [server_python, *server_args],
+            cwd=str(backend_root), env=env,
             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             creationflags=creationflags, start_new_session=start_new_session,
             close_fds=True,
