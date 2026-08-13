@@ -2968,7 +2968,12 @@ var BackendManager = class {
       "print(json.dumps({'base':sys._base_executable,'torch':torch.__version__,'backend':vault_search.__version__,'cuda_build':torch.version.cuda,'cuda_available':torch.cuda.is_available(),'device_name':torch.cuda.get_device_name(0) if torch.cuda.is_available() else None}))"
     ].join(";");
     try {
-      const stdout = await this.execFileText(pythonExecutable, ["-X", "utf8", "-c", code], 15e3);
+      const stdout = await this.execFileText(
+        pythonExecutable,
+        ["-X", "utf8", "-c", code],
+        15e3,
+        { PYTHONPATH: this.backendRoot }
+      );
       const value = JSON.parse(stdout.trim());
       if (String(value.backend || "") !== BACKEND_VERSION) return null;
       return {
@@ -3049,14 +3054,14 @@ var BackendManager = class {
     await this.writeManagedRuntime(kind, executable);
     return info;
   }
-  execFileText(executable, args, timeout) {
+  execFileText(executable, args, timeout, extraEnv) {
     return new Promise((resolve3, reject) => {
-      (0, import_child_process.execFile)(
-        executable,
-        args,
-        { timeout, windowsHide: true, encoding: "utf8" },
-        (error, stdout) => error ? reject(error) : resolve3(stdout)
-      );
+      (0, import_child_process.execFile)(executable, args, {
+        timeout,
+        windowsHide: true,
+        encoding: "utf8",
+        env: extraEnv ? { ...process.env, ...extraEnv } : void 0
+      }, (error, stdout) => error ? reject(error) : resolve3(stdout));
     });
   }
   async readBackendVersion() {
