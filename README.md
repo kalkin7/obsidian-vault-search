@@ -59,6 +59,7 @@ The expansion is limited to one hop and five source notes, and never performs a 
 - [Protocol](docs/protocol.md)
 - [Settings](docs/settings.md)
 - [ONNX / TensorRT embedding engine](docs/onnx-tensorrt-engine.md)
+- [CUDA / TensorRT production validation](docs/cuda-tensorrt-production-validation-2026-08-13.md)
 - [Development](docs/development.md)
 - [K_Notes migration and rollback](docs/migration-from-knotes.md)
 - [2026-08-11 implementation report](docs/implementation-report-2026-08-11.md)
