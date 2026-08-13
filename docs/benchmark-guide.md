@@ -126,5 +126,23 @@ CLI는 이 경우 stderr에 `[POOL_WARNING]`을 출력한다. 후보 풀은 `bm2
 
 - 같은 인덱스에서 두 번 실행 시 품질 지표가 동일하다.
 - latency를 제외한 결과 JSON이 deterministic하다.
-- 최소 12개 K_Notes case와 39개 expected path를 외부 gold set으로 재현한다.
+- 최소 12개 K_Notes case와 39개 expected path를 외부 gold set으로 재현한다. (2026-08-13 확장: **17개 case / 44 expected path** — 회의록·status·2차 업체(위쥬테크·넥스파·브리츠테크놀로지) 케이스 추가)
 - baseline JSON에 git commit hash와 backend version을 기록한다.
+
+### 2026-08-13 gold set 확장 (12→17 cases)
+
+| 케이스 | 유형 | 결과 |
+|---|---|---|
+| `meeting-minutes-2026-07` | 회의록 | recall@40 1.0 |
+| `status-ongoing-work` | status 문서 | recall@40 1.0 |
+| `vendor-wijutech` | 2차 업체 | recall@40 1.0 |
+| `vendor-nexpa` | 2차 업체 | recall@40 1.0 |
+| `vendor-britz` | 2차 업체 | recall@40 1.0 |
+
+확장 후 전체 지표(backend 0.1.4, 후보 풀 80/80, finalTopK 40):
+recall@40 **0.898**, success 1.0, complete_recall 0.765, forbidden 0. 실행 간 결정성 확인(재실행 동일).
+
+> 2026-08-13 정정: `vendor-wijutech` 쿼리는 위키 요약의 잘못된 "자동문 유지보수" 표현을 그대로 따랐던 것을 원천 기록 기준
+> ("주차 차단기 및 주차장 유도안내판 시공 업체")으로 수정했다. 위키 엔티티도 함께 정정했다.
+
+개인 볼트 gold set은 저장소에 커밋하지 않고 외부 경로(`--cases`)로만 사용한다.
