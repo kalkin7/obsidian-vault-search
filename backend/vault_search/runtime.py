@@ -49,9 +49,7 @@ def _write_private_text(path: Path, content: str) -> None:
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".tmp")
-    _write_private_text(
-        temporary, json.dumps(payload, ensure_ascii=False, indent=2)
-    )
+    _write_private_text(temporary, json.dumps(payload, ensure_ascii=False, indent=2))
     os.replace(temporary, path)
     # The replaced file inherits the temp file's 0600 mode; re-assert it as a
     # belt-and-suspenders measure for files created by older code paths.
