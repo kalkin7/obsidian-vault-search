@@ -7,8 +7,11 @@
  *     the vault is derived from the script location).
  *  2. A managed `## Vault Search` section in the vault-root AGENTS.md
  *     (marker-guarded, idempotent, conflict-safe — see updateAgentsFile).
- *  3. A skill at `.claude/skills/vault-search/SKILL.md` for skill-aware
- *     agents (Claude Code and compatible harnesses).
+ *  3. A skill installed into every supported agent harness's skill directory
+ *     (`.claude/skills`, `.codex/skills`, `.gemini/skills`, `.opencode/skills`
+ *     and Antigravity's `.gemini/antigravity/skills`, registered in
+ *     `.agent-skills.json`), all marker-guarded and never clobbering
+ *     user-authored skills.
  *
  * Safety rules:
  *  - The vault-root AGENTS.md is only ever touched by an explicit user action
@@ -28,8 +31,25 @@ export const AGENTS_MARKER_END = "<!-- vault-search:end -->";
 const SKILL_MARKER = "<!-- vault-search:managed -->";
 
 const AGENTS_FILE = "AGENTS.md";
+/** Claude Code reads CLAUDE.md (not AGENTS.md); the managed block imports
+ *  AGENTS.md so Claude gets the same instructions without duplication. */
+const CLAUDE_FILE = "CLAUDE.md";
 const WRAPPER_REL = "search.ps1";
-const SKILL_REL = [".claude", "skills", "vault-search", "SKILL.md"];
+
+/** Skill install locations, one per supported agent harness, per official docs:
+ *  - Claude Code reads .claude/skills.
+ *  - .agents/skills is the universal agent-skills standard path: Antigravity
+ *    (workspace skills), Codex (scans .agents/skills from CWD to the repo
+ *    root; the old .codex/skills catalog is deprecated) and OpenCode all read
+ *    it.
+ *  - OpenCode additionally reads its own .opencode/skills.
+ *  Gemini CLI was sunset for individual accounts (transitioned to Antigravity
+ *  CLI, June 2026). */
+const SKILL_TARGETS: string[][] = [
+  [".claude", "skills", "vault-search", "SKILL.md"],
+  [".agents", "skills", "vault-search", "SKILL.md"],
+  [".opencode", "skills", "vault-search", "SKILL.md"],
+];
 
 /** Matches search guidance that may already exist in a user's AGENTS.md. */
 const CONFLICT_RE =
@@ -45,12 +65,19 @@ export interface AgentsFileResult {
 
 export interface AgentIntegrationStatus {
   agentsFile: "absent" | "managed" | "conflict" | "plain";
+  /** CLAUDE.md status (Claude Code does not read AGENTS.md; the managed block
+   *  imports it). */
+  claudeFile: "absent" | "managed" | "conflict" | "plain";
   wrapper: boolean;
+  /** Claude Code skill copy (.claude/skills/vault-search). */
   skill: "absent" | "managed" | "other";
+  /** The universal .agents/skills copy (Antigravity, Codex, OpenCode). */
+  agentsSkill: boolean;
 }
 
 export interface AgentIntegrationResult {
   agentsFile: AgentsFileStatus;
+  claudeFile: AgentsFileStatus;
   wrapper: "written" | "unchanged";
   skill: "written" | "unchanged" | "skipped";
   /** Vault-relative path of the wrapper, for the AGENTS.md block. */
@@ -75,6 +102,15 @@ const AGENTS_BLOCK = [
   "- The plugin manages the index and service lifecycle; do not start a separate search daemon.",
   "- If `INDEX_REBUILD_REQUIRED` is returned, follow the reported recovery path (`rebuild-vectors` or `rebuild-all`).",
   "- Use `rg`/grep only to verify an exact known string or to debug search coverage — not as the normal search path.",
+  AGENTS_MARKER_END,
+].join("\n");
+
+/** Claude Code reads CLAUDE.md, not AGENTS.md — the managed CLAUDE.md block
+ *  imports AGENTS.md (the official pattern for AGENTS.md-based repos) so both
+ *  tools share one instruction set. */
+const CLAUDE_BLOCK = [
+  AGENTS_MARKER_START,
+  "@AGENTS.md",
   AGENTS_MARKER_END,
 ].join("\n");
 
@@ -128,10 +164,8 @@ const SKILL_MD = `---
 name: vault-search
 description: Default vault content search. Start every vault content search with the vault-search plugin, expand with follow-up queries, and read the source files of important results. Use rg/grep only to verify exact known strings or debug search coverage.
 license: Proprietary
-compatibility: ["claude", "codex", "gemini", "opencode"]
 metadata:
   displayName: "vault-search"
-allowed-tools: []
 ---
 
 ${SKILL_MARKER}
@@ -286,6 +320,25 @@ async function installSkill(
   return changed ? "written" : "unchanged";
 }
 
+/** Install the managed skill into every supported agent harness's directory.
+ *  A user-authored skill at one location only skips that location — the
+ *  others are still refreshed. */
+async function installSkills(
+  vaultPath: string,
+): Promise<AgentIntegrationResult["skill"]> {
+  let anyWritten = false;
+  let anySkipped = false;
+  let anyTargets = 0;
+  for (const rel of SKILL_TARGETS) {
+    const result = await installSkill(path.join(vaultPath, ...rel));
+    anyTargets += 1;
+    if (result === "written") anyWritten = true;
+    if (result === "skipped") anySkipped = true;
+  }
+  if (anyWritten) return "written";
+  return anySkipped && anyTargets === SKILL_TARGETS.length ? "skipped" : "unchanged";
+}
+
 /** Human-readable install summary for Notices. */
 export function agentIntegrationNotice(result: AgentIntegrationResult): string {
   const agents =
@@ -296,13 +349,21 @@ export function agentIntegrationNotice(result: AgentIntegrationResult): string {
         : result.agentsFile === "conflict"
           ? "AGENTS.md에 기존 검색 지시가 있어 건너뜀"
           : "AGENTS.md 동일";
+  const claude =
+    result.claudeFile === "created"
+      ? "CLAUDE.md 생성"
+      : result.claudeFile === "updated"
+        ? "CLAUDE.md 갱신"
+        : result.claudeFile === "conflict"
+          ? "CLAUDE.md에 기존 검색 지시가 있어 건너뜀"
+          : "CLAUDE.md 동일";
   const skill =
     result.skill === "written"
       ? "스킬 설치"
       : result.skill === "skipped"
         ? "기존 스킬 유지(건너뜀)"
         : "스킬 동일";
-  return `에이전트 통합: ${agents} / 래퍼 ${result.wrapper === "written" ? "설치" : "동일"} / ${skill}`;
+  return `에이전트 통합: ${agents} / ${claude} / 래퍼 ${result.wrapper === "written" ? "설치" : "동일"} / ${skill} (Claude/Codex/Antigravity/OpenCode)`;
 }
 
 /** Install (or refresh) all three artifacts. Returns a summary for the UI. */
@@ -323,11 +384,20 @@ export async function installAgentIntegration(
     await writeFile(agentsPath, agents.content, "utf8");
   }
 
-  const skillPath = path.join(vaultPath, ...SKILL_REL);
-  const skill = await installSkill(skillPath);
+  // Claude Code reads CLAUDE.md (not AGENTS.md): keep a managed block that
+  // imports AGENTS.md so Claude gets the same instructions.
+  const claudePath = path.join(vaultPath, CLAUDE_FILE);
+  const claudeExisting = await readOptional(claudePath);
+  const claude = updateAgentsFile(claudeExisting, CLAUDE_BLOCK);
+  if (claude.content !== null) {
+    await writeFile(claudePath, claude.content, "utf8");
+  }
+
+  const skill = await installSkills(vaultPath);
 
   return {
     agentsFile: agents.status,
+    claudeFile: claude.status,
     wrapper,
     skill,
     wrapperPath: path.join(
@@ -354,10 +424,23 @@ export async function agentIntegrationStatus(
     else agentsFile = "plain";
   }
 
+  const claudeExisting = await readForStatus(
+    path.join(vaultPath, CLAUDE_FILE),
+  );
+  let claudeFile: AgentIntegrationStatus["claudeFile"] = "absent";
+  if (claudeExisting !== null) {
+    if (claudeExisting.includes(AGENTS_MARKER_START))
+      claudeFile = "managed";
+    else if (CONFLICT_RE.test(claudeExisting)) claudeFile = "conflict";
+    else claudeFile = "plain";
+  }
+
   const wrapper =
     (await readForStatus(path.join(pluginDir, WRAPPER_REL))) !== null;
 
-  const skillContent = await readForStatus(path.join(vaultPath, ...SKILL_REL));
+  const skillContent = await readForStatus(
+    path.join(vaultPath, ...SKILL_TARGETS[0]),
+  );
   const skill: AgentIntegrationStatus["skill"] =
     skillContent === null
       ? "absent"
@@ -365,5 +448,12 @@ export async function agentIntegrationStatus(
         ? "managed"
         : "other";
 
-  return { agentsFile, wrapper, skill };
+  // The universal .agents/skills copy is what Antigravity, Codex and OpenCode
+  // read (Claude Code uses the .claude copy above).
+  const agentsSkill =
+    (await readForStatus(
+      path.join(vaultPath, ".agents", "skills", "vault-search", "SKILL.md"),
+    )) !== null;
+
+  return { agentsFile, claudeFile, wrapper, skill, agentsSkill };
 }

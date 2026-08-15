@@ -135,6 +135,7 @@ describe("installAgentIntegration (filesystem)", () => {
     try {
       const first = await installAgentIntegration(vault, pluginDir);
       expect(first.agentsFile).toBe("created");
+      expect(first.claudeFile).toBe("created");
       expect(first.wrapper).toBe("written");
       expect(first.skill).toBe("written");
 
@@ -143,27 +144,43 @@ describe("installAgentIntegration (filesystem)", () => {
       expect(agents).toContain(AGENTS_MARKER_END);
       expect(agents).toContain("search.ps1");
 
+      // Claude Code reads CLAUDE.md (not AGENTS.md): the managed block must
+      // import AGENTS.md.
+      const claude = await readFile(path.join(vault, "CLAUDE.md"), "utf8");
+      expect(claude).toContain(AGENTS_MARKER_START);
+      expect(claude).toContain("@AGENTS.md");
+
       const wrapper = await readFile(
         path.join(pluginDir, "search.ps1"),
         "utf8",
       );
       expect(wrapper).toContain("vault_search.cli");
 
+      // Skills go to Claude Code's dir and the universal .agents/skills path
+      // (read by Antigravity, Codex and OpenCode).
       const skill = await readFile(
         path.join(vault, ".claude", "skills", "vault-search", "SKILL.md"),
         "utf8",
       );
       expect(skill).toContain("<!-- vault-search:managed -->");
+      const agentsSkill = await readFile(
+        path.join(vault, ".agents", "skills", "vault-search", "SKILL.md"),
+        "utf8",
+      );
+      expect(agentsSkill).toContain("<!-- vault-search:managed -->");
 
       const second = await installAgentIntegration(vault, pluginDir);
       expect(second.agentsFile).toBe("unchanged");
+      expect(second.claudeFile).toBe("unchanged");
       expect(second.wrapper).toBe("unchanged");
       expect(second.skill).toBe("unchanged");
 
       const status = await agentIntegrationStatus(vault, pluginDir);
       expect(status.agentsFile).toBe("managed");
+      expect(status.claudeFile).toBe("managed");
       expect(status.wrapper).toBe(true);
       expect(status.skill).toBe("managed");
+      expect(status.agentsSkill).toBe(true);
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

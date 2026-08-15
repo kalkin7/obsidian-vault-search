@@ -2746,8 +2746,13 @@ var AGENTS_MARKER_START = "<!-- vault-search:start -->";
 var AGENTS_MARKER_END = "<!-- vault-search:end -->";
 var SKILL_MARKER = "<!-- vault-search:managed -->";
 var AGENTS_FILE = "AGENTS.md";
+var CLAUDE_FILE = "CLAUDE.md";
 var WRAPPER_REL = "search.ps1";
-var SKILL_REL = [".claude", "skills", "vault-search", "SKILL.md"];
+var SKILL_TARGETS = [
+  [".claude", "skills", "vault-search", "SKILL.md"],
+  [".agents", "skills", "vault-search", "SKILL.md"],
+  [".opencode", "skills", "vault-search", "SKILL.md"]
+];
 var CONFLICT_RE = /(?:vault\s*[-_]?search|obsidian-vault-search|Vault Search|hybrid\s*search)/i;
 var AGENTS_BLOCK = [
   AGENTS_MARKER_START,
@@ -2767,6 +2772,11 @@ var AGENTS_BLOCK = [
   "- The plugin manages the index and service lifecycle; do not start a separate search daemon.",
   "- If `INDEX_REBUILD_REQUIRED` is returned, follow the reported recovery path (`rebuild-vectors` or `rebuild-all`).",
   "- Use `rg`/grep only to verify an exact known string or to debug search coverage \u2014 not as the normal search path.",
+  AGENTS_MARKER_END
+].join("\n");
+var CLAUDE_BLOCK = [
+  AGENTS_MARKER_START,
+  "@AGENTS.md",
   AGENTS_MARKER_END
 ].join("\n");
 var SEARCH_PS1 = `# Vault Search Service \u2014 agent wrapper.
@@ -2817,10 +2827,8 @@ var SKILL_MD = `---
 name: vault-search
 description: Default vault content search. Start every vault content search with the vault-search plugin, expand with follow-up queries, and read the source files of important results. Use rg/grep only to verify exact known strings or debug search coverage.
 license: Proprietary
-compatibility: ["claude", "codex", "gemini", "opencode"]
 metadata:
   displayName: "vault-search"
-allowed-tools: []
 ---
 
 ${SKILL_MARKER}
@@ -2926,10 +2934,24 @@ async function installSkill(skillPath) {
   const changed = await writeIfChanged(skillPath, SKILL_MD);
   return changed ? "written" : "unchanged";
 }
+async function installSkills(vaultPath) {
+  let anyWritten = false;
+  let anySkipped = false;
+  let anyTargets = 0;
+  for (const rel of SKILL_TARGETS) {
+    const result = await installSkill(path.join(vaultPath, ...rel));
+    anyTargets += 1;
+    if (result === "written") anyWritten = true;
+    if (result === "skipped") anySkipped = true;
+  }
+  if (anyWritten) return "written";
+  return anySkipped && anyTargets === SKILL_TARGETS.length ? "skipped" : "unchanged";
+}
 function agentIntegrationNotice(result) {
   const agents = result.agentsFile === "created" ? "AGENTS.md \uC0DD\uC131" : result.agentsFile === "updated" ? "AGENTS.md \uAC31\uC2E0" : result.agentsFile === "conflict" ? "AGENTS.md\uC5D0 \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC5B4 \uAC74\uB108\uB700" : "AGENTS.md \uB3D9\uC77C";
+  const claude = result.claudeFile === "created" ? "CLAUDE.md \uC0DD\uC131" : result.claudeFile === "updated" ? "CLAUDE.md \uAC31\uC2E0" : result.claudeFile === "conflict" ? "CLAUDE.md\uC5D0 \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC5B4 \uAC74\uB108\uB700" : "CLAUDE.md \uB3D9\uC77C";
   const skill = result.skill === "written" ? "\uC2A4\uD0AC \uC124\uCE58" : result.skill === "skipped" ? "\uAE30\uC874 \uC2A4\uD0AC \uC720\uC9C0(\uAC74\uB108\uB700)" : "\uC2A4\uD0AC \uB3D9\uC77C";
-  return `\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569: ${agents} / \uB798\uD37C ${result.wrapper === "written" ? "\uC124\uCE58" : "\uB3D9\uC77C"} / ${skill}`;
+  return `\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569: ${agents} / ${claude} / \uB798\uD37C ${result.wrapper === "written" ? "\uC124\uCE58" : "\uB3D9\uC77C"} / ${skill} (Claude/Codex/Antigravity/OpenCode)`;
 }
 async function installAgentIntegration(vaultPath, pluginDir) {
   const wrapperPath = path.join(pluginDir, WRAPPER_REL);
@@ -2941,10 +2963,16 @@ async function installAgentIntegration(vaultPath, pluginDir) {
   if (agents.content !== null) {
     await (0, import_promises.writeFile)(agentsPath, agents.content, "utf8");
   }
-  const skillPath = path.join(vaultPath, ...SKILL_REL);
-  const skill = await installSkill(skillPath);
+  const claudePath = path.join(vaultPath, CLAUDE_FILE);
+  const claudeExisting = await readOptional(claudePath);
+  const claude = updateAgentsFile(claudeExisting, CLAUDE_BLOCK);
+  if (claude.content !== null) {
+    await (0, import_promises.writeFile)(claudePath, claude.content, "utf8");
+  }
+  const skill = await installSkills(vaultPath);
   return {
     agentsFile: agents.status,
+    claudeFile: claude.status,
     wrapper,
     skill,
     wrapperPath: path.join(
@@ -2963,10 +2991,25 @@ async function agentIntegrationStatus(vaultPath, pluginDir) {
     else if (CONFLICT_RE.test(existing)) agentsFile = "conflict";
     else agentsFile = "plain";
   }
+  const claudeExisting = await readForStatus(
+    path.join(vaultPath, CLAUDE_FILE)
+  );
+  let claudeFile = "absent";
+  if (claudeExisting !== null) {
+    if (claudeExisting.includes(AGENTS_MARKER_START))
+      claudeFile = "managed";
+    else if (CONFLICT_RE.test(claudeExisting)) claudeFile = "conflict";
+    else claudeFile = "plain";
+  }
   const wrapper = await readForStatus(path.join(pluginDir, WRAPPER_REL)) !== null;
-  const skillContent = await readForStatus(path.join(vaultPath, ...SKILL_REL));
+  const skillContent = await readForStatus(
+    path.join(vaultPath, ...SKILL_TARGETS[0])
+  );
   const skill = skillContent === null ? "absent" : skillContent.includes(SKILL_MARKER) ? "managed" : "other";
-  return { agentsFile, wrapper, skill };
+  const agentsSkill = await readForStatus(
+    path.join(vaultPath, ".agents", "skills", "vault-search", "SKILL.md")
+  ) !== null;
+  return { agentsFile, claudeFile, wrapper, skill, agentsSkill };
 }
 
 // src/backend-manager.ts
@@ -4493,9 +4536,11 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
   agentStatusText(agent) {
     const agents = agent.agentsFile === "absent" ? "AGENTS.md: \uC5C6\uC74C" : agent.agentsFile === "managed" ? "AGENTS.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C" : agent.agentsFile === "conflict" ? "AGENTS.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "AGENTS.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
+    const claude = agent.claudeFile === "absent" ? "CLAUDE.md: \uC5C6\uC74C" : agent.claudeFile === "managed" ? "CLAUDE.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C (AGENTS.md import)" : agent.claudeFile === "conflict" ? "CLAUDE.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "CLAUDE.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
     const wrapper = agent.wrapper ? "\uB798\uD37C: \uC124\uCE58\uB428" : "\uB798\uD37C: \uC5C6\uC74C";
-    const skill = agent.skill === "absent" ? "\uC2A4\uD0AC: \uC5C6\uC74C" : agent.skill === "managed" ? "\uC2A4\uD0AC: \uAD00\uB9AC\uB428" : "\uC2A4\uD0AC: \uAE30\uC874 \uD30C\uC77C";
-    return `\uD604\uC7AC \uC0C1\uD0DC \u2014 ${agents} / ${wrapper} / ${skill}`;
+    const skill = agent.skill === "absent" ? "\uC2A4\uD0AC(Claude): \uC5C6\uC74C" : agent.skill === "managed" ? "\uC2A4\uD0AC(Claude): \uAD00\uB9AC\uB428" : "\uC2A4\uD0AC(Claude): \uAE30\uC874 \uD30C\uC77C";
+    const agentsSkill = agent.agentsSkill ? "\uC2A4\uD0AC(Codex/Antigravity/OpenCode): \uC124\uCE58\uB428" : "\uC2A4\uD0AC(Codex/Antigravity/OpenCode): \uC5C6\uC74C";
+    return `\uD604\uC7AC \uC0C1\uD0DC \u2014 ${agents} / ${claude} / ${wrapper} / ${skill} / ${agentsSkill}`;
   }
   positiveNumber(value, fallback) {
     const parsed = Number(value);
