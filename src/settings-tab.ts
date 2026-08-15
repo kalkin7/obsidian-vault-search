@@ -275,9 +275,15 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     };
     const providerValue = draft.provider;
     if (!providerOptions.some(([value]) => value === providerValue)) {
+      const label = providerLabels[providerValue] || providerValue;
+      const rejectedByCaps =
+        caps !== undefined &&
+        ((providerValue === "cuda" && caps.cuda_available === false) ||
+          (providerValue === "tensorrt" &&
+            caps.tensorrt_available === false));
       providerOptions.push([
         providerValue,
-        providerLabels[providerValue] || providerValue,
+        rejectedByCaps ? `${label} (현재 런타임에서 사용 불가)` : label,
       ]);
     }
     const supported = caps
@@ -288,14 +294,14 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("ONNX 실행 제공자 (provider)")
       .setDesc(
-        `CUDA에서만 사용됩니다. 이 머신 지원: ${supported}. auto는 TensorRT가 설치되어 있으면 우선하고, 아니면 CUDA로 폴백합니다.`,
+        `CUDA 실행 시에만 적용됩니다 (device=cuda 또는 auto가 CUDA로 해석될 때). 이 머신 지원: ${supported}. auto는 TensorRT가 설치되어 있으면 우선하고, 아니면 CUDA로 폴백합니다.`,
       )
       .addDropdown((dropdown) => {
         for (const [value, label] of providerOptions)
           dropdown.addOption(value, label);
         dropdown
           .setValue(providerValue)
-          .setDisabled(draft.engine !== "onnx" || draft.device !== "cuda")
+          .setDisabled(draft.engine !== "onnx" || draft.device === "cpu")
           .onChange((value) => {
             draft.provider = value as typeof draft.provider;
           });

@@ -4199,8 +4199,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     }
     const providerOptions = [["auto", "\uC790\uB3D9"]];
-    if (caps?.cuda_available !== false)
-      providerOptions.push(["cuda", "CUDA"]);
+    if (caps?.cuda_available !== false) providerOptions.push(["cuda", "CUDA"]);
     if (caps?.tensorrt_available !== false)
       providerOptions.push(["tensorrt", "TensorRT"]);
     const providerLabels = {
@@ -4210,18 +4209,20 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
     };
     const providerValue = draft.provider;
     if (!providerOptions.some(([value]) => value === providerValue)) {
+      const label = providerLabels[providerValue] || providerValue;
+      const rejectedByCaps = caps !== void 0 && (providerValue === "cuda" && caps.cuda_available === false || providerValue === "tensorrt" && caps.tensorrt_available === false);
       providerOptions.push([
         providerValue,
-        providerLabels[providerValue] || providerValue
+        rejectedByCaps ? `${label} (\uD604\uC7AC \uB7F0\uD0C0\uC784\uC5D0\uC11C \uC0AC\uC6A9 \uBD88\uAC00)` : label
       ]);
     }
     const supported = caps ? [caps.cuda_available && "CUDA", caps.tensorrt_available && "TensorRT"].filter(Boolean).join(", ") || "CPU\uB9CC" : "\uC11C\uBE44\uC2A4 \uC2DC\uC791 \uD6C4 \uD655\uC778";
     new import_obsidian2.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc(
-      `CUDA\uC5D0\uC11C\uB9CC \uC0AC\uC6A9\uB429\uB2C8\uB2E4. \uC774 \uBA38\uC2E0 \uC9C0\uC6D0: ${supported}. auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4.`
+      `CUDA \uC2E4\uD589 \uC2DC\uC5D0\uB9CC \uC801\uC6A9\uB429\uB2C8\uB2E4 (device=cuda \uB610\uB294 auto\uAC00 CUDA\uB85C \uD574\uC11D\uB420 \uB54C). \uC774 \uBA38\uC2E0 \uC9C0\uC6D0: ${supported}. auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4.`
     ).addDropdown((dropdown) => {
       for (const [value, label] of providerOptions)
         dropdown.addOption(value, label);
-      dropdown.setValue(providerValue).setDisabled(draft.engine !== "onnx" || draft.device !== "cuda").onChange((value) => {
+      dropdown.setValue(providerValue).setDisabled(draft.engine !== "onnx" || draft.device === "cpu").onChange((value) => {
         draft.provider = value;
       });
     });
@@ -4929,9 +4930,6 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
     }
   }
   async installCudaRuntimeInternal() {
-    if (!await this.backend.hasNvidiaGpu()) {
-      throw new Error("NVIDIA GPU \uB610\uB294 \uB4DC\uB77C\uC774\uBC84\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
-    }
     const current = await this.backend.inspectPython(
       this.settings.pythonExecutable
     );
@@ -4943,6 +4941,9 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
       );
       this.settingTab?.display();
       return;
+    }
+    if (!await this.backend.hasNvidiaGpu()) {
+      throw new Error("NVIDIA GPU \uB610\uB294 \uB4DC\uB77C\uC774\uBC84\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
     }
     if (!await confirmRuntimeInstall(this.app, true)) return;
     const cpu = await this.backend.managedRuntime("cpu");

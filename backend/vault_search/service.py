@@ -54,6 +54,11 @@ class SearchService:
         if self.config.model_idle_timeout_seconds > 0:
             self._idle_watchdog = threading.Thread(target=self._watchdog, daemon=True)
             self._idle_watchdog.start()
+        # Warm the capability cache at startup: runtime_capabilities() imports
+        # torch (~1.5 s cold), which would otherwise delay the first status()
+        # response past request timeouts. The cost is paid once, before the
+        # server accepts requests.
+        _ = self.capabilities()
 
     def _watchdog(self) -> None:
         while True:

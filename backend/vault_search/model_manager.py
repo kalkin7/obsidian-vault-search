@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -54,7 +56,9 @@ class ModelManager:
         dimension = getter() if getter else self.model.get_sentence_embedding_dimension()
         if dimension is None:
             probe = self.encode_query("dimension probe")
+            # pi-lens-ignore: unchecked-throwing-call-python
             dimension = int(probe.shape[-1])
+        # pi-lens-ignore: unchecked-throwing-call-python
         self.dimension = int(dimension)
 
     def _load_onnx(self) -> None:
@@ -110,6 +114,7 @@ class ModelManager:
                 raise
             use_cuda = False
         self.device = "cuda" if use_cuda else "cpu"
+        # pi-lens-ignore: unchecked-throwing-call-python
         self.dimension = int(self.model.dimension)
 
     def release(self) -> None:
@@ -184,6 +189,7 @@ class _FakeSentenceTransformer:
         for token in text.lower().split():
             digest = hashlib.sha256(token.encode("utf-8")).digest()
             vector[int.from_bytes(digest[:2], "little") % self.dimension] += 1.0
+        # pi-lens-ignore: unchecked-throwing-call-python
         norm = float(np.linalg.norm(vector))
         if norm:
             vector /= norm
@@ -214,9 +220,6 @@ def _resolve_model_dir(model_id: str) -> Path | None:
             return Path(path)
     except Exception:
         pass
-
-    from pathlib import Path
-    import os
 
     cache_home = Path(os.environ.get("HF_HUB_CACHE") or os.environ.get(
         "HF_HOME", Path.home() / ".cache" / "huggingface"))

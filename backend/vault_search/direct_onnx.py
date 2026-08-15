@@ -139,7 +139,7 @@ def _trt_cache_key(onnx_path: Path, max_batch: int) -> str:
         ort.__version__,
     ]
     try:
-        import tensorrt as trt
+        import tensorrt as trt  # type: ignore[reportMissingImports]  # optional dep
         parts.append(trt.__version__)
     except Exception:
         parts.append("notrt")
@@ -209,8 +209,21 @@ def runtime_capabilities() -> dict[str, bool]:
         return caps
     caps["onnx_available"] = True
     providers = ort.get_available_providers()
-    caps["cuda_available"] = "CUDAExecutionProvider" in providers
-    caps["tensorrt_available"] = _trt_available()
+    # Registration alone is not proof of usability: a CUDA EP can be listed
+    # yet fail at session creation (driver/init issues), and the backend
+    # already falls back to CPU in that case. Gate on an actual torch CUDA
+    # init so the UI never disables installation while explicit CUDA startup
+    # would still fail.
+    try:
+        import torch
+
+        cuda_usable = bool(torch.cuda.is_available())
+    except Exception:
+        cuda_usable = False
+    caps["cuda_available"] = (
+        "CUDAExecutionProvider" in providers and cuda_usable
+    )
+    caps["tensorrt_available"] = _trt_available() and cuda_usable
     return caps
 
 
@@ -398,7 +411,7 @@ class DirectE5Onnx:
         for start in range(0, count, batch_size):
             batch = [values[int(i)] for i in order[start:start + batch_size]]
             tokens = self.tokenize(batch)
-            out = self.session.run(
+            out = self.session.run(  # type: ignore[reportOptionalMemberAccess]  # set in __init__
                 ["sentence_embedding"],
                 {"input_ids": tokens["input_ids"], "attention_mask": tokens["attention_mask"]},
             )[0]

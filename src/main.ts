@@ -260,11 +260,9 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   private async installCudaRuntimeInternal(): Promise<void> {
-    if (!(await this.backend.hasNvidiaGpu())) {
-      throw new Error("NVIDIA GPU 또는 드라이버를 찾을 수 없습니다.");
-    }
-    // Do not reinstall when a CUDA runtime is already usable: setup-runtime.ps1
-    // is a multi-GB download, so pressing the button must not blindly re-run it.
+    // A usable runtime already proves CUDA availability, and nvidia-smi may be
+    // absent from PATH even when the driver works — so validate existing
+    // runtimes first and only require the GPU probe when an install is needed.
     const current = await this.backend.inspectPython(
       this.settings.pythonExecutable,
     );
@@ -278,6 +276,9 @@ export default class VaultSearchPlugin extends Plugin {
       );
       this.settingTab?.display();
       return;
+    }
+    if (!(await this.backend.hasNvidiaGpu())) {
+      throw new Error("NVIDIA GPU 또는 드라이버를 찾을 수 없습니다.");
     }
     if (!(await confirmRuntimeInstall(this.app, true))) return;
     const cpu = await this.backend.managedRuntime("cpu");

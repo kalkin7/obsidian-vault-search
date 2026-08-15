@@ -6,7 +6,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from vault_search import direct_onnx
 from vault_search.direct_onnx import (
     DirectE5Onnx,
@@ -91,8 +90,10 @@ def _auto_trt_resolve(provider: str) -> str:
 
 
 def test_runtime_capabilities_reports_providers(monkeypatch) -> None:
+    import torch
     from vault_search.direct_onnx import runtime_capabilities
 
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setitem(
         sys.modules, "onnxruntime",
         SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
@@ -101,9 +102,27 @@ def test_runtime_capabilities_reports_providers(monkeypatch) -> None:
         "onnx_available": True, "cuda_available": True, "tensorrt_available": False}
 
 
-def test_runtime_capabilities_tensorrt_usable(monkeypatch) -> None:
+def test_runtime_capabilities_provider_registered_but_cuda_unusable(monkeypatch) -> None:
+    """A registered CUDA EP is not proof of usability: without an actual torch
+    CUDA init, the capability must report false so the UI does not disable
+    installation while explicit CUDA startup would still fail."""
+    import torch
     from vault_search.direct_onnx import runtime_capabilities
 
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setitem(
+        sys.modules, "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "TensorrtExecutionProvider", "CPUExecutionProvider"]))
+    monkeypatch.setattr(direct_onnx, "_trt_available", lambda: True)
+    assert runtime_capabilities() == {
+        "onnx_available": True, "cuda_available": False, "tensorrt_available": False}
+
+
+def test_runtime_capabilities_tensorrt_usable(monkeypatch) -> None:
+    import torch
+    from vault_search.direct_onnx import runtime_capabilities
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setitem(
         sys.modules, "onnxruntime",
         SimpleNamespace(get_available_providers=lambda: ["TensorrtExecutionProvider", "CPUExecutionProvider"]))
@@ -182,7 +201,7 @@ def test_auto_trt_build_exception_falls_back(monkeypatch) -> None:
 
     monkeypatch.setattr(direct_onnx, "_resolve_provider", _auto_trt_resolve)
     monkeypatch.setattr(DirectE5Onnx, "_build_session", staticmethod(fake_build))
-    session, resolved = DirectE5Onnx._create_session("auto", Path("x.onnx"), None, 64)
+    _, resolved = DirectE5Onnx._create_session("auto", Path("x.onnx"), None, 64)
     assert resolved == "CUDAExecutionProvider"
     assert calls == ["TensorrtExecutionProvider", "CUDAExecutionProvider"]
 
