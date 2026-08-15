@@ -149,7 +149,8 @@ try {
     # 6. Verify asset completeness
     Write-Host "==> Verifying release assets" -ForegroundColor Cyan
     $assets = gh release view $Tag --json assets --jq '.assets[].name'
-    foreach ($required in @($ZipName, "main.js", "manifest.json", "styles.css", "versions.json", "lightning search.png")) {
+    # GitHub normalizes spaces in uploaded asset names to dots.
+    foreach ($required in @($ZipName, "main.js", "manifest.json", "styles.css", "versions.json", "lightning.search.png")) {
         if ($assets -notcontains $required) { throw "Missing release asset: $required" }
     }
     Write-Host "    all assets present." -ForegroundColor Green
