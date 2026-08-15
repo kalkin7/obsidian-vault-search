@@ -136,6 +136,7 @@ describe("installAgentIntegration (filesystem)", () => {
       const first = await installAgentIntegration(vault, pluginDir);
       expect(first.agentsFile).toBe("created");
       expect(first.claudeFile).toBe("created");
+      expect(first.geminiFile).toBe("created");
       expect(first.wrapper).toBe("written");
       expect(first.skill).toBe("written");
 
@@ -144,15 +145,20 @@ describe("installAgentIntegration (filesystem)", () => {
       expect(agents).toContain(AGENTS_MARKER_END);
       expect(agents).toContain("search.ps1");
 
-      // Claude Code reads CLAUDE.md (not AGENTS.md): the managed block is a
-      // self-contained copy of the vault-search instructions — never an
-      // @AGENTS.md import, so user-authored AGENTS.md content is not pulled
-      // into Claude's context.
+      // Claude Code reads CLAUDE.md (not AGENTS.md); Antigravity CLI reads
+      // GEMINI.md. Both managed blocks are self-contained copies of the
+      // vault-search instructions — never an @AGENTS.md import, so user-
+      // authored content in one file is never pulled into another harness.
       const claude = await readFile(path.join(vault, "CLAUDE.md"), "utf8");
       expect(claude).toContain(AGENTS_MARKER_START);
       expect(claude).toContain("## Vault Search");
       expect(claude).toContain("search.ps1 -Top 40 -Json");
       expect(claude).not.toContain("@AGENTS.md");
+
+      const gemini = await readFile(path.join(vault, "GEMINI.md"), "utf8");
+      expect(gemini).toContain(AGENTS_MARKER_START);
+      expect(gemini).toContain("## Vault Search");
+      expect(gemini).not.toContain("@AGENTS.md");
 
       const wrapper = await readFile(
         path.join(pluginDir, "search.ps1"),
@@ -176,12 +182,14 @@ describe("installAgentIntegration (filesystem)", () => {
       const second = await installAgentIntegration(vault, pluginDir);
       expect(second.agentsFile).toBe("unchanged");
       expect(second.claudeFile).toBe("unchanged");
+      expect(second.geminiFile).toBe("unchanged");
       expect(second.wrapper).toBe("unchanged");
       expect(second.skill).toBe("unchanged");
 
       const status = await agentIntegrationStatus(vault, pluginDir);
       expect(status.agentsFile).toBe("managed");
       expect(status.claudeFile).toBe("managed");
+      expect(status.geminiFile).toBe("managed");
       expect(status.wrapper).toBe(true);
       expect(status.skill).toBe("managed");
       expect(status.agentsSkill).toBe(true);

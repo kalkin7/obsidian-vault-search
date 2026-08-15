@@ -657,10 +657,18 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       agent.claudeFile === "absent"
         ? "CLAUDE.md: 없음"
         : agent.claudeFile === "managed"
-          ? "CLAUDE.md: 관리 블록 있음 (AGENTS.md import)"
+          ? "CLAUDE.md: 관리 블록 있음"
           : agent.claudeFile === "conflict"
             ? "CLAUDE.md: 기존 검색 지시 있음 (자동 통합 안 함)"
             : "CLAUDE.md: 기존 파일 있음";
+    const gemini =
+      agent.geminiFile === "absent"
+        ? "GEMINI.md: 없음"
+        : agent.geminiFile === "managed"
+          ? "GEMINI.md: 관리 블록 있음"
+          : agent.geminiFile === "conflict"
+            ? "GEMINI.md: 기존 검색 지시 있음 (자동 통합 안 함)"
+            : "GEMINI.md: 기존 파일 있음";
     const wrapper = agent.wrapper ? "래퍼: 설치됨" : "래퍼: 없음";
     const skill =
       agent.skill === "absent"
@@ -671,7 +679,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     const agentsSkill = agent.agentsSkill
       ? "스킬(Codex/Antigravity/OpenCode): 설치됨"
       : "스킬(Codex/Antigravity/OpenCode): 없음";
-    return `현재 상태 — ${agents} / ${claude} / ${wrapper} / ${skill} / ${agentsSkill}`;
+    return `현재 상태 — ${agents} / ${claude} / ${gemini} / ${wrapper} / ${skill} / ${agentsSkill}`;
   }
 
   private positiveNumber(value: string, fallback: number): number {

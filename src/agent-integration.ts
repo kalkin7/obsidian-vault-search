@@ -31,10 +31,17 @@ export const AGENTS_MARKER_END = "<!-- vault-search:end -->";
 const SKILL_MARKER = "<!-- vault-search:managed -->";
 
 const AGENTS_FILE = "AGENTS.md";
-/** Claude Code reads CLAUDE.md (not AGENTS.md); the managed block imports
- *  AGENTS.md so Claude gets the same instructions without duplication. */
+/** Claude Code reads CLAUDE.md (not AGENTS.md). */
 const CLAUDE_FILE = "CLAUDE.md";
+/** Antigravity CLI reads GEMINI.md (and AGENTS.md) from the workspace root. */
+const GEMINI_FILE = "GEMINI.md";
 const WRAPPER_REL = "search.ps1";
+
+/** Instruction files that carry a self-contained copy of the managed block:
+ *  AGENTS.md (Codex, Antigravity), CLAUDE.md (Claude Code), GEMINI.md
+ *  (Antigravity). Each is marker-guarded and never imports the others, so
+ *  user-authored content in one file is never pulled into another harness. */
+const INSTRUCTION_FILES = [AGENTS_FILE, CLAUDE_FILE, GEMINI_FILE] as const;
 
 /** Skill install locations, one per supported agent harness, per official docs:
  *  - Claude Code reads .claude/skills.
@@ -65,9 +72,10 @@ export interface AgentsFileResult {
 
 export interface AgentIntegrationStatus {
   agentsFile: "absent" | "managed" | "conflict" | "plain";
-  /** CLAUDE.md status (Claude Code does not read AGENTS.md; the managed block
-   *  imports it). */
+  /** CLAUDE.md status (Claude Code does not read AGENTS.md). */
   claudeFile: "absent" | "managed" | "conflict" | "plain";
+  /** GEMINI.md status (Antigravity CLI reads it from the workspace root). */
+  geminiFile: "absent" | "managed" | "conflict" | "plain";
   wrapper: boolean;
   /** Claude Code skill copy (.claude/skills/vault-search). */
   skill: "absent" | "managed" | "other";
@@ -78,6 +86,7 @@ export interface AgentIntegrationStatus {
 export interface AgentIntegrationResult {
   agentsFile: AgentsFileStatus;
   claudeFile: AgentsFileStatus;
+  geminiFile: AgentsFileStatus;
   wrapper: "written" | "unchanged";
   skill: "written" | "unchanged" | "skipped";
   /** Vault-relative path of the wrapper, for the AGENTS.md block. */
@@ -105,12 +114,8 @@ const AGENTS_BLOCK = [
   AGENTS_MARKER_END,
 ].join("\n");
 
-/** Claude Code reads CLAUDE.md, not AGENTS.md. The managed CLAUDE.md block is
- *  a SELF-CONTAINED copy of the vault-search instructions (same as AGENTS.md)
- *  rather than an @AGENTS.md import: an import would pull the entire file,
- *  including any user-authored content, into Claude's context. Each harness
- *  only ever sees the managed block. */
-const CLAUDE_BLOCK = AGENTS_BLOCK;
+/** Claude Code reads CLAUDE.md, not AGENTS.md — but the managed block is a
+ *  self-contained copy, never an @AGENTS.md import (see INSTRUCTION_FILES). */
 
 /** The wrapper is written into the plugin directory by the installer. */
 const SEARCH_PS1 = `# Vault Search Service — agent wrapper.
@@ -357,13 +362,21 @@ export function agentIntegrationNotice(result: AgentIntegrationResult): string {
         : result.claudeFile === "conflict"
           ? "CLAUDE.md에 기존 검색 지시가 있어 건너뜀"
           : "CLAUDE.md 동일";
+  const gemini =
+    result.geminiFile === "created"
+      ? "GEMINI.md 생성"
+      : result.geminiFile === "updated"
+        ? "GEMINI.md 갱신"
+        : result.geminiFile === "conflict"
+          ? "GEMINI.md에 기존 검색 지시가 있어 건너뜀"
+          : "GEMINI.md 동일";
   const skill =
     result.skill === "written"
       ? "스킬 설치"
       : result.skill === "skipped"
         ? "기존 스킬 유지(건너뜀)"
         : "스킬 동일";
-  return `에이전트 통합: ${agents} / ${claude} / 래퍼 ${result.wrapper === "written" ? "설치" : "동일"} / ${skill} (Claude/Codex/Antigravity/OpenCode)`;
+  return `에이전트 통합: ${agents} / ${claude} / ${gemini} / 래퍼 ${result.wrapper === "written" ? "설치" : "동일"} / ${skill} (Claude/Codex/Antigravity/OpenCode)`;
 }
 
 /** Install (or refresh) all three artifacts. Returns a summary for the UI. */
@@ -377,28 +390,28 @@ export async function installAgentIntegration(
     ? "written"
     : "unchanged";
 
-  const agentsPath = path.join(vaultPath, AGENTS_FILE);
-  const existing = await readOptional(agentsPath);
-  const agents = updateAgentsFile(existing);
-  if (agents.content !== null) {
-    await writeFile(agentsPath, agents.content, "utf8");
-  }
-
-  // Claude Code reads CLAUDE.md (not AGENTS.md): keep a managed block that is
-  // a self-contained copy of the vault-search instructions (never an import,
-  // so user-authored AGENTS.md content is not pulled into Claude).
-  const claudePath = path.join(vaultPath, CLAUDE_FILE);
-  const claudeExisting = await readOptional(claudePath);
-  const claude = updateAgentsFile(claudeExisting, CLAUDE_BLOCK);
-  if (claude.content !== null) {
-    await writeFile(claudePath, claude.content, "utf8");
+  // Every instruction file (AGENTS.md / CLAUDE.md / GEMINI.md) carries a
+  // self-contained, marker-guarded copy of the same block — never an import,
+  // so user-authored content in one file is never pulled into another harness.
+  const fileStatus: Partial<
+    Record<(typeof INSTRUCTION_FILES)[number], AgentsFileStatus>
+  > = {};
+  for (const name of INSTRUCTION_FILES) {
+    const target = path.join(vaultPath, name);
+    const existing = await readOptional(target);
+    const result = updateAgentsFile(existing, AGENTS_BLOCK);
+    if (result.content !== null) {
+      await writeFile(target, result.content, "utf8");
+    }
+    fileStatus[name] = result.status;
   }
 
   const skill = await installSkills(vaultPath);
 
   return {
-    agentsFile: agents.status,
-    claudeFile: claude.status,
+    agentsFile: fileStatus[AGENTS_FILE] ?? "unchanged",
+    claudeFile: fileStatus[CLAUDE_FILE] ?? "unchanged",
+    geminiFile: fileStatus[GEMINI_FILE] ?? "unchanged",
     wrapper,
     skill,
     wrapperPath: path.join(
@@ -417,21 +430,18 @@ export async function agentIntegrationStatus(
 ): Promise<AgentIntegrationStatus> {
   // Status is informational: unreadable files (permission/sharing) degrade to
   // "absent" rather than failing the settings tab.
-  const existing = await readForStatus(path.join(vaultPath, AGENTS_FILE));
-  let agentsFile: AgentIntegrationStatus["agentsFile"] = "absent";
-  if (existing !== null) {
-    if (existing.includes(AGENTS_MARKER_START)) agentsFile = "managed";
-    else if (CONFLICT_RE.test(existing)) agentsFile = "conflict";
-    else agentsFile = "plain";
-  }
-
-  const claudeExisting = await readForStatus(path.join(vaultPath, CLAUDE_FILE));
-  let claudeFile: AgentIntegrationStatus["claudeFile"] = "absent";
-  if (claudeExisting !== null) {
-    if (claudeExisting.includes(AGENTS_MARKER_START)) claudeFile = "managed";
-    else if (CONFLICT_RE.test(claudeExisting)) claudeFile = "conflict";
-    else claudeFile = "plain";
-  }
+  const readFileStatus = async (
+    name: string,
+  ): Promise<"absent" | "managed" | "conflict" | "plain"> => {
+    const content = await readForStatus(path.join(vaultPath, name));
+    if (content === null) return "absent";
+    if (content.includes(AGENTS_MARKER_START)) return "managed";
+    if (CONFLICT_RE.test(content)) return "conflict";
+    return "plain";
+  };
+  const agentsFile = await readFileStatus(AGENTS_FILE);
+  const claudeFile = await readFileStatus(CLAUDE_FILE);
+  const geminiFile = await readFileStatus(GEMINI_FILE);
 
   const wrapper =
     (await readForStatus(path.join(pluginDir, WRAPPER_REL))) !== null;
@@ -453,5 +463,5 @@ export async function agentIntegrationStatus(
       path.join(vaultPath, ".agents", "skills", "vault-search", "SKILL.md"),
     )) !== null;
 
-  return { agentsFile, claudeFile, wrapper, skill, agentsSkill };
+  return { agentsFile, claudeFile, geminiFile, wrapper, skill, agentsSkill };
 }
