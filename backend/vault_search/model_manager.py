@@ -184,6 +184,19 @@ class ModelManager:
             return getattr(self.model, "provider", None)
         return None
 
+    def expected_provider(self) -> str | None:
+        """Provider the ONNX engine will run on, resolved from config + runtime
+        without loading; None for the PyTorch engine or when the device
+        resolves to CPU. Status reports this before the model loads, so idle
+        states show the intended EP instead of nothing."""
+        if self.engine != "onnx":
+            return None
+        if self.device == "cpu":
+            return "CPUExecutionProvider"
+        from .direct_onnx import _resolve_provider
+
+        return _resolve_provider(self.config.provider)
+
     def encode_query(self, query: str) -> np.ndarray:
         model = self.ensure_loaded()
         if self.engine == "onnx":

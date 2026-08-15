@@ -4,6 +4,7 @@ import { MODEL_PROFILES } from "./constants";
 import { defaultLoadPolicy, settingsImpact } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
+import type { BackendStatus } from "./types";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
   constructor(private readonly owner: VaultSearchPlugin) {
@@ -22,6 +23,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         `상태: ${status.state}`,
         status.model_id ? `모델: ${status.model_id}` : "",
         status.device ? `디바이스: ${status.device}` : "",
+        this.providerStatusLine(status),
         status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
         status.count_available === false
           ? "인덱스 개수: 확인 불가"
@@ -424,23 +426,27 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }),
       );
 
-    this.numericFields("청크 크기 / 오버랩", "값을 변경하면 전체 인덱스 재구축이 필요합니다.", [
-      {
-        label: "크기",
-        value: draft.chunkChars,
-        set: (v) => {
-          draft.chunkChars = v;
+    this.numericFields(
+      "청크 크기 / 오버랩",
+      "값을 변경하면 전체 인덱스 재구축이 필요합니다.",
+      [
+        {
+          label: "크기",
+          value: draft.chunkChars,
+          set: (v) => {
+            draft.chunkChars = v;
+          },
         },
-      },
-      {
-        label: "오버랩",
-        value: draft.chunkOverlap,
-        allowZero: true,
-        set: (v) => {
-          draft.chunkOverlap = v;
+        {
+          label: "오버랩",
+          value: draft.chunkOverlap,
+          allowZero: true,
+          set: (v) => {
+            draft.chunkOverlap = v;
+          },
         },
-      },
-    ]);
+      ],
+    );
     new Setting(containerEl)
       .setName("청킹 전략")
       .setDesc(
@@ -599,6 +605,39 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .split(/\r?\n/)
       .map((line) => line.trim().replace(/\\/g, "/"))
       .filter(Boolean);
+  }
+
+  /** Status line for the ONNX execution provider. Shows the *effective*
+   *  provider (the EP the loaded session was actually built with) when the
+   *  model is loaded, and the expected resolution before load, so the display
+   *  reflects reality rather than only the configured value. */
+  private providerStatusLine(status: BackendStatus): string {
+    const effective = status.effective_provider;
+    const shown = effective || status.expected_provider;
+    if (!shown) return "";
+    const configNote =
+      status.provider && status.provider !== "auto"
+        ? ` (설정: ${this.providerLabel(status.provider)})`
+        : "";
+    return `실행 제공자: ${this.providerLabel(shown)}${configNote}${effective ? "" : " (로드 전 예상)"}`;
+  }
+
+  private providerLabel(provider: string | null | undefined): string {
+    switch (provider) {
+      case "TensorrtExecutionProvider":
+      case "tensorrt":
+        return "TensorRT";
+      case "CUDAExecutionProvider":
+      case "cuda":
+        return "CUDA";
+      case "CPUExecutionProvider":
+      case "cpu":
+        return "CPU";
+      case "auto":
+        return "자동";
+      default:
+        return provider || "-";
+    }
   }
 
   private agentStatusText(agent: AgentIntegrationStatus): string {

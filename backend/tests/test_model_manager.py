@@ -74,8 +74,18 @@ def test_resolve_expected_device_before_load(
     cfg.engine = "onnx"
     assert ModelManager(cfg).device == "cuda"
 
+    # expected_provider mirrors the device resolution for the ONNX engine
+    cfg.provider = "auto"
+    assert ModelManager(cfg).expected_provider() == "CUDAExecutionProvider"
+    cfg.device = "cpu"
+    assert ModelManager(cfg).expected_provider() == "CPUExecutionProvider"
+    cfg.engine = "pytorch"
+    assert ModelManager(cfg).expected_provider() is None
 
-def test_load_prefers_local_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+
+def test_load_prefers_local_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     calls: list[dict[str, object]] = []
 
     class Loader:
@@ -139,7 +149,9 @@ def test_load_does_not_retry_other_model_errors(
     assert calls == [{"device": "cpu", "local_files_only": True}]
 
 
-def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_onnx_builds_direct_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     built: list[dict[str, object]] = []
 
     class DirectLoader:
@@ -149,21 +161,33 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
 
         def encode(self, texts, batch_size=32):
             import numpy as np
+
             count = 1 if isinstance(texts, str) else len(texts)
             return np.zeros((count, 768), dtype=np.float32)
 
     monkeypatch.setattr(
         "vault_search.model_manager._is_importable",
-        lambda name: name != "onnxruntime" or True)
+        lambda name: name != "onnxruntime" or True,
+    )
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setitem(
-        sys.modules, "vault_search.direct_onnx",
-        SimpleNamespace(DirectE5Onnx=DirectLoader))
+        sys.modules,
+        "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader),
+    )
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
-        lambda model_id: tmp_path / "snap")
+        lambda model_id: tmp_path / "snap",
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
@@ -180,7 +204,9 @@ def test_load_onnx_builds_direct_model(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert manager.dimension == 768
 
 
-def test_load_onnx_builds_cpu_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_onnx_builds_cpu_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     built: list[dict[str, object]] = []
 
     class DirectLoader:
@@ -191,21 +217,25 @@ def test_load_onnx_builds_cpu_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
         def encode(self, texts, batch_size=32):
             import numpy as np
+
             count = 1 if isinstance(texts, str) else len(texts)
             return np.zeros((count, 768), dtype=np.float32)
 
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: True)
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]),
+    )
     monkeypatch.setitem(
-        sys.modules, "vault_search.direct_onnx",
-        SimpleNamespace(DirectE5Onnx=DirectLoader))
+        sys.modules,
+        "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader),
+    )
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
-        lambda model_id: tmp_path / "snap")
+        lambda model_id: tmp_path / "snap",
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cpu"
@@ -219,7 +249,9 @@ def test_load_onnx_builds_cpu_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert manager.effective_provider() == "CPUExecutionProvider"
 
 
-def test_load_onnx_auto_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_onnx_auto_falls_back_to_cpu(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     built: list[dict[str, object]] = []
 
     class DirectLoader:
@@ -227,18 +259,21 @@ def test_load_onnx_auto_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_p
             built.append({"provider": provider})
             self.dimension = 768
 
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: True)
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]),
+    )
     monkeypatch.setitem(
-        sys.modules, "vault_search.direct_onnx",
-        SimpleNamespace(DirectE5Onnx=DirectLoader))
+        sys.modules,
+        "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader),
+    )
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
-        lambda model_id: tmp_path / "snap")
+        lambda model_id: tmp_path / "snap",
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "auto"
@@ -250,11 +285,13 @@ def test_load_onnx_auto_falls_back_to_cpu(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert manager.device == "cpu"
 
 
-def test_load_onnx_auto_retries_cpu_on_session_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_onnx_auto_retries_cpu_on_session_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     attempts: list[str] = []
 
     class DirectLoader:
-        def __init__(self, model_dir, provider=None, **kwargs):
+        def __init__(self, model_dir, provider: str = "cpu", **kwargs):
             attempts.append(provider)
             if provider != "cpu":
                 raise RuntimeError("CUDA session creation failed")
@@ -263,21 +300,30 @@ def test_load_onnx_auto_retries_cpu_on_session_failure(monkeypatch: pytest.Monke
 
         def encode(self, texts, batch_size=32):
             import numpy as np
+
             count = 1 if isinstance(texts, str) else len(texts)
             return np.zeros((count, 768), dtype=np.float32)
 
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: True)
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setitem(
-        sys.modules, "vault_search.direct_onnx",
-        SimpleNamespace(DirectE5Onnx=DirectLoader))
+        sys.modules,
+        "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader),
+    )
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
-        lambda model_id: tmp_path / "snap")
+        lambda model_id: tmp_path / "snap",
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "auto"
@@ -290,26 +336,36 @@ def test_load_onnx_auto_retries_cpu_on_session_failure(monkeypatch: pytest.Monke
     assert manager.effective_provider() == "CPUExecutionProvider"
 
 
-def test_load_onnx_cuda_explicit_does_not_fall_back(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_load_onnx_cuda_explicit_does_not_fall_back(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     attempts: list[str] = []
 
     class DirectLoader:
-        def __init__(self, model_dir, provider=None, **kwargs):
+        def __init__(self, model_dir, provider: str = "cpu", **kwargs):
             attempts.append(provider)
             raise RuntimeError("CUDA session creation failed")
 
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: True)
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setitem(
-        sys.modules, "vault_search.direct_onnx",
-        SimpleNamespace(DirectE5Onnx=DirectLoader))
+        sys.modules,
+        "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader),
+    )
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
-        lambda model_id: tmp_path / "snap")
+        lambda model_id: tmp_path / "snap",
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
@@ -320,26 +376,30 @@ def test_load_onnx_cuda_explicit_does_not_fall_back(monkeypatch: pytest.MonkeyPa
     assert attempts == ["auto"]
 
 
-def test_load_onnx_requires_cuda_provider(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: True)
+def test_load_onnx_requires_cuda_provider(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(get_available_providers=lambda: ["CPUExecutionProvider"]),
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
     manager = ModelManager(cfg)
 
-    with pytest.raises(RuntimeError, match="requires a CUDA-capable execution provider"):
+    with pytest.raises(
+        RuntimeError, match="requires a CUDA-capable execution provider"
+    ):
         manager.load()
 
 
-def test_load_onnx_requires_onnxruntime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: False)
+def test_load_onnx_requires_onnxruntime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: False)
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
@@ -349,7 +409,9 @@ def test_load_onnx_requires_onnxruntime(monkeypatch: pytest.MonkeyPatch, tmp_pat
         manager.load()
 
 
-def test_release_unloads_onnx_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_release_unloads_onnx_model(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     released = []
 
     class DirectLoader:
@@ -359,18 +421,26 @@ def test_release_unloads_onnx_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         def release(self):
             released.append(True)
 
-    monkeypatch.setattr(
-        "vault_search.model_manager._is_importable",
-        lambda name: True)
+    monkeypatch.setattr("vault_search.model_manager._is_importable", lambda name: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setattr(
         "vault_search.model_manager._resolve_model_dir",
-        lambda model_id: tmp_path / "snap")
+        lambda model_id: tmp_path / "snap",
+    )
     monkeypatch.setitem(
-        sys.modules, "vault_search.direct_onnx",
-        SimpleNamespace(DirectE5Onnx=DirectLoader))
+        sys.modules,
+        "vault_search.direct_onnx",
+        SimpleNamespace(DirectE5Onnx=DirectLoader),
+    )
     cfg = _config(tmp_path, model_id="intfloat/multilingual-e5-base")
     cfg.engine = "onnx"
     cfg.device = "cuda"
@@ -384,18 +454,20 @@ def test_release_unloads_onnx_model(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert manager.model is None
 
 
-def test_direct_onnx_rejects_non_normalized(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_direct_onnx_rejects_non_normalized(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from vault_search.direct_onnx import DirectE5Onnx
 
     snapshot = tmp_path / "snap"
     (snapshot / "1_Pooling").mkdir(parents=True)
     (snapshot / "1_Pooling" / "config.json").write_text(
         '{"word_embedding_dimension": 768, "pooling_mode_mean_tokens": true}',
-        encoding="utf-8")
+        encoding="utf-8",
+    )
     (snapshot / "sentence_bert_config.json").write_text(
-        '{"max_seq_length": 512, "do_lower_case": false}',
-        encoding="utf-8")
+        '{"max_seq_length": 512, "do_lower_case": false}', encoding="utf-8"
+    )
 
     with pytest.raises(RuntimeError, match="normalize_embeddings must be true"):
         DirectE5Onnx(snapshot, normalize_embeddings=False)
-

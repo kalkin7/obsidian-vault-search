@@ -4051,6 +4051,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         `\uC0C1\uD0DC: ${status.state}`,
         status.model_id ? `\uBAA8\uB378: ${status.model_id}` : "",
         status.device ? `\uB514\uBC14\uC774\uC2A4: ${status.device}` : "",
+        this.providerStatusLine(status),
         status.pid ? `PID: ${status.pid} / \uD3EC\uD2B8: ${status.port}` : "",
         status.count_available === false ? "\uC778\uB371\uC2A4 \uAC1C\uC218: \uD655\uC778 \uBD88\uAC00" : status.files === void 0 ? "" : `\uC778\uB371\uC2A4: \uD30C\uC77C ${status.files}\uAC1C / \uCCAD\uD06C ${status.chunks ?? 0}\uAC1C`,
         status.model_load_seconds === void 0 ? "" : `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08`,
@@ -4314,23 +4315,27 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
-    this.numericFields("\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9", "\uAC12\uC744 \uBCC0\uACBD\uD558\uBA74 \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.", [
-      {
-        label: "\uD06C\uAE30",
-        value: draft.chunkChars,
-        set: (v) => {
-          draft.chunkChars = v;
+    this.numericFields(
+      "\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9",
+      "\uAC12\uC744 \uBCC0\uACBD\uD558\uBA74 \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.",
+      [
+        {
+          label: "\uD06C\uAE30",
+          value: draft.chunkChars,
+          set: (v) => {
+            draft.chunkChars = v;
+          }
+        },
+        {
+          label: "\uC624\uBC84\uB7A9",
+          value: draft.chunkOverlap,
+          allowZero: true,
+          set: (v) => {
+            draft.chunkOverlap = v;
+          }
         }
-      },
-      {
-        label: "\uC624\uBC84\uB7A9",
-        value: draft.chunkOverlap,
-        allowZero: true,
-        set: (v) => {
-          draft.chunkOverlap = v;
-        }
-      }
-    ]);
+      ]
+    );
     new import_obsidian2.Setting(containerEl).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc(
       "Markdown \uAD6C\uC870 \uC778\uC2DD \uC804\uB7B5\uC744 \uD3EC\uD568\uD574 \uBCC0\uACBD \uC2DC \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
     ).addDropdown(
@@ -4452,6 +4457,34 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
   lines(value) {
     return value.split(/\r?\n/).map((line) => line.trim().replace(/\\/g, "/")).filter(Boolean);
+  }
+  /** Status line for the ONNX execution provider. Shows the *effective*
+   *  provider (the EP the loaded session was actually built with) when the
+   *  model is loaded, and the expected resolution before load, so the display
+   *  reflects reality rather than only the configured value. */
+  providerStatusLine(status) {
+    const effective = status.effective_provider;
+    const shown = effective || status.expected_provider;
+    if (!shown) return "";
+    const configNote = status.provider && status.provider !== "auto" ? ` (\uC124\uC815: ${this.providerLabel(status.provider)})` : "";
+    return `\uC2E4\uD589 \uC81C\uACF5\uC790: ${this.providerLabel(shown)}${configNote}${effective ? "" : " (\uB85C\uB4DC \uC804 \uC608\uC0C1)"}`;
+  }
+  providerLabel(provider) {
+    switch (provider) {
+      case "TensorrtExecutionProvider":
+      case "tensorrt":
+        return "TensorRT";
+      case "CUDAExecutionProvider":
+      case "cuda":
+        return "CUDA";
+      case "CPUExecutionProvider":
+      case "cpu":
+        return "CPU";
+      case "auto":
+        return "\uC790\uB3D9";
+      default:
+        return provider || "-";
+    }
   }
   agentStatusText(agent) {
     const agents = agent.agentsFile === "absent" ? "AGENTS.md: \uC5C6\uC74C" : agent.agentsFile === "managed" ? "AGENTS.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C" : agent.agentsFile === "conflict" ? "AGENTS.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "AGENTS.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
