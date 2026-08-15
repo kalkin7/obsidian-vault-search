@@ -105,14 +105,12 @@ const AGENTS_BLOCK = [
   AGENTS_MARKER_END,
 ].join("\n");
 
-/** Claude Code reads CLAUDE.md, not AGENTS.md — the managed CLAUDE.md block
- *  imports AGENTS.md (the official pattern for AGENTS.md-based repos) so both
- *  tools share one instruction set. */
-const CLAUDE_BLOCK = [
-  AGENTS_MARKER_START,
-  "@AGENTS.md",
-  AGENTS_MARKER_END,
-].join("\n");
+/** Claude Code reads CLAUDE.md, not AGENTS.md. The managed CLAUDE.md block is
+ *  a SELF-CONTAINED copy of the vault-search instructions (same as AGENTS.md)
+ *  rather than an @AGENTS.md import: an import would pull the entire file,
+ *  including any user-authored content, into Claude's context. Each harness
+ *  only ever sees the managed block. */
+const CLAUDE_BLOCK = AGENTS_BLOCK;
 
 /** The wrapper is written into the plugin directory by the installer. */
 const SEARCH_PS1 = `# Vault Search Service — agent wrapper.
@@ -336,7 +334,9 @@ async function installSkills(
     if (result === "skipped") anySkipped = true;
   }
   if (anyWritten) return "written";
-  return anySkipped && anyTargets === SKILL_TARGETS.length ? "skipped" : "unchanged";
+  return anySkipped && anyTargets === SKILL_TARGETS.length
+    ? "skipped"
+    : "unchanged";
 }
 
 /** Human-readable install summary for Notices. */
@@ -384,8 +384,9 @@ export async function installAgentIntegration(
     await writeFile(agentsPath, agents.content, "utf8");
   }
 
-  // Claude Code reads CLAUDE.md (not AGENTS.md): keep a managed block that
-  // imports AGENTS.md so Claude gets the same instructions.
+  // Claude Code reads CLAUDE.md (not AGENTS.md): keep a managed block that is
+  // a self-contained copy of the vault-search instructions (never an import,
+  // so user-authored AGENTS.md content is not pulled into Claude).
   const claudePath = path.join(vaultPath, CLAUDE_FILE);
   const claudeExisting = await readOptional(claudePath);
   const claude = updateAgentsFile(claudeExisting, CLAUDE_BLOCK);
@@ -424,13 +425,10 @@ export async function agentIntegrationStatus(
     else agentsFile = "plain";
   }
 
-  const claudeExisting = await readForStatus(
-    path.join(vaultPath, CLAUDE_FILE),
-  );
+  const claudeExisting = await readForStatus(path.join(vaultPath, CLAUDE_FILE));
   let claudeFile: AgentIntegrationStatus["claudeFile"] = "absent";
   if (claudeExisting !== null) {
-    if (claudeExisting.includes(AGENTS_MARKER_START))
-      claudeFile = "managed";
+    if (claudeExisting.includes(AGENTS_MARKER_START)) claudeFile = "managed";
     else if (CONFLICT_RE.test(claudeExisting)) claudeFile = "conflict";
     else claudeFile = "plain";
   }

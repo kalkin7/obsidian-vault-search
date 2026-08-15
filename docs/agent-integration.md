@@ -28,7 +28,7 @@ Nothing is written automatically at startup.
 | --- | --- | --- |
 | Wrapper | `<vault>/.obsidian/plugins/obsidian-vault-search/search.ps1` | `$PSScriptRoot/../../..` derives the vault root; no hardcoded paths |
 | AGENTS.md block | `<vault>/AGENTS.md` | Marker-guarded, idempotent; read by Codex and Gemini CLI |
-| CLAUDE.md block | `<vault>/CLAUDE.md` | Marker-guarded; `@AGENTS.md` import so Claude Code gets the same instructions |
+| CLAUDE.md block | `<vault>/CLAUDE.md` | Marker-guarded; self-contained copy of the vault-search instructions so Claude Code gets them without importing any user-authored AGENTS.md content |
 | Skill (Claude Code) | `<vault>/.claude/skills/vault-search/SKILL.md` | Marker-guarded, never clobbers user skills |
 | Skill (Antigravity / Codex / OpenCode) | `<vault>/.agents/skills/vault-search/SKILL.md` | Universal agent-skills path: Antigravity workspace skills, Codex (scans `.agents/skills` from CWD to repo root; the old `.codex/skills` catalog is deprecated), OpenCode |
 | Skill (OpenCode) | `<vault>/.opencode/skills/vault-search/SKILL.md` | Explicit copy; OpenCode also reads `.claude/skills` and `.agents/skills` |
@@ -72,17 +72,22 @@ The conflict check also applies to content **outside** an existing marker
 block: if a vault later hand-authors search guidance next to our managed block,
 installs abort instead of leaving two instruction sets.
 
-The same rules manage `CLAUDE.md`, whose managed block is just the import:
+The same rules manage `CLAUDE.md`, whose managed block is a **self-contained
+copy** of the same vault-search instructions:
 
 ```markdown
 <!-- vault-search:start -->
-@AGENTS.md
+## Vault Search
+…
 <!-- vault-search:end -->
 ```
 
-Claude Code reads `CLAUDE.md` (not `AGENTS.md`); the import keeps one
-instruction set. `GEMINI.md` is left untouched (Gemini CLI reads `AGENTS.md`
-and has been superseded by Antigravity CLI for individual accounts).
+Claude Code reads `CLAUDE.md` (not `AGENTS.md`). The block is deliberately NOT
+an `@AGENTS.md` import: an import would pull the entire file — including any
+user-authored content — into Claude's context. Both files carry only the
+managed instructions, so each harness sees exactly the vault-search block and
+nothing else. `GEMINI.md` is left untouched (Gemini CLI reads `AGENTS.md` and
+has been superseded by Antigravity CLI for individual accounts).
 
 ## Skill
 

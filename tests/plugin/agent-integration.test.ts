@@ -144,11 +144,15 @@ describe("installAgentIntegration (filesystem)", () => {
       expect(agents).toContain(AGENTS_MARKER_END);
       expect(agents).toContain("search.ps1");
 
-      // Claude Code reads CLAUDE.md (not AGENTS.md): the managed block must
-      // import AGENTS.md.
+      // Claude Code reads CLAUDE.md (not AGENTS.md): the managed block is a
+      // self-contained copy of the vault-search instructions — never an
+      // @AGENTS.md import, so user-authored AGENTS.md content is not pulled
+      // into Claude's context.
       const claude = await readFile(path.join(vault, "CLAUDE.md"), "utf8");
       expect(claude).toContain(AGENTS_MARKER_START);
-      expect(claude).toContain("@AGENTS.md");
+      expect(claude).toContain("## Vault Search");
+      expect(claude).toContain("search.ps1 -Top 40 -Json");
+      expect(claude).not.toContain("@AGENTS.md");
 
       const wrapper = await readFile(
         path.join(pluginDir, "search.ps1"),

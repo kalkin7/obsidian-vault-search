@@ -2774,11 +2774,7 @@ var AGENTS_BLOCK = [
   "- Use `rg`/grep only to verify an exact known string or to debug search coverage \u2014 not as the normal search path.",
   AGENTS_MARKER_END
 ].join("\n");
-var CLAUDE_BLOCK = [
-  AGENTS_MARKER_START,
-  "@AGENTS.md",
-  AGENTS_MARKER_END
-].join("\n");
+var CLAUDE_BLOCK = AGENTS_BLOCK;
 var SEARCH_PS1 = `# Vault Search Service \u2014 agent wrapper.
 # Managed by the Vault Search plugin; edits are overwritten on reinstall.
 # The vault is derived from this script's own location (no hardcoded paths).
@@ -2991,13 +2987,10 @@ async function agentIntegrationStatus(vaultPath, pluginDir) {
     else if (CONFLICT_RE.test(existing)) agentsFile = "conflict";
     else agentsFile = "plain";
   }
-  const claudeExisting = await readForStatus(
-    path.join(vaultPath, CLAUDE_FILE)
-  );
+  const claudeExisting = await readForStatus(path.join(vaultPath, CLAUDE_FILE));
   let claudeFile = "absent";
   if (claudeExisting !== null) {
-    if (claudeExisting.includes(AGENTS_MARKER_START))
-      claudeFile = "managed";
+    if (claudeExisting.includes(AGENTS_MARKER_START)) claudeFile = "managed";
     else if (CONFLICT_RE.test(claudeExisting)) claudeFile = "conflict";
     else claudeFile = "plain";
   }
