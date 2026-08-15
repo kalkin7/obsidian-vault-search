@@ -19,11 +19,18 @@
  white-space: pre-wrap;
 }
 
-/* Multi-number rows render as labeled horizontal fields (label above input)
- * so each value is self-explanatory and several fields fit one row without
- * overflowing the control column. Obsidian's ~160px default inputs would
- * otherwise wrap and squash .setting-item-info (min-width: 0) to zero width,
- * inflating the card height. */
+/* Multi-number rows render as labeled horizontal fields (label above input),
+ * laid out BELOW the setting name/description across the full card width —
+ * squeezing 4+ fields into the right control column runs out of space. */
+.setting-item.vault-search-fields-below {
+ flex-wrap: wrap;
+}
+
+.setting-item.vault-search-fields-below .setting-item-control {
+ flex-basis: 100%;
+ justify-content: flex-start;
+}
+
 .setting-item .setting-item-control.vault-search-num-fields {
  flex-wrap: nowrap;
  gap: 4px 10px;

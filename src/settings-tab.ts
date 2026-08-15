@@ -564,8 +564,9 @@ export class VaultSearchSettingTab extends PluginSettingTab {
   }
 
   /** Render a numeric row as labeled horizontal fields (label above each
-   *  input) so every value is self-explanatory and several fields fit in one
-   *  row without overflowing the control column. */
+   *  input) laid out BELOW the setting name/description across the full width,
+   *  instead of squeezing several fields into the right control column (which
+   *  runs out of space for 4+ fields). */
   private numericFields(
     name: string,
     desc: string,
@@ -576,7 +577,10 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       allowZero?: boolean;
     }>,
   ): void {
-    const setting = new Setting(this.containerEl).setName(name).setDesc(desc);
+    const setting = new Setting(this.containerEl)
+      .setName(name)
+      .setDesc(desc)
+      .setClass("vault-search-fields-below");
     const control = setting.controlEl;
     control.addClass("vault-search-num-fields");
     for (const field of fields) {
