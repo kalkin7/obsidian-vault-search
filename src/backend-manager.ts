@@ -864,7 +864,16 @@ export class BackendManager {
   }
 
   private setStatus(status: Partial<BackendStatus>): void {
-    this.statusValue = { ...this.statusValue, ...status };
+    if (status.state === "stopped" || status.state === "starting") {
+      // Lifecycle transitions invalidate every runtime-derived field (model,
+      // device, provider, index counts, error, ...): a stopped service must
+      // not keep reporting the last loaded session's provider/device, or the
+      // settings tab would show e.g. "실행 제공자: TensorRT" while nothing
+      // is running.
+      this.statusValue = { ...status } as BackendStatus;
+    } else {
+      this.statusValue = { ...this.statusValue, ...status };
+    }
     this.statusChanged(this.status);
   }
 

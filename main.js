@@ -3827,7 +3827,11 @@ var BackendManager = class {
     this.heartbeat = null;
   }
   setStatus(status) {
-    this.statusValue = { ...this.statusValue, ...status };
+    if (status.state === "stopped" || status.state === "starting") {
+      this.statusValue = { ...status };
+    } else {
+      this.statusValue = { ...this.statusValue, ...status };
+    }
     this.statusChanged(this.status);
   }
   async readRuntime() {

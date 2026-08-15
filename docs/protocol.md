@@ -47,8 +47,8 @@ configured values:
 - `provider` — the configured provider value (`auto` | `cuda` | `tensorrt`).
 - `expected_provider` — the EP the ONNX engine will run on, resolved pre-load
   from config + runtime (`TensorrtExecutionProvider` |
-  `CUDAExecutionProvider` | `CPUExecutionProvider`), or null for the PyTorch
-  engine / CPU device.
+  `CUDAExecutionProvider` | `CPUExecutionProvider`), or null only for the
+  PyTorch engine (a CPU device resolves to `CPUExecutionProvider`).
 - `effective_provider` — the EP the loaded ONNX session was actually built
   with (the truth), or null while the model is not loaded. A silent fallback
   (e.g. TensorRT removed) shows up as a mismatch between `effective_provider`

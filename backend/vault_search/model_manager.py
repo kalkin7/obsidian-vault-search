@@ -186,9 +186,9 @@ class ModelManager:
 
     def expected_provider(self) -> str | None:
         """Provider the ONNX engine will run on, resolved from config + runtime
-        without loading; None for the PyTorch engine or when the device
-        resolves to CPU. Status reports this before the model loads, so idle
-        states show the intended EP instead of nothing."""
+        without loading; None only for the PyTorch engine. A CPU device
+        resolves to ``CPUExecutionProvider``. Status reports this before the
+        model loads, so idle states show the intended EP instead of nothing."""
         if self.engine != "onnx":
             return None
         if self.device == "cpu":

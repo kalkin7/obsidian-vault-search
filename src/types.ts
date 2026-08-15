@@ -57,7 +57,8 @@ export interface BackendStatus {
   /** Configured provider value (auto | cuda | tensorrt). */
   provider?: string;
   /** Provider the ONNX engine will run on (resolved pre-load), e.g.
-   *  TensorrtExecutionProvider; null for the PyTorch engine / CPU device. */
+   *  TensorrtExecutionProvider; null only for the PyTorch engine (a CPU
+   *  device resolves to CPUExecutionProvider). */
   expected_provider?: string | null;
   /** Provider the loaded ONNX session was actually built with (the truth),
    *  or null while the model is not loaded. */
