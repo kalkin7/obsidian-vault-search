@@ -14,6 +14,17 @@ Portable settings are stored in plugin `data.json`. The Python executable is mac
 - Bare command names (e.g. `python`) are still accepted: the wrapper resolves
   them via `Get-Command` and the CLI via `shutil.which`.
 
+## Service status
+
+The settings tab status block shows the effective execution state: 상태,
+모델, 디바이스, 실행 제공자, PID/포트, 인덱스 개수. `디바이스` and `실행 제공자`
+reflect **what is actually running**: `effective_provider` is the EP the loaded
+ONNX session was built with, falling back to the config + runtime resolution
+with a `(로드 전 예상)` marker while the model is not loaded (idle/loading).
+An explicit `(설정: ...)` note is appended when the configured provider is not
+`auto`, so a silent fallback (e.g. TensorRT became unavailable) is visible as
+a mismatch instead of being hidden.
+
 ## Agent integration (P2-1)
 
 Settings tab → **에이전트 통합** installs, on explicit user action, a search

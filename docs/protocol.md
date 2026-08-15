@@ -37,6 +37,27 @@ Status responses also expose index compatibility state: `index_validation_state`
 the CLI, settings tab, and startup notice all recommend. Validation is cached at
 initialization/reconcile/rebuild boundaries and never recomputed per status call.
 
+Status responses expose the runtime's effective execution state, not just the
+configured values:
+
+- `device` — the device the model runs on. When loaded this is the actual
+  device; before load (idle/loading) it is resolved from config + runtime
+  (e.g. `auto` with a CUDA-capable EP reports `cuda`), so an idle service
+  never reports a misleading `cpu`.
+- `provider` — the configured provider value (`auto` | `cuda` | `tensorrt`).
+- `expected_provider` — the EP the ONNX engine will run on, resolved pre-load
+  from config + runtime (`TensorrtExecutionProvider` |
+  `CUDAExecutionProvider` | `CPUExecutionProvider`), or null for the PyTorch
+  engine / CPU device.
+- `effective_provider` — the EP the loaded ONNX session was actually built
+  with (the truth), or null while the model is not loaded. A silent fallback
+  (e.g. TensorRT removed) shows up as a mismatch between `effective_provider`
+  and `provider`.
+- `capabilities` — what the current runtime can execute: `onnx_available`,
+  `cuda_available`, `tensorrt_available`, `model_available`,
+  `derived_model_available`. CUDA/TensorRT availability is gated on an actual
+  `torch.cuda.is_available()` init, not just EP registration.
+
 `search` responses include an optional `diagnostics` object inside the data payload with
 `candidate_pool_size`, `requested_top_k`, and `returned_count`. When `requested_top_k` exceeds
 `candidate_pool_size`, the CLI prints a warning on stderr. `rebuild_vectors` and `rebuild_all`

@@ -25,8 +25,8 @@ options it cannot run.
   - `device=auto` resolves to CUDA when a CUDA-capable execution provider is
     available, otherwise CPU. `device=cpu` forces CPU; `device=cuda` requires
     a CUDA-capable execution provider.
-- `provider` (used only when `engine=onnx` **and** `device=cuda`):
-  `auto` (default) | `cuda` | `tensorrt`
+- `provider` (used when `engine=onnx` runs on CUDA — `device=cuda`, or
+  `device=auto` resolving to CUDA): `auto` (default) | `cuda` | `tensorrt`
   - `auto` resolves to TensorRT when it is actually usable, otherwise CUDA.
   - `cuda` forces the CUDA execution provider.
   - `tensorrt` requires TensorRT; errors are surfaced instead of falling back.
@@ -36,6 +36,12 @@ prefixes, or normalization invalidates the index and triggers an atomic vector
 rebuild. The effective provider is recorded in `index/metadata.json`, so an
 environment change (e.g. TensorRT becomes unavailable) also invalidates the
 index even when the config still says `provider=auto`.
+
+Service status exposes `expected_provider` (the pre-load resolution from
+config + runtime) and `effective_provider` (the EP the loaded session was
+actually built with), so the settings tab shows what is really running rather
+than only the configured value; a silent fallback appears as a mismatch
+between the two.
 
 ## Derived model provisioning
 
@@ -89,7 +95,7 @@ GPU (RTX 5060 Ti, Blackwell sm_120, 16 GB, `onnxruntime-gpu 1.25.1` +
 `tensorrt 10.16.1.11`, real corpus of 8,420 chunks, avg ~290 chars):
 
 | Engine | Indexing cps (batch 32) | Quality vs CUDA FP32 |
-|---|---:|---:|
+| --- | ---: | ---: |
 | CUDA FP32 (unfused) | 122 | baseline |
 | TensorRT FP32 | 413–437 | cosine ≥ 0.99998, recall@40 22/39 unchanged |
 | TensorRT FP16 | ~1,549 | cosine ~0.997 (not the default) |
@@ -97,7 +103,7 @@ GPU (RTX 5060 Ti, Blackwell sm_120, 16 GB, `onnxruntime-gpu 1.25.1` +
 CPU (i7-14700K, `onnxruntime 1.25.1`, measured 2026-08-13):
 
 | Measurement | Value |
-|---|---:|
+| --- | ---: |
 | Cold process through first encode | 1.67–1.80 s (median ~1.77 s) |
 | Warm query batch-1 encode | ~0.01 s |
 | Embedding parity vs PyTorch CPU | cosine 1.00000000 (max abs diff ~2e-7) |
