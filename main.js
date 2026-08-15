@@ -3009,8 +3009,8 @@ var import_obsidian = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var LIGHTNING_ICON_ASSET = "assets/lightning search.png";
-var BACKEND_VERSION = "0.1.9";
+var LIGHTNING_ICON_ASSET = "lightning.search.png";
+var BACKEND_VERSION = "0.1.10";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {

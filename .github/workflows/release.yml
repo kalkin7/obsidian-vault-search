@@ -19,12 +19,11 @@ jobs:
         run: |
           $stage = Join-Path $env:RUNNER_TEMP "obsidian-vault-search-release"
           New-Item -ItemType Directory -Force -Path (Join-Path $stage "backend") | Out-Null
-          New-Item -ItemType Directory -Force -Path (Join-Path $stage "assets") | Out-Null
           Copy-Item -Recurse -Force backend/vault_search (Join-Path $stage "backend")
           Copy-Item -Force backend/requirements.txt,backend/requirements-runtime.txt,backend/requirements-optional-tensorrt.txt,backend/setup-runtime.ps1,backend/pyproject.toml (Join-Path $stage "backend")
-          Copy-Item -LiteralPath "assets/lightning search.png" (Join-Path $stage "assets/lightning search.png")
+          Copy-Item -LiteralPath "assets/lightning search.png" (Join-Path $stage "lightning.search.png")
           Get-ChildItem -Path (Join-Path $stage "backend") -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
-          Compress-Archive -Path main.js,manifest.json,versions.json,styles.css,(Join-Path $stage "backend"),(Join-Path $stage "assets") -DestinationPath obsidian-vault-search-${{ github.ref_name }}.zip
+          Compress-Archive -Path main.js,manifest.json,versions.json,styles.css,(Join-Path $stage "backend"),(Join-Path $stage "lightning.search.png") -DestinationPath obsidian-vault-search-${{ github.ref_name }}.zip
       - name: Publish GitHub release
         shell: pwsh
         env:

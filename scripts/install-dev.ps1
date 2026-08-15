@@ -25,9 +25,7 @@ $AssetSource = Join-Path $RepoRoot "assets\lightning search.png"
 if (-not (Test-Path -LiteralPath $AssetSource -PathType Leaf)) {
     throw "Required plugin asset not found: $AssetSource"
 }
-$AssetTarget = Join-Path $Target "assets"
-New-Item -ItemType Directory -Force -Path $AssetTarget | Out-Null
-Copy-Item -Force -LiteralPath $AssetSource -Destination (Join-Path $AssetTarget "lightning search.png")
+Copy-Item -Force -LiteralPath $AssetSource -Destination (Join-Path $Target "lightning.search.png")
 $BackendTarget = Join-Path $Target "backend"
 New-Item -ItemType Directory -Force -Path $BackendTarget | Out-Null
 Copy-Item -Recurse -Force (Join-Path $RepoRoot "backend\vault_search") $BackendTarget

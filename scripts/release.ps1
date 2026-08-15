@@ -100,9 +100,8 @@ try {
     $Stage = Join-Path $env:TEMP "release-$Version"
     if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $Stage "backend/vault_search") -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $Stage "assets") -Force | Out-Null
     Copy-Item "main.js", "manifest.json", "styles.css" $Stage
-    Copy-Item -LiteralPath "assets/lightning search.png" (Join-Path $Stage "assets/lightning search.png")
+    Copy-Item -LiteralPath "assets/lightning search.png" (Join-Path $Stage "lightning.search.png")
     Copy-Item "backend/pyproject.toml", "backend/requirements.txt", `
         "backend/requirements-runtime.txt", "backend/requirements-optional-tensorrt.txt", `
         "backend/setup-runtime.ps1" (Join-Path $Stage "backend")
@@ -113,8 +112,8 @@ try {
     [IO.Compression.ZipFile]::CreateFromDirectory($Stage, $Zip)
     $ZipArchive = [IO.Compression.ZipFile]::OpenRead($Zip)
     try {
-        if (-not ($ZipArchive.Entries.FullName -contains "assets/lightning search.png")) {
-            throw "Release archive is missing assets/lightning search.png"
+        if (-not ($ZipArchive.Entries.FullName -contains "lightning.search.png")) {
+            throw "Release archive is missing lightning.search.png"
         }
     } finally {
         $ZipArchive.Dispose()
