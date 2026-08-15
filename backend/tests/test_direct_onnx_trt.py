@@ -1,4 +1,5 @@
 """Unit tests for the TRT provider resolution in direct_onnx."""
+
 from __future__ import annotations
 
 import sys
@@ -43,6 +44,7 @@ def test_trt_provider_options_shape_profile() -> None:
 
 def test_find_trt_lib_dir_detects_site_packages(tmp_path: Path, monkeypatch) -> None:
     import sysconfig as _sc
+
     libs = tmp_path / "tensorrt_libs"
     libs.mkdir()
     (libs / "nvinfer_10.dll").write_bytes(b"x")
@@ -54,6 +56,7 @@ def test_find_trt_lib_dir_detects_site_packages(tmp_path: Path, monkeypatch) -> 
 
 def test_find_trt_lib_dir_rejects_foreign_paths(tmp_path: Path, monkeypatch) -> None:
     import sysconfig as _sc
+
     outside = tmp_path.parent / "unrelated"
     outside.mkdir(exist_ok=True)
     libs = outside / "tensorrt_libs"
@@ -85,8 +88,13 @@ class _FakeSession:
 
 
 def _auto_trt_resolve(provider: str) -> str:
-    return "TensorrtExecutionProvider" if provider == "auto" else \
-        "CUDAExecutionProvider" if provider == "cuda" else "TensorrtExecutionProvider"
+    return (
+        "TensorrtExecutionProvider"
+        if provider == "auto"
+        else "CUDAExecutionProvider"
+        if provider == "cuda"
+        else "TensorrtExecutionProvider"
+    )
 
 
 def test_runtime_capabilities_reports_providers(monkeypatch) -> None:
@@ -95,14 +103,26 @@ def test_runtime_capabilities_reports_providers(monkeypatch) -> None:
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setattr(direct_onnx, "_trt_available", lambda: False)
     assert runtime_capabilities() == {
-        "onnx_available": True, "cuda_available": True, "tensorrt_available": False}
+        "onnx_available": True,
+        "cuda_available": True,
+        "tensorrt_available": False,
+    }
 
 
-def test_runtime_capabilities_provider_registered_but_cuda_unusable(monkeypatch) -> None:
+def test_runtime_capabilities_provider_registered_but_cuda_unusable(
+    monkeypatch,
+) -> None:
     """A registered CUDA EP is not proof of usability: without an actual torch
     CUDA init, the capability must report false so the UI does not disable
     installation while explicit CUDA startup would still fail."""
@@ -111,11 +131,22 @@ def test_runtime_capabilities_provider_registered_but_cuda_unusable(monkeypatch)
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["CUDAExecutionProvider", "TensorrtExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "TensorrtExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setattr(direct_onnx, "_trt_available", lambda: True)
     assert runtime_capabilities() == {
-        "onnx_available": True, "cuda_available": False, "tensorrt_available": False}
+        "onnx_available": True,
+        "cuda_available": False,
+        "tensorrt_available": False,
+    }
 
 
 def test_runtime_capabilities_tensorrt_usable(monkeypatch) -> None:
@@ -124,8 +155,15 @@ def test_runtime_capabilities_tensorrt_usable(monkeypatch) -> None:
 
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(get_available_providers=lambda: ["TensorrtExecutionProvider", "CPUExecutionProvider"]))
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "TensorrtExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
     monkeypatch.setattr(direct_onnx, "_trt_available", lambda: True)
     caps = runtime_capabilities()
     assert caps["onnx_available"] is True
@@ -146,7 +184,10 @@ def test_runtime_capabilities_missing_onnxruntime(monkeypatch) -> None:
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
     assert runtime_capabilities() == {
-        "onnx_available": False, "cuda_available": False, "tensorrt_available": False}
+        "onnx_available": False,
+        "cuda_available": False,
+        "tensorrt_available": False,
+    }
 
 
 def test_cpu_session_builds_cpu_only(monkeypatch) -> None:
@@ -208,8 +249,8 @@ def test_auto_trt_build_exception_falls_back(monkeypatch) -> None:
 
 def test_trt_cache_key_changes_with_batch_and_path(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setitem(
-        sys.modules, "onnxruntime",
-        SimpleNamespace(__version__="1.25.1"))
+        sys.modules, "onnxruntime", SimpleNamespace(__version__="1.25.1")
+    )
     k1 = _trt_cache_key(Path(r"C:\models\m.onnx"), 32)
     k2 = _trt_cache_key(Path(r"C:\models\m.onnx"), 64)
     assert k1 != k2

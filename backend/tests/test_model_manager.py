@@ -5,7 +5,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from vault_search.config import SearchConfig
 from vault_search.model_manager import ModelManager
 
@@ -34,6 +33,46 @@ def _install_modules(monkeypatch: pytest.MonkeyPatch, loader: type) -> None:
         "sentence_transformers",
         SimpleNamespace(SentenceTransformer=loader),
     )
+
+
+def test_resolve_expected_device_before_load(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """The pre-load device resolves from config + runtime so idle/loading
+    status reports the real device instead of a hardcoded 'cpu'."""
+    cfg = _config(tmp_path, model_id="__fake__")
+
+    cfg.device = "cpu"
+    assert ModelManager(cfg).device == "cpu"
+
+    # Explicit cuda reports intent even when the runtime lacks CUDA: the
+    # failure surfaces as a load error, not a misleading 'cpu' report.
+    cfg.device = "cuda"
+    assert ModelManager(cfg).device == "cuda"
+
+    # auto + pytorch with torch.cuda unavailable -> cpu
+    monkeypatch.setitem(
+        sys.modules,
+        "torch",
+        SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
+    )
+    cfg.device = "auto"
+    cfg.engine = "pytorch"
+    assert ModelManager(cfg).device == "cpu"
+
+    # auto + onnx with a CUDA-capable EP -> cuda
+    monkeypatch.setitem(
+        sys.modules,
+        "onnxruntime",
+        SimpleNamespace(
+            get_available_providers=lambda: [
+                "CUDAExecutionProvider",
+                "CPUExecutionProvider",
+            ]
+        ),
+    )
+    cfg.engine = "onnx"
+    assert ModelManager(cfg).device == "cuda"
 
 
 def test_load_prefers_local_cache(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

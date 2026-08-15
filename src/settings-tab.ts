@@ -279,8 +279,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       const rejectedByCaps =
         caps !== undefined &&
         ((providerValue === "cuda" && caps.cuda_available === false) ||
-          (providerValue === "tensorrt" &&
-            caps.tensorrt_available === false));
+          (providerValue === "tensorrt" && caps.tensorrt_available === false));
       providerOptions.push([
         providerValue,
         rejectedByCaps ? `${label} (현재 런타임에서 사용 불가)` : label,
@@ -425,23 +424,23 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }),
       );
 
-    new Setting(containerEl)
-      .setName("청크 크기 / 오버랩")
-      .setClass("vault-search-num-inputs")
-      .setDesc("값을 변경하면 전체 인덱스 재구축이 필요합니다.")
-      .addText((text) =>
-        text.setValue(String(draft.chunkChars)).onChange((value) => {
-          draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
-        }),
-      )
-      .addText((text) =>
-        text.setValue(String(draft.chunkOverlap)).onChange((value) => {
-          draft.chunkOverlap = this.nonnegativeNumber(
-            value,
-            draft.chunkOverlap,
-          );
-        }),
-      );
+    this.numericFields("청크 크기 / 오버랩", "값을 변경하면 전체 인덱스 재구축이 필요합니다.", [
+      {
+        label: "크기",
+        value: draft.chunkChars,
+        set: (v) => {
+          draft.chunkChars = v;
+        },
+      },
+      {
+        label: "오버랩",
+        value: draft.chunkOverlap,
+        allowZero: true,
+        set: (v) => {
+          draft.chunkOverlap = v;
+        },
+      },
+    ]);
     new Setting(containerEl)
       .setName("청킹 전략")
       .setDesc(
@@ -457,33 +456,41 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             this.display();
           }),
       );
-    new Setting(containerEl)
-      .setName("BM25 / 벡터 / 최종 후보 / RRF k")
-      .setClass("vault-search-num-inputs")
-      .setDesc(
-        "검색이 '후보를 넓게 모아 융합한 뒤 최종 결과만 반환'하는 너비를 조정합니다. " +
-          "기본값 80 / 80 / 40은 K_Notes 골드셋 기준 recall@40 0.856으로 측정해 정한 값입니다.",
-      )
-      .addText((text) =>
-        text.setValue(String(draft.bm25TopK)).onChange((value) => {
-          draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);
-        }),
-      )
-      .addText((text) =>
-        text.setValue(String(draft.vectorTopK)).onChange((value) => {
-          draft.vectorTopK = this.positiveNumber(value, draft.vectorTopK);
-        }),
-      )
-      .addText((text) =>
-        text.setValue(String(draft.finalTopK)).onChange((value) => {
-          draft.finalTopK = this.positiveNumber(value, draft.finalTopK);
-        }),
-      )
-      .addText((text) =>
-        text.setValue(String(draft.rrfK)).onChange((value) => {
-          draft.rrfK = this.positiveNumber(value, draft.rrfK);
-        }),
-      );
+    this.numericFields(
+      "BM25 / 벡터 / 최종 후보 / RRF k",
+      "검색이 '후보를 넓게 모아 융합한 뒤 최종 결과만 반환'하는 너비를 조정합니다. " +
+        "기본값 80 / 80 / 40은 K_Notes 골드셋 기준 recall@40 0.856으로 측정해 정한 값입니다.",
+      [
+        {
+          label: "BM25",
+          value: draft.bm25TopK,
+          set: (v) => {
+            draft.bm25TopK = v;
+          },
+        },
+        {
+          label: "벡터",
+          value: draft.vectorTopK,
+          set: (v) => {
+            draft.vectorTopK = v;
+          },
+        },
+        {
+          label: "최종",
+          value: draft.finalTopK,
+          set: (v) => {
+            draft.finalTopK = v;
+          },
+        },
+        {
+          label: "RRF k",
+          value: draft.rrfK,
+          set: (v) => {
+            draft.rrfK = v;
+          },
+        },
+      ],
+    );
     containerEl.createEl("div", {
       cls: "vault-search-setting-hint",
       text:
@@ -495,28 +502,27 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         "결과가 한 채널에 치우치면 이 값을 줄여 보세요.\n" +
         "바꾸면 실행 중 서비스에 즉시 반영되며, 결과가 이상하면 기본값으로 되돌리면 됩니다.",
     });
-    new Setting(containerEl)
-      .setName("검색 다양성 / 제목 가중치")
-      .setClass("vault-search-num-inputs")
-      .setDesc(
-        "파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.",
-      )
-      .addText((text) =>
-        text.setValue(String(draft.maxChunksPerFile)).onChange((value) => {
-          draft.maxChunksPerFile = this.positiveNumber(
-            value,
-            draft.maxChunksPerFile,
-          );
-        }),
-      )
-      .addText((text) =>
-        text.setValue(String(draft.titleRrfWeight)).onChange((value) => {
-          draft.titleRrfWeight = this.nonnegativeNumber(
-            value,
-            draft.titleRrfWeight,
-          );
-        }),
-      );
+    this.numericFields(
+      "검색 다양성 / 제목 가중치",
+      "파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.",
+      [
+        {
+          label: "파일당 청크",
+          value: draft.maxChunksPerFile,
+          set: (v) => {
+            draft.maxChunksPerFile = v;
+          },
+        },
+        {
+          label: "제목 가중치",
+          value: draft.titleRrfWeight,
+          allowZero: true,
+          set: (v) => {
+            draft.titleRrfWeight = v;
+          },
+        },
+      ],
+    );
     containerEl.createEl("div", {
       cls: "vault-search-setting-hint",
       text:
@@ -549,6 +555,43 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         draft.startupReconcile = value;
       }),
     );
+  }
+
+  /** Render a numeric row as labeled horizontal fields (label above each
+   *  input) so every value is self-explanatory and several fields fit in one
+   *  row without overflowing the control column. */
+  private numericFields(
+    name: string,
+    desc: string,
+    fields: Array<{
+      label: string;
+      value: number;
+      set: (value: number) => void;
+      allowZero?: boolean;
+    }>,
+  ): void {
+    const setting = new Setting(this.containerEl).setName(name).setDesc(desc);
+    const control = setting.controlEl;
+    control.addClass("vault-search-num-fields");
+    for (const field of fields) {
+      const group = control.createDiv({ cls: "vault-search-num-field" });
+      group.createEl("span", {
+        text: field.label,
+        cls: "vault-search-num-field-label",
+      });
+      const input = group.createEl("input", {
+        type: "text",
+        cls: "vault-search-num-field-input",
+        value: String(field.value),
+      });
+      input.addEventListener("input", () => {
+        const parsed = Number(input.value);
+        const valid =
+          Number.isFinite(parsed) &&
+          (field.allowZero ? parsed >= 0 : parsed > 0);
+        if (valid) field.set(parsed);
+      });
+    }
   }
 
   private lines(value: string): string[] {

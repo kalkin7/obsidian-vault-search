@@ -35,9 +35,9 @@ MAX_SEQ = 512
 
 DERIVED_REL = "onnx/model-pooled-normalized.onnx"
 
-TRT_WORKSPACE_BYTES = 4 * 1024 ** 3
+TRT_WORKSPACE_BYTES = 4 * 1024**3
 TRT_OPT_SEQ = 256
-TRT_CACHE_MAX_BYTES = 6 * 1024 ** 3
+TRT_CACHE_MAX_BYTES = 6 * 1024**3
 
 
 def _find_trt_lib_dir() -> Path | None:
@@ -51,6 +51,7 @@ def _find_trt_lib_dir() -> Path | None:
     unrelated directories.
     """
     import sysconfig
+
     candidate_dirs = set()
     for key in ("purelib", "platlib"):
         value = sysconfig.get_path(key)
@@ -61,8 +62,10 @@ def _find_trt_lib_dir() -> Path | None:
         if not candidate.is_dir():
             continue
         resolved = str(candidate.resolve()).lower()
-        if not any(resolved == base or resolved.startswith(base + os.sep)
-                   for base in (b.lower() for b in candidate_dirs)):
+        if not any(
+            resolved == base or resolved.startswith(base + os.sep)
+            for base in (b.lower() for b in candidate_dirs)
+        ):
             continue
         libs = candidate / "tensorrt_libs"
         if libs.is_dir() and (libs / "nvinfer_10.dll").exists():
@@ -110,7 +113,8 @@ def _require_cuda_primary(session: Any) -> None:
     if primary != "CUDAExecutionProvider":
         raise RuntimeError(
             f"CUDA session could not be created; primary EP is {primary!r}: "
-            f"{session.get_providers()}")
+            f"{session.get_providers()}"
+        )
 
 
 def _trt_provider_options(engine_cache_dir: Path, max_batch: int) -> dict[str, Any]:
@@ -121,9 +125,9 @@ def _trt_provider_options(engine_cache_dir: Path, max_batch: int) -> dict[str, A
         "trt_max_workspace_size": TRT_WORKSPACE_BYTES,
         "trt_profile_min_shapes": "input_ids:1x1,attention_mask:1x1",
         "trt_profile_opt_shapes": f"input_ids:{max_batch}x{TRT_OPT_SEQ},"
-                                  f"attention_mask:{max_batch}x{TRT_OPT_SEQ}",
+        f"attention_mask:{max_batch}x{TRT_OPT_SEQ}",
         "trt_profile_max_shapes": f"input_ids:{max_batch}x{MAX_SEQ},"
-                                  f"attention_mask:{max_batch}x{MAX_SEQ}",
+        f"attention_mask:{max_batch}x{MAX_SEQ}",
     }
 
 
@@ -134,12 +138,14 @@ def _trt_cache_key(onnx_path: Path, max_batch: int) -> str:
     engine (ORT/TRT versions, batch profile). Precision is fixed fp32.
     """
     import onnxruntime as ort
+
     parts = [
         hashlib.sha256(str(onnx_path.resolve()).encode("utf-8")).hexdigest()[:16],
         ort.__version__,
     ]
     try:
         import tensorrt as trt  # type: ignore[reportMissingImports]  # optional dep
+
         parts.append(trt.__version__)
     except Exception:
         parts.append("notrt")
@@ -157,8 +163,12 @@ def _enforce_cache_quota(cache_root: Path, keep: Path) -> None:
     """
     try:
         subdirs = [d for d in cache_root.iterdir() if d.is_dir() and d != keep]
-        total = sum(f.stat().st_size for d in cache_root.iterdir()
-                    for f in d.glob("**/*") if f.is_file())
+        total = sum(
+            f.stat().st_size
+            for d in cache_root.iterdir()
+            for f in d.glob("**/*")
+            if f.is_file()
+        )
         if total <= TRT_CACHE_MAX_BYTES:
             return
         for d in sorted(subdirs, key=lambda p: p.stat().st_mtime):
@@ -168,6 +178,7 @@ def _enforce_cache_quota(cache_root: Path, keep: Path) -> None:
                 if f.is_file():
                     total -= f.stat().st_size
             import shutil
+
             shutil.rmtree(d, ignore_errors=True)
     except Exception:
         pass
@@ -220,68 +231,97 @@ def runtime_capabilities() -> dict[str, bool]:
         cuda_usable = bool(torch.cuda.is_available())
     except Exception:
         cuda_usable = False
-    caps["cuda_available"] = (
-        "CUDAExecutionProvider" in providers and cuda_usable
-    )
+    caps["cuda_available"] = "CUDAExecutionProvider" in providers and cuda_usable
     caps["tensorrt_available"] = _trt_available() and cuda_usable
     return caps
 
 
 class DirectE5Onnx:
-    def __init__(self, model_dir: Path, provider: str = "auto",
-                 normalize_embeddings: bool = True, max_seq_length: int = MAX_SEQ,
-                 trt_cache_dir: Path | None = None,
-                 trt_max_batch: int = 64):
+    def __init__(
+        self,
+        model_dir: Path,
+        provider: str = "auto",
+        normalize_embeddings: bool = True,
+        max_seq_length: int = MAX_SEQ,
+        trt_cache_dir: Path | None = None,
+        trt_max_batch: int = 64,
+    ):
         model_dir = Path(model_dir)
 
         if not normalize_embeddings:
             raise RuntimeError(
                 "engine=onnx always produces L2-normalized embeddings; "
-                "normalize_embeddings must be true for this engine")
+                "normalize_embeddings must be true for this engine"
+            )
 
-        pooling = json.loads((model_dir / "1_Pooling" / "config.json").read_text(encoding="utf-8"))
-        sentence_cfg = json.loads((model_dir / "sentence_bert_config.json").read_text(encoding="utf-8"))
+        pooling = json.loads(
+            (model_dir / "1_Pooling" / "config.json").read_text(encoding="utf-8")
+        )
+        sentence_cfg = json.loads(
+            (model_dir / "sentence_bert_config.json").read_text(encoding="utf-8")
+        )
         if int(pooling.get("word_embedding_dimension", 0)) != POOLING_DIM:
-            raise RuntimeError(f"unexpected embedding dimension: {pooling.get('word_embedding_dimension')}")
+            raise RuntimeError(
+                f"unexpected embedding dimension: {pooling.get('word_embedding_dimension')}"
+            )
         if not pooling.get("pooling_mode_mean_tokens"):
             raise RuntimeError("pooling_mode_mean_tokens must be true")
-        for key in ("pooling_mode_cls_token", "pooling_mode_max_tokens",
-                    "pooling_mode_mean_sqrt_len_tokens"):
+        for key in (
+            "pooling_mode_cls_token",
+            "pooling_mode_max_tokens",
+            "pooling_mode_mean_sqrt_len_tokens",
+        ):
             if pooling.get(key):
                 raise RuntimeError(f"unsupported pooling flag enabled: {key}")
         if int(sentence_cfg.get("max_seq_length", 0)) != max_seq_length:
-            raise RuntimeError(f"max_seq_length mismatch: {sentence_cfg.get('max_seq_length')}")
+            raise RuntimeError(
+                f"max_seq_length mismatch: {sentence_cfg.get('max_seq_length')}"
+            )
         if sentence_cfg.get("do_lower_case", False):
             raise RuntimeError("do_lower_case must be false")
 
         import tokenizers
-        self.tokenizer = tokenizers.Tokenizer.from_file(str(model_dir / "tokenizer.json"))
-        self.tokenizer.enable_truncation(max_length=max_seq_length, strategy="longest_first")
+
+        self.tokenizer = tokenizers.Tokenizer.from_file(
+            str(model_dir / "tokenizer.json")
+        )
+        self.tokenizer.enable_truncation(
+            max_length=max_seq_length, strategy="longest_first"
+        )
         self.tokenizer.enable_padding(pad_id=1, pad_token="<pad>", direction="right")
 
         import onnxruntime as ort
+
         available = ort.get_available_providers()
         if provider == "tensorrt" and "TensorrtExecutionProvider" not in available:
             raise RuntimeError(
-                f"provider=tensorrt requested but not available; got {available}")
+                f"provider=tensorrt requested but not available; got {available}"
+            )
         if provider == "cuda" and "CUDAExecutionProvider" not in available:
             raise RuntimeError(
-                f"provider=cuda requested but not available; got {available}")
+                f"provider=cuda requested but not available; got {available}"
+            )
         onnx_path = model_dir / DERIVED_REL
         if not onnx_path.is_file():
             raise RuntimeError(
                 f"missing derived pooled model: {onnx_path} "
-                f"(run append_e5_pooling.py on this snapshot first)")
+                f"(run append_e5_pooling.py on this snapshot first)"
+            )
         session, resolved = self._create_session(
-            provider, onnx_path, trt_cache_dir, trt_max_batch)
+            provider, onnx_path, trt_cache_dir, trt_max_batch
+        )
         self.session = session
         for inp in self.session.get_inputs():
-            if inp.name not in {"input_ids", "attention_mask"} or inp.type != "tensor(int64)":
+            if (
+                inp.name not in {"input_ids", "attention_mask"}
+                or inp.type != "tensor(int64)"
+            ):
                 raise RuntimeError(f"unexpected session input: {inp}")
         output_names = [out.name for out in self.session.get_outputs()]
         if output_names != ["sentence_embedding"]:
             raise RuntimeError(
-                f"unexpected session outputs; expected ['sentence_embedding'], got {output_names}")
+                f"unexpected session outputs; expected ['sentence_embedding'], got {output_names}"
+            )
         output_shape = self.session.get_outputs()[0].shape
         if len(output_shape) != 2 or output_shape[1] != POOLING_DIM:
             raise RuntimeError(f"unexpected sentence_embedding shape: {output_shape}")
@@ -294,8 +334,9 @@ class DirectE5Onnx:
         self.model_dir = model_dir
 
     @staticmethod
-    def _create_session(requested: str, onnx_path: Path,
-                        trt_cache_dir: Path | None, trt_max_batch: int) -> tuple[Any, str]:
+    def _create_session(
+        requested: str, onnx_path: Path, trt_cache_dir: Path | None, trt_max_batch: int
+    ) -> tuple[Any, str]:
         """Build the ORT session for the requested provider and return
         (session, effective EP name).
 
@@ -308,22 +349,26 @@ class DirectE5Onnx:
         resolved = _resolve_provider(requested)
         if resolved == "CPUExecutionProvider":
             session = DirectE5Onnx._build_session(
-                onnx_path, "CPUExecutionProvider", trt_cache_dir, trt_max_batch)
+                onnx_path, "CPUExecutionProvider", trt_cache_dir, trt_max_batch
+            )
             return session, "CPUExecutionProvider"
         if resolved != "TensorrtExecutionProvider":
             session = DirectE5Onnx._build_session(
-                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch
+            )
             _require_cuda_primary(session)
             return session, "CUDAExecutionProvider"
 
         try:
             session = DirectE5Onnx._build_session(
-                onnx_path, "TensorrtExecutionProvider", trt_cache_dir, trt_max_batch)
+                onnx_path, "TensorrtExecutionProvider", trt_cache_dir, trt_max_batch
+            )
         except Exception:
             if requested != "auto":
                 raise
             session = DirectE5Onnx._build_session(
-                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+                onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch
+            )
             _require_cuda_primary(session)
             return session, "CUDAExecutionProvider"
 
@@ -333,15 +378,18 @@ class DirectE5Onnx:
         if requested != "auto":
             raise RuntimeError(
                 f"provider=tensorrt requested but the primary EP is {primary!r}: "
-                f"{session.get_providers()}")
+                f"{session.get_providers()}"
+            )
         session = DirectE5Onnx._build_session(
-            onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
+            onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch
+        )
         _require_cuda_primary(session)
         return session, "CUDAExecutionProvider"
 
     @staticmethod
-    def _build_session(onnx_path: Path, provider: str,
-                       trt_cache_dir: Path | None, trt_max_batch: int) -> Any:
+    def _build_session(
+        onnx_path: Path, provider: str, trt_cache_dir: Path | None, trt_max_batch: int
+    ) -> Any:
         """Create the ORT session for the chosen provider.
 
         TensorRT engines are cached on disk keyed by the model path plus the
@@ -355,8 +403,11 @@ class DirectE5Onnx:
             _prepare_trt_dll_path()
             cache_dir = trt_cache_dir
             if cache_dir is None:
-                cache_dir = Path(os.environ.get(
-                    "LOCALAPPDATA", Path.home())) / "ObsidianVaultSearch" / "trt-cache"
+                cache_dir = (
+                    Path(os.environ.get("LOCALAPPDATA", Path.home()))
+                    / "ObsidianVaultSearch"
+                    / "trt-cache"
+                )
             cache_root = cache_dir
             cache_dir = cache_dir / _trt_cache_key(onnx_path, trt_max_batch)
             cache_dir.mkdir(parents=True, exist_ok=True)
@@ -365,9 +416,14 @@ class DirectE5Onnx:
             session = ort.InferenceSession(
                 str(onnx_path),
                 sess_options=session_options,
-                providers=[("TensorrtExecutionProvider",
-                            _trt_provider_options(cache_dir, trt_max_batch)),
-                           "CUDAExecutionProvider"])
+                providers=[
+                    (
+                        "TensorrtExecutionProvider",
+                        _trt_provider_options(cache_dir, trt_max_batch),
+                    ),
+                    "CUDAExecutionProvider",
+                ],
+            )
             _enforce_cache_quota(cache_root, cache_dir)
             return session
 
@@ -375,18 +431,23 @@ class DirectE5Onnx:
             return ort.InferenceSession(
                 str(onnx_path),
                 sess_options=ort.SessionOptions(),
-                providers=["CPUExecutionProvider"])
+                providers=["CPUExecutionProvider"],
+            )
 
         session_options = ort.SessionOptions()
         session_options.add_session_config_entry("session.enable_cuda_mem_arena", "0")
         return ort.InferenceSession(
-            str(onnx_path), sess_options=session_options,
-            providers=["CUDAExecutionProvider"])
+            str(onnx_path),
+            sess_options=session_options,
+            providers=["CUDAExecutionProvider"],
+        )
 
     def tokenize(self, texts: list[str]) -> dict[str, np.ndarray]:
         encoded = self.tokenizer.encode_batch(list(texts), add_special_tokens=True)
         input_ids = np.asarray([item.ids for item in encoded], dtype=np.int64)
-        attention_mask = np.asarray([item.attention_mask for item in encoded], dtype=np.int64)
+        attention_mask = np.asarray(
+            [item.attention_mask for item in encoded], dtype=np.int64
+        )
         return {
             "input_ids": np.ascontiguousarray(input_ids),
             "attention_mask": np.ascontiguousarray(attention_mask),
@@ -398,24 +459,31 @@ class DirectE5Onnx:
         count = len(values)
         if count == 0:
             return np.empty((0, POOLING_DIM), dtype=np.float32)
-        if self.provider == "TensorrtExecutionProvider" and batch_size > self.trt_max_batch:
+        if (
+            self.provider == "TensorrtExecutionProvider"
+            and batch_size > self.trt_max_batch
+        ):
             raise ValueError(
                 f"batch_size {batch_size} exceeds the TensorRT engine profile max "
                 f"({self.trt_max_batch}); rebuild the engine with a larger "
-                "trt_max_batch or lower the batch size")
+                "trt_max_batch or lower the batch size"
+            )
 
         order = np.argsort([len(v) for v in values])[::-1]
         restore = np.argsort(order)
 
         vectors = np.empty((count, POOLING_DIM), dtype=np.float32)
         for start in range(0, count, batch_size):
-            batch = [values[int(i)] for i in order[start:start + batch_size]]
+            batch = [values[int(i)] for i in order[start : start + batch_size]]
             tokens = self.tokenize(batch)
             out = self.session.run(  # type: ignore[reportOptionalMemberAccess]  # set in __init__
                 ["sentence_embedding"],
-                {"input_ids": tokens["input_ids"], "attention_mask": tokens["attention_mask"]},
+                {
+                    "input_ids": tokens["input_ids"],
+                    "attention_mask": tokens["attention_mask"],
+                },
             )[0]
-            vectors[start:start + batch_size] = out
+            vectors[start : start + batch_size] = out
         result = vectors[restore]
         result = np.ascontiguousarray(result, dtype=np.float32)
         if single:

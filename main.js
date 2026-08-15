@@ -4314,18 +4314,23 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9").setClass("vault-search-num-inputs").setDesc("\uAC12\uC744 \uBCC0\uACBD\uD558\uBA74 \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.").addText(
-      (text) => text.setValue(String(draft.chunkChars)).onChange((value) => {
-        draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
-      })
-    ).addText(
-      (text) => text.setValue(String(draft.chunkOverlap)).onChange((value) => {
-        draft.chunkOverlap = this.nonnegativeNumber(
-          value,
-          draft.chunkOverlap
-        );
-      })
-    );
+    this.numericFields("\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9", "\uAC12\uC744 \uBCC0\uACBD\uD558\uBA74 \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.", [
+      {
+        label: "\uD06C\uAE30",
+        value: draft.chunkChars,
+        set: (v) => {
+          draft.chunkChars = v;
+        }
+      },
+      {
+        label: "\uC624\uBC84\uB7A9",
+        value: draft.chunkOverlap,
+        allowZero: true,
+        set: (v) => {
+          draft.chunkOverlap = v;
+        }
+      }
+    ]);
     new import_obsidian2.Setting(containerEl).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc(
       "Markdown \uAD6C\uC870 \uC778\uC2DD \uC804\uB7B5\uC744 \uD3EC\uD568\uD574 \uBCC0\uACBD \uC2DC \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
     ).addDropdown(
@@ -4334,45 +4339,64 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         this.display();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("BM25 / \uBCA1\uD130 / \uCD5C\uC885 \uD6C4\uBCF4 / RRF k").setClass("vault-search-num-inputs").setDesc(
-      "\uAC80\uC0C9\uC774 '\uD6C4\uBCF4\uB97C \uB113\uAC8C \uBAA8\uC544 \uC735\uD569\uD55C \uB4A4 \uCD5C\uC885 \uACB0\uACFC\uB9CC \uBC18\uD658'\uD558\uB294 \uB108\uBE44\uB97C \uC870\uC815\uD569\uB2C8\uB2E4. \uAE30\uBCF8\uAC12 80 / 80 / 40\uC740 K_Notes \uACE8\uB4DC\uC14B \uAE30\uC900 recall@40 0.856\uC73C\uB85C \uCE21\uC815\uD574 \uC815\uD55C \uAC12\uC785\uB2C8\uB2E4."
-    ).addText(
-      (text) => text.setValue(String(draft.bm25TopK)).onChange((value) => {
-        draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);
-      })
-    ).addText(
-      (text) => text.setValue(String(draft.vectorTopK)).onChange((value) => {
-        draft.vectorTopK = this.positiveNumber(value, draft.vectorTopK);
-      })
-    ).addText(
-      (text) => text.setValue(String(draft.finalTopK)).onChange((value) => {
-        draft.finalTopK = this.positiveNumber(value, draft.finalTopK);
-      })
-    ).addText(
-      (text) => text.setValue(String(draft.rrfK)).onChange((value) => {
-        draft.rrfK = this.positiveNumber(value, draft.rrfK);
-      })
+    this.numericFields(
+      "BM25 / \uBCA1\uD130 / \uCD5C\uC885 \uD6C4\uBCF4 / RRF k",
+      "\uAC80\uC0C9\uC774 '\uD6C4\uBCF4\uB97C \uB113\uAC8C \uBAA8\uC544 \uC735\uD569\uD55C \uB4A4 \uCD5C\uC885 \uACB0\uACFC\uB9CC \uBC18\uD658'\uD558\uB294 \uB108\uBE44\uB97C \uC870\uC815\uD569\uB2C8\uB2E4. \uAE30\uBCF8\uAC12 80 / 80 / 40\uC740 K_Notes \uACE8\uB4DC\uC14B \uAE30\uC900 recall@40 0.856\uC73C\uB85C \uCE21\uC815\uD574 \uC815\uD55C \uAC12\uC785\uB2C8\uB2E4.",
+      [
+        {
+          label: "BM25",
+          value: draft.bm25TopK,
+          set: (v) => {
+            draft.bm25TopK = v;
+          }
+        },
+        {
+          label: "\uBCA1\uD130",
+          value: draft.vectorTopK,
+          set: (v) => {
+            draft.vectorTopK = v;
+          }
+        },
+        {
+          label: "\uCD5C\uC885",
+          value: draft.finalTopK,
+          set: (v) => {
+            draft.finalTopK = v;
+          }
+        },
+        {
+          label: "RRF k",
+          value: draft.rrfK,
+          set: (v) => {
+            draft.rrfK = v;
+          }
+        }
+      ]
     );
     containerEl.createEl("div", {
       cls: "vault-search-setting-hint",
       text: "\u2022 bm25TopK: \uD0A4\uC6CC\uB4DC(BM25)\uB85C \uBF51\uB294 \uD6C4\uBCF4 \uCCAD\uD06C \uC218. \uB113\uD788\uBA74 \uC815\uD655\uD55C \uB2E8\uC5B4\uAC00 \uD769\uC5B4\uC9C4 \uD30C\uC77C\uB3C4 \uB193\uCE58\uC9C0 \uC54A\uC9C0\uB9CC, \uC7A1\uC74C\uC774 \uB298 \uC218 \uC788\uC2B5\uB2C8\uB2E4.\n\u2022 vectorTopK: \uC758\uBBF8(\uC784\uBCA0\uB529) \uC720\uC0AC\uB3C4\uB85C \uBF51\uB294 \uD6C4\uBCF4 \uCCAD\uD06C \uC218. \uB113\uD788\uBA74 \uD45C\uD604\uC774 \uB2EC\uB77C\uB3C4 \uAD00\uB828\uB41C \uD30C\uC77C\uC774 \uD68C\uC218\uB429\uB2C8\uB2E4.\n\u2022 finalTopK: \uCD5C\uC885 \uBC18\uD658 \uACB0\uACFC \uC218. \uC5D0\uC774\uC804\uD2B8\uAC00 \uB113\uAC8C \uC870\uC0AC\uD560 \uB54C\uB294 40\uAC1C \uC815\uB3C4\uAC00 \uC801\uB2F9\uD569\uB2C8\uB2E4.\n\u2022 rrfK: \uC5EC\uB7EC \uCC44\uB110 \uACB0\uACFC\uB97C \uC735\uD569\uD560 \uB54C \uC21C\uC704 \uC810\uC218\uB97C \uD3C9\uD0C4\uD654\uD558\uB294 \uC0C1\uC218\uC785\uB2C8\uB2E4. \uACB0\uACFC\uAC00 \uD55C \uCC44\uB110\uC5D0 \uCE58\uC6B0\uCE58\uBA74 \uC774 \uAC12\uC744 \uC904\uC5EC \uBCF4\uC138\uC694.\n\uBC14\uAFB8\uBA74 \uC2E4\uD589 \uC911 \uC11C\uBE44\uC2A4\uC5D0 \uC989\uC2DC \uBC18\uC601\uB418\uBA70, \uACB0\uACFC\uAC00 \uC774\uC0C1\uD558\uBA74 \uAE30\uBCF8\uAC12\uC73C\uB85C \uB418\uB3CC\uB9AC\uBA74 \uB429\uB2C8\uB2E4."
     });
-    new import_obsidian2.Setting(containerEl).setName("\uAC80\uC0C9 \uB2E4\uC591\uC131 / \uC81C\uBAA9 \uAC00\uC911\uCE58").setClass("vault-search-num-inputs").setDesc(
-      "\uD30C\uC77C\uB2F9 \uCD5C\uB300 \uCCAD\uD06C \uC218\uC640 \uD30C\uC77C\uBA85\xB7\uACBD\uB85C\xB7\uD5E4\uB529 RRF \uAC00\uC911\uCE58\uC785\uB2C8\uB2E4. \uAE30\uBCF8\uAC12\uC740 1 / 1.0\uC785\uB2C8\uB2E4."
-    ).addText(
-      (text) => text.setValue(String(draft.maxChunksPerFile)).onChange((value) => {
-        draft.maxChunksPerFile = this.positiveNumber(
-          value,
-          draft.maxChunksPerFile
-        );
-      })
-    ).addText(
-      (text) => text.setValue(String(draft.titleRrfWeight)).onChange((value) => {
-        draft.titleRrfWeight = this.nonnegativeNumber(
-          value,
-          draft.titleRrfWeight
-        );
-      })
+    this.numericFields(
+      "\uAC80\uC0C9 \uB2E4\uC591\uC131 / \uC81C\uBAA9 \uAC00\uC911\uCE58",
+      "\uD30C\uC77C\uB2F9 \uCD5C\uB300 \uCCAD\uD06C \uC218\uC640 \uD30C\uC77C\uBA85\xB7\uACBD\uB85C\xB7\uD5E4\uB529 RRF \uAC00\uC911\uCE58\uC785\uB2C8\uB2E4. \uAE30\uBCF8\uAC12\uC740 1 / 1.0\uC785\uB2C8\uB2E4.",
+      [
+        {
+          label: "\uD30C\uC77C\uB2F9 \uCCAD\uD06C",
+          value: draft.maxChunksPerFile,
+          set: (v) => {
+            draft.maxChunksPerFile = v;
+          }
+        },
+        {
+          label: "\uC81C\uBAA9 \uAC00\uC911\uCE58",
+          value: draft.titleRrfWeight,
+          allowZero: true,
+          set: (v) => {
+            draft.titleRrfWeight = v;
+          }
+        }
+      ]
     );
     containerEl.createEl("div", {
       cls: "vault-search-setting-hint",
@@ -4400,6 +4424,31 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         draft.startupReconcile = value;
       })
     );
+  }
+  /** Render a numeric row as labeled horizontal fields (label above each
+   *  input) so every value is self-explanatory and several fields fit in one
+   *  row without overflowing the control column. */
+  numericFields(name, desc, fields) {
+    const setting = new import_obsidian2.Setting(this.containerEl).setName(name).setDesc(desc);
+    const control = setting.controlEl;
+    control.addClass("vault-search-num-fields");
+    for (const field of fields) {
+      const group = control.createDiv({ cls: "vault-search-num-field" });
+      group.createEl("span", {
+        text: field.label,
+        cls: "vault-search-num-field-label"
+      });
+      const input = group.createEl("input", {
+        type: "text",
+        cls: "vault-search-num-field-input",
+        value: String(field.value)
+      });
+      input.addEventListener("input", () => {
+        const parsed = Number(input.value);
+        const valid = Number.isFinite(parsed) && (field.allowZero ? parsed >= 0 : parsed > 0);
+        if (valid) field.set(parsed);
+      });
+    }
   }
   lines(value) {
     return value.split(/\r?\n/).map((line) => line.trim().replace(/\\/g, "/")).filter(Boolean);

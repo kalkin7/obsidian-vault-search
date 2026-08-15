@@ -19,20 +19,35 @@
  white-space: pre-wrap;
 }
 
-/* Multi-number input rows (chunk size/overlap, BM25/vector/final/RRF k,
- * diversity/weight). Obsidian's default text inputs (~160px each) overflow the
- * control column when several are placed on one row; the flex layout then
- * squashes .setting-item-info (min-width: 0) to zero width, wrapping its
- * description one character per line and inflating the card height. Constrain
- * the inputs so every row right-aligns like single-control rows. */
-.setting-item.vault-search-num-inputs .setting-item-control {
- flex-wrap: wrap;
+/* Multi-number rows render as labeled horizontal fields (label above input)
+ * so each value is self-explanatory and several fields fit one row without
+ * overflowing the control column. Obsidian's ~160px default inputs would
+ * otherwise wrap and squash .setting-item-info (min-width: 0) to zero width,
+ * inflating the card height. */
+.setting-item .setting-item-control.vault-search-num-fields {
+  flex-wrap: nowrap;
+  gap: 4px 10px;
+  align-items: flex-start;
 }
 
-.setting-item.vault-search-num-inputs .setting-item-control input[type="text"] {
- width: 80px;
- min-width: 0;
- flex: 0 1 80px;
+.vault-search-num-field {
+  flex: 0 1 56px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.vault-search-num-field-label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.vault-search-num-field-input {
+  width: 100%;
+  min-width: 0;
 }
 
 .vault-search-error {

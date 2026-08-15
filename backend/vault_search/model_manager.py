@@ -18,10 +18,42 @@ def _is_importable(name: str) -> bool:
 class ModelManager:
     def __init__(self, config: SearchConfig):
         self.config = config
-        self.model: Any | None = None
-        self.device = "cpu"
-        self.dimension: int | None = None
         self.engine = config.engine
+        self.model: Any | None = None
+        self.device = self._resolve_expected_device()
+        self.dimension: int | None = None
+
+    def _resolve_expected_device(self) -> str:
+        """Device the model will run on, resolved from config + runtime without
+        loading (mirrors the decisions in load()/_load_onnx). Status reports
+        this before the model loads, so idle/loading states show the real
+        device instead of a hardcoded "cpu" on CUDA runtimes."""
+        if self.config.device == "cpu":
+            return "cpu"
+        if self.config.device == "cuda":
+            # Explicit intent: a missing CUDA EP surfaces as a load error
+            # rather than being hidden behind a "cpu" report.
+            return "cuda"
+        # device == "auto": decide from the runtime, mirroring load().
+        if self.engine == "onnx":
+            try:
+                import onnxruntime as ort
+
+                providers = ort.get_available_providers()
+                cuda_ready = (
+                    "CUDAExecutionProvider" in providers
+                    or "TensorrtExecutionProvider" in providers
+                )
+            except Exception:
+                cuda_ready = False
+        else:
+            try:
+                import torch
+
+                cuda_ready = bool(torch.cuda.is_available())
+            except Exception:
+                cuda_ready = False
+        return "cuda" if cuda_ready else "cpu"
 
     def load(self) -> None:
         if self.config.model_id == "__fake__":
@@ -40,8 +72,12 @@ class ModelManager:
         requested = self.config.device
         if requested == "cuda" and not torch.cuda.is_available():
             raise RuntimeError("CUDA was requested but is not available")
-        self.device = "cuda" if requested == "cuda" or (
-            requested == "auto" and torch.cuda.is_available()) else "cpu"
+        self.device = (
+            "cuda"
+            if requested == "cuda"
+            or (requested == "auto" and torch.cuda.is_available())
+            else "cpu"
+        )
         try:
             self.model = SentenceTransformer(
                 self.config.model_id,
@@ -53,7 +89,9 @@ class ModelManager:
                 raise
             self.model = SentenceTransformer(self.config.model_id, device=self.device)
         getter = getattr(self.model, "get_embedding_dimension", None)
-        dimension = getter() if getter else self.model.get_sentence_embedding_dimension()
+        dimension = (
+            getter() if getter else self.model.get_sentence_embedding_dimension()
+        )
         if dimension is None:
             probe = self.encode_query("dimension probe")
             # pi-lens-ignore: unchecked-throwing-call-python
@@ -67,24 +105,30 @@ class ModelManager:
         if self.config.model_id != "intfloat/multilingual-e5-base":
             raise RuntimeError(
                 "engine=onnx currently supports only "
-                "intfloat/multilingual-e5-base (derived pooled graph)")
+                "intfloat/multilingual-e5-base (derived pooled graph)"
+            )
         if not _is_importable("onnxruntime"):
             raise RuntimeError("onnxruntime is not installed in this runtime")
         import onnxruntime as ort
+
         available = ort.get_available_providers()
-        has_cuda = ("CUDAExecutionProvider" in available
-                    or "TensorrtExecutionProvider" in available)
+        has_cuda = (
+            "CUDAExecutionProvider" in available
+            or "TensorrtExecutionProvider" in available
+        )
         requested = self.config.device
         use_cuda = requested == "cuda" or (requested == "auto" and has_cuda)
         if requested == "cuda" and not has_cuda:
             raise RuntimeError(
                 "engine=onnx with device=cuda requires a CUDA-capable "
-                "execution provider (TensorRT or CUDA), but none is available")
+                "execution provider (TensorRT or CUDA), but none is available"
+            )
         model_dir = _resolve_model_dir(self.config.model_id)
         if model_dir is None:
             raise RuntimeError(
                 f"model snapshot not found locally: {self.config.model_id} "
-                "(inference must not download)")
+                "(inference must not download)"
+            )
         provider_choice = self.config.provider if use_cuda else "cpu"
         try:
             self.model = DirectE5Onnx(
@@ -152,13 +196,20 @@ class ModelManager:
         )
         return np.atleast_2d(np.asarray(vector, dtype=np.float32))
 
-    def encode_documents(self, texts: list[str], show_progress: bool = False) -> np.ndarray:
+    def encode_documents(
+        self, texts: list[str], show_progress: bool = False
+    ) -> np.ndarray:
         model = self.ensure_loaded()
         prepared = [self.config.document_prefix + text for text in texts]
-        batch_size = (self.config.embedding_batch_size_gpu if self.device == "cuda"
-                      else self.config.embedding_batch_size_cpu)
+        batch_size = (
+            self.config.embedding_batch_size_gpu
+            if self.device == "cuda"
+            else self.config.embedding_batch_size_cpu
+        )
         if self.engine == "onnx":
-            return np.asarray(model.encode(prepared, batch_size=batch_size), dtype=np.float32)
+            return np.asarray(
+                model.encode(prepared, batch_size=batch_size), dtype=np.float32
+            )
         vectors = model.encode(
             prepared,
             batch_size=batch_size,
@@ -181,7 +232,9 @@ class _FakeSentenceTransformer:
     def encode(self, texts: str | list[str], **_kwargs: Any) -> np.ndarray:
         single = isinstance(texts, str)
         values = [texts] if single else texts
-        vectors = np.vstack([self._vector(value) for value in values]).astype(np.float32)
+        vectors = np.vstack([self._vector(value) for value in values]).astype(
+            np.float32
+        )
         return vectors[0] if single else vectors
 
     def _vector(self, text: str) -> np.ndarray:
@@ -215,14 +268,17 @@ def _resolve_model_dir(model_id: str) -> Path | None:
     """
     try:
         from huggingface_hub import snapshot_download
+
         path = snapshot_download(model_id, local_files_only=True)
         if path:
             return Path(path)
     except Exception:
         pass
 
-    cache_home = Path(os.environ.get("HF_HUB_CACHE") or os.environ.get(
-        "HF_HOME", Path.home() / ".cache" / "huggingface"))
+    cache_home = Path(
+        os.environ.get("HF_HUB_CACHE")
+        or os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")
+    )
     hub_dir = cache_home / "hub"
     folder = "models--" + model_id.replace("/", "--")
     repo_dir = hub_dir / folder
@@ -234,5 +290,9 @@ def _resolve_model_dir(model_id: str) -> Path | None:
         revision = refs.read_text(encoding="utf-8").strip()
     if revision and (repo_dir / "snapshots" / revision).is_dir():
         return repo_dir / "snapshots" / revision
-    snapshots = sorted((repo_dir / "snapshots").iterdir()) if (repo_dir / "snapshots").is_dir() else []
+    snapshots = (
+        sorted((repo_dir / "snapshots").iterdir())
+        if (repo_dir / "snapshots").is_dir()
+        else []
+    )
     return snapshots[-1] if snapshots else None
