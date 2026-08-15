@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections import defaultdict
+from collections.abc import Mapping
 from typing import Any
 
 from .config import SearchConfig
@@ -32,7 +33,6 @@ def weighted_rrf(
         seen: set[int] = set()
         rank = 0
         for chunk_id in ranked_ids:
-            chunk_id = int(chunk_id)
             if chunk_id in seen:
                 continue
             seen.add(chunk_id)
@@ -43,9 +43,12 @@ def weighted_rrf(
     return ranked, dict(sources)
 
 
-def select_diverse(ranked: list[tuple[int, float]],
-                   rows: dict[int, tuple[str, str]], top_k: int,
-                   max_chunks_per_file: int) -> list[tuple[int, float]]:
+def select_diverse(
+    ranked: list[tuple[int, float]],
+    rows: Mapping[int, tuple[str, str, Any, int]],
+    top_k: int,
+    max_chunks_per_file: int,
+) -> list[tuple[int, float]]:
     """Select top chunks while capping how many results one file can occupy."""
     selected: list[tuple[int, float]] = []
     file_counts: dict[str, int] = defaultdict(int)
@@ -87,16 +90,44 @@ class SearchEngine:
         self.model = model
         self.kiwi = kiwi
 
-    def search(self, query: str, top_k: int | None = None,
-               verbose: bool = False, match_mode: str = "any",
-               intent: str | None = None) -> list[dict[str, Any]]:
+    def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        verbose: bool = False,
+        match_mode: str = "any",
+        intent: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._run_search(query, top_k, verbose, match_mode, intent).results
+
+    def search_detailed(
+        self,
+        query: str,
+        top_k: int | None = None,
+        verbose: bool = False,
+        match_mode: str = "any",
+        intent: str | None = None,
+    ) -> SearchOutcome:
+        return self._run_search(query, top_k, verbose, match_mode, intent)
+
+    def _run_search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        verbose: bool = False,
+        match_mode: str = "any",
+        intent: str | None = None,
+    ) -> SearchOutcome:
         if not self.config.db_path.exists() or not self.config.vector_path.exists():
             raise FileNotFoundError("Search index is missing; run rebuild_all")
         if self.model.dimension is None:
             raise RuntimeError("Embedding model dimension is unavailable")
         problems = validate_index_files(
-            self.config, self.model.dimension, check_scope=False,
-            effective_provider=self.model.effective_provider())
+            self.config,
+            self.model.dimension,
+            check_scope=False,
+            effective_provider=self.model.effective_provider(),
+        )
         if problems:
             raise IndexCompatibilityError(problems)
 
@@ -109,16 +140,23 @@ class SearchEngine:
 
             heading_results = self._heading_rows(connection, query_tokens, match_mode)
             heading_ids = [row[0] for row in heading_results]
-            heading_rank = {chunk_id: rank for rank, chunk_id in enumerate(heading_ids, 1)}
+            heading_rank = {
+                chunk_id: rank for rank, chunk_id in enumerate(heading_ids, 1)
+            }
 
             file_rows = self._file_rows(connection, query_tokens, match_mode)
             file_ids = _file_candidate_ids(
-                connection, file_rows, [*bm25_ids, *heading_ids])
+                connection, file_rows, [*bm25_ids, *heading_ids]
+            )
             file_rank = {chunk_id: rank for rank, chunk_id in enumerate(file_ids, 1)}
 
             from usearch.index import Index
+
             vector = self.model.encode_query(query)
             vector_index = Index.restore(str(self.config.vector_path))
+            assert (
+                vector_index is not None
+            )  # restore failed -> IndexCompatibilityError above
             matches = vector_index.search(vector, count=self.config.vector_top_k)
             keys = matches.keys
             if getattr(keys, "ndim", 1) > 1:
@@ -139,13 +177,17 @@ class SearchEngine:
             channels.append(("vector", vector_ids, 1.0))
             ranked, sources = weighted_rrf(channels, self.config.rrf_k)
             if not ranked:
-                return []
+                return SearchOutcome([], 0, int(top_k or self.config.final_top_k), 0)
 
             candidate_ids = [chunk_id for chunk_id, _score in ranked]
             placeholders = ",".join("?" for _ in candidate_ids)
             rows = {
                 int(row[0]): (
-                    str(row[1]), str(row[2]), json.loads(str(row[3])), int(row[4]))
+                    str(row[1]),
+                    str(row[2]),
+                    json.loads(str(row[3])),
+                    int(row[4]),
+                )
                 for row in connection.execute(
                     f"SELECT id, file_path, content, heading_path, start_line "
                     f"FROM chunks WHERE id IN ({placeholders})",
@@ -155,7 +197,8 @@ class SearchEngine:
 
             requested = max(1, int(top_k or self.config.final_top_k))
             selected = select_diverse(
-                ranked, rows, requested, self.config.max_chunks_per_file)
+                ranked, rows, requested, self.config.max_chunks_per_file
+            )
             results: list[dict[str, Any]] = []
             for chunk_id, score in selected:
                 file_path, content, heading_path, start_line = rows[chunk_id]
@@ -183,42 +226,66 @@ class SearchEngine:
                     contributions: dict[str, float] = {}
                     if chunk_id in bm25_rank:
                         contributions["body"] = round(
-                            1.0 / (self.config.rrf_k + bm25_rank[chunk_id]), 6)
+                            1.0 / (self.config.rrf_k + bm25_rank[chunk_id]), 6
+                        )
                     if chunk_id in heading_rank:
                         contributions["heading"] = round(
-                            1.0 / (self.config.rrf_k + heading_rank[chunk_id]), 6)
+                            1.0 / (self.config.rrf_k + heading_rank[chunk_id]), 6
+                        )
                     if chunk_id in file_rank and self.config.title_rrf_weight > 0:
                         file_contribution = round(
                             self.config.title_rrf_weight
-                            / (self.config.rrf_k + file_rank[chunk_id]), 6)
+                            / (self.config.rrf_k + file_rank[chunk_id]),
+                            6,
+                        )
                         contributions["file"] = file_contribution
                         contributions["title"] = file_contribution
                     if chunk_id in vector_rank:
                         contributions["vector"] = round(
-                            1.0 / (self.config.rrf_k + vector_rank[chunk_id]), 6)
+                            1.0 / (self.config.rrf_k + vector_rank[chunk_id]), 6
+                        )
                     entry["rrf_contributions"] = contributions
                 results.append(entry)
-            return expand_wiki_sources(
-                connection, self.config, results, query, intent, requested,
-                verbose, query_tokens, match_mode)
+            results = expand_wiki_sources(
+                connection,
+                self.config,
+                results,
+                query,
+                intent,
+                requested,
+                verbose,
+                query_tokens,
+                match_mode,
+            )
+            return SearchOutcome(results, len(candidate_ids), requested, len(results))
         finally:
             connection.close()
 
-    def _bm25(self, connection: sqlite3.Connection,
-              query_tokens: list[str], match_mode: str = "any") -> list[tuple[int, float]]:
+    def _bm25(
+        self,
+        connection: sqlite3.Connection,
+        query_tokens: list[str],
+        match_mode: str = "any",
+    ) -> list[tuple[int, float]]:
         if not query_tokens:
             return []
         rows = self._query_chunk_fts(
-            connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
+            connection,
+            _fts_expression(query_tokens, match_mode),
+            self.config.bm25_top_k,
+        )
         if not rows and self.config.prefix_fallback and match_mode != "phrase":
             rows = self._query_chunk_fts(
-                connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
-                self.config.bm25_top_k)
+                connection,
+                _fts_expression(query_tokens, match_mode, prefix_last=True),
+                self.config.bm25_top_k,
+            )
         return rows
 
     @staticmethod
-    def _query_chunk_fts(connection: sqlite3.Connection, expression: str,
-                         limit: int) -> list[tuple[int, float]]:
+    def _query_chunk_fts(
+        connection: sqlite3.Connection, expression: str, limit: int
+    ) -> list[tuple[int, float]]:
         try:
             rows = connection.execute(
                 "SELECT rowid, -bm25(chunks_fts) AS score FROM chunks_fts "
@@ -229,46 +296,67 @@ class SearchEngine:
         except sqlite3.Error:
             return []
 
-    def _heading_rows(self, connection: sqlite3.Connection,
-                      query_tokens: list[str], match_mode: str = "any") -> list[tuple[int, float]]:
+    def _heading_rows(
+        self,
+        connection: sqlite3.Connection,
+        query_tokens: list[str],
+        match_mode: str = "any",
+    ) -> list[tuple[int, float]]:
         if not query_tokens:
             return []
         rows = self._query_heading_fts(
-            connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
+            connection,
+            _fts_expression(query_tokens, match_mode),
+            self.config.bm25_top_k,
+        )
         if not rows and self.config.prefix_fallback and match_mode != "phrase":
             rows = self._query_heading_fts(
-                connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
-                self.config.bm25_top_k)
+                connection,
+                _fts_expression(query_tokens, match_mode, prefix_last=True),
+                self.config.bm25_top_k,
+            )
         return rows
 
     @staticmethod
-    def _query_heading_fts(connection: sqlite3.Connection, expression: str,
-                           limit: int) -> list[tuple[int, float]]:
+    def _query_heading_fts(
+        connection: sqlite3.Connection, expression: str, limit: int
+    ) -> list[tuple[int, float]]:
         try:
             rows = connection.execute(
                 "SELECT rowid, -bm25(chunk_headings_fts) AS score "
                 "FROM chunk_headings_fts WHERE heading_tokens MATCH ? "
-                "ORDER BY score DESC LIMIT ?", (expression, limit),
+                "ORDER BY score DESC LIMIT ?",
+                (expression, limit),
             ).fetchall()
             return [(int(row[0]), float(row[1])) for row in rows]
         except sqlite3.Error:
             return []
 
-    def _file_rows(self, connection: sqlite3.Connection,
-                   query_tokens: list[str], match_mode: str = "any") -> list[tuple[str, float]]:
+    def _file_rows(
+        self,
+        connection: sqlite3.Connection,
+        query_tokens: list[str],
+        match_mode: str = "any",
+    ) -> list[tuple[str, float]]:
         if not query_tokens:
             return []
         rows = self._query_file_fts(
-            connection, _fts_expression(query_tokens, match_mode), self.config.bm25_top_k)
+            connection,
+            _fts_expression(query_tokens, match_mode),
+            self.config.bm25_top_k,
+        )
         if not rows and self.config.prefix_fallback and match_mode != "phrase":
             rows = self._query_file_fts(
-                connection, _fts_expression(query_tokens, match_mode, prefix_last=True),
-                self.config.bm25_top_k)
+                connection,
+                _fts_expression(query_tokens, match_mode, prefix_last=True),
+                self.config.bm25_top_k,
+            )
         return rows
 
     @staticmethod
-    def _query_file_fts(connection: sqlite3.Connection, expression: str,
-                        limit: int) -> list[tuple[str, float]]:
+    def _query_file_fts(
+        connection: sqlite3.Connection, expression: str, limit: int
+    ) -> list[tuple[str, float]]:
         try:
             rows = connection.execute(
                 "SELECT file_fields.file_path, -bm25(file_fields_fts, ?, ?, ?, ?, ?) AS score "
@@ -307,7 +395,7 @@ def _file_candidate_ids(
             lexical_ids,
         ).fetchall()
         for chunk_id, file_path in rows:
-            lexical_file.setdefault(str(file_path), []).append(int(chunk_id))
+            lexical_file.setdefault(str(file_path), []).append(chunk_id)
 
     placeholders = ",".join("?" for _ in paths)
     chunks = connection.execute(
@@ -318,7 +406,7 @@ def _file_candidate_ids(
     ).fetchall()
     by_file: dict[str, list[tuple[int, int]]] = {}
     for chunk_id, file_path, chunk_index in chunks:
-        by_file.setdefault(str(file_path), []).append((int(chunk_id), int(chunk_index)))
+        by_file.setdefault(str(file_path), []).append((chunk_id, chunk_index))
 
     result: list[int] = []
     seen: set[int] = set()
@@ -331,7 +419,8 @@ def _file_candidate_ids(
         lexical_chunks = lexical_file.get(file_path, [])
         if lexical_chunks:
             chosen = min(
-                lexical_chunks, key=lambda chunk_id: lexical_order.get(chunk_id, 10**9))
+                lexical_chunks, key=lambda chunk_id: lexical_order.get(chunk_id, 10**9)
+            )
         else:
             chosen = min(by_file[file_path], key=lambda item: item[1])[0]
         if chosen in seen:
@@ -352,7 +441,7 @@ def _coalesce_file_candidates(
         return ranked_ids
     placeholders = ",".join("?" for _ in ids)
     file_by_id = {
-        int(row[0]): str(row[1])
+        row[0]: str(row[1])
         for row in connection.execute(
             f"SELECT id, file_path FROM chunks WHERE id IN ({placeholders})",
             ids,
@@ -373,3 +462,34 @@ class IndexCompatibilityError(RuntimeError):
     def __init__(self, problems: list[str]):
         self.problems = problems
         super().__init__("Index rebuild required: " + "; ".join(problems))
+
+
+class SearchOutcome:
+    """Search results plus diagnostics about the candidate pool.
+
+    ``candidate_pool_size`` is the number of distinct chunk IDs that reached
+    the RRF merge before the final diversity selection, so callers can detect
+    when ``top_k`` exceeds the pool and explain a short result list.
+    """
+
+    def __init__(
+        self,
+        results: list[dict[str, Any]],
+        candidate_pool_size: int,
+        requested_top_k: int,
+        returned_count: int,
+    ):
+        self.results = results
+        self.candidate_pool_size = candidate_pool_size
+        self.requested_top_k = requested_top_k
+        self.returned_count = returned_count
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "results": self.results,
+            "diagnostics": {
+                "candidate_pool_size": self.candidate_pool_size,
+                "requested_top_k": self.requested_top_k,
+                "returned_count": self.returned_count,
+            },
+        }

@@ -6,9 +6,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-
 DEFAULT_INCLUDES = ["**/*.md"]
-DEFAULT_EXCLUDES = [".obsidian/**", "9_System/**", "**/node_modules/**"]
+DEFAULT_EXCLUDES = [".obsidian/**", "**/node_modules/**"]
+DEFAULT_WIKI_FOLDERS = ["5_Wiki/issues", "5_Wiki/entities", "5_Wiki/decisions"]
 
 
 @dataclass(slots=True)
@@ -25,12 +25,13 @@ class SearchConfig:
     normalize_embeddings: bool = True
     include_globs: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDES))
     exclude_globs: list[str] = field(default_factory=lambda: list(DEFAULT_EXCLUDES))
+    wiki_folders: list[str] = field(default_factory=lambda: list(DEFAULT_WIKI_FOLDERS))
     chunk_chars: int = 400
     chunk_overlap: int = 60
     chunking_strategy: str = "paragraph-v1"
-    bm25_top_k: int = 30
-    vector_top_k: int = 30
-    final_top_k: int = 20
+    bm25_top_k: int = 80
+    vector_top_k: int = 80
+    final_top_k: int = 40
     rrf_k: int = 60
     max_chunks_per_file: int = 1
     title_rrf_weight: float = 1.0
@@ -84,10 +85,43 @@ def _as_nonempty_lines(value: Any, default: list[str]) -> list[str]:
     return list(default)
 
 
-def load_config(path: str | Path, vault_override: str | None = None,
-                data_dir_override: str | None = None) -> SearchConfig:
+def _as_wiki_folders(value: Any) -> list[str]:
+    """Parse the wiki folder list; an explicit empty list disables expansion."""
+    if value is None:
+        return list(DEFAULT_WIKI_FOLDERS)
+    raw = value if isinstance(value, list) else [value]
+    result = [
+        str(x).strip().rstrip("/").replace("\\", "/") for x in raw if str(x).strip()
+    ]
+    return result
+
+
+def _as_int(value: Any, default: int) -> int:
+    """Parse an int config value, falling back to the default on bad input so a
+    corrupt config cannot prevent the service from starting."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def load_config(
+    path: str | Path,
+    vault_override: str | None = None,
+    data_dir_override: str | None = None,
+) -> SearchConfig:
     config_path = Path(path).resolve()
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    try:
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"Cannot read search config {config_path}: {exc}") from exc
     vault_value = vault_override or raw.get("vaultPath") or raw.get("vault_path")
     data_dir_value = data_dir_override or raw.get("dataDir") or raw.get("data_dir")
     if not vault_value:
@@ -104,8 +138,14 @@ def load_config(path: str | Path, vault_override: str | None = None,
     engine = str(raw.get("engine", "pytorch")).lower()
     if engine not in {"pytorch", "onnx"}:
         engine = "pytorch"
-    query_prefix = str(raw.get("queryPrefix", "query: " if profile == "multilingual-e5-base" else ""))
-    document_prefix = str(raw.get("documentPrefix", "passage: " if profile == "multilingual-e5-base" else ""))
+    query_prefix = str(
+        raw.get("queryPrefix", "query: " if profile == "multilingual-e5-base" else "")
+    )
+    document_prefix = str(
+        raw.get(
+            "documentPrefix", "passage: " if profile == "multilingual-e5-base" else ""
+        )
+    )
     device = str(raw.get("device", "auto")).lower()
     if device not in {"auto", "cpu", "cuda"}:
         device = "auto"
@@ -126,21 +166,26 @@ def load_config(path: str | Path, vault_override: str | None = None,
         normalize_embeddings=bool(raw.get("normalizeEmbeddings", True)),
         include_globs=_as_nonempty_lines(raw.get("includeGlobs"), DEFAULT_INCLUDES),
         exclude_globs=_as_nonempty_lines(raw.get("excludeGlobs"), DEFAULT_EXCLUDES),
-        chunk_chars=max(100, int(raw.get("chunkChars", 400))),
-        chunk_overlap=max(0, int(raw.get("chunkOverlap", 60))),
+        wiki_folders=_as_wiki_folders(raw.get("wikiFolders")),
+        chunk_chars=max(100, _as_int(raw.get("chunkChars"), 400)),
+        chunk_overlap=max(0, _as_int(raw.get("chunkOverlap"), 60)),
         chunking_strategy=str(raw.get("chunkingStrategy", "paragraph-v1")),
-        bm25_top_k=max(1, int(raw.get("bm25TopK", 30))),
-        vector_top_k=max(1, int(raw.get("vectorTopK", 30))),
-        final_top_k=max(1, int(raw.get("finalTopK", 20))),
-        rrf_k=max(1, int(raw.get("rrfK", 60))),
-        max_chunks_per_file=max(1, int(raw.get("maxChunksPerFile", 1))),
-        title_rrf_weight=max(0.0, float(raw.get("titleRrfWeight", 1.0))),
+        bm25_top_k=max(1, _as_int(raw.get("bm25TopK"), 80)),
+        vector_top_k=max(1, _as_int(raw.get("vectorTopK"), 80)),
+        final_top_k=max(1, _as_int(raw.get("finalTopK"), 40)),
+        rrf_k=max(1, _as_int(raw.get("rrfK"), 60)),
+        max_chunks_per_file=max(1, _as_int(raw.get("maxChunksPerFile"), 1)),
+        title_rrf_weight=max(0.0, _as_float(raw.get("titleRrfWeight"), 1.0)),
         prefix_fallback=bool(raw.get("prefixFallback", True)),
-        embedding_batch_size_cpu=max(1, int(raw.get("embeddingBatchSizeCpu", 32))),
-        embedding_batch_size_gpu=max(1, int(raw.get("embeddingBatchSizeGpu", 64))),
+        embedding_batch_size_cpu=max(1, _as_int(raw.get("embeddingBatchSizeCpu"), 32)),
+        embedding_batch_size_gpu=max(1, _as_int(raw.get("embeddingBatchSizeGpu"), 64)),
         lazy_model=bool(raw.get("lazyModel", raw.get("loadPolicy") == "first-search")),
-        model_idle_timeout_seconds=max(0.0, float(raw.get("modelIdleTimeoutSeconds", 0.0))),
-        heartbeat_timeout_seconds=max(5.0, float(raw.get("heartbeatTimeoutSeconds", 20.0))),
+        model_idle_timeout_seconds=max(
+            0.0, _as_float(raw.get("modelIdleTimeoutSeconds"), 0.0)
+        ),
+        heartbeat_timeout_seconds=max(
+            5.0, _as_float(raw.get("heartbeatTimeoutSeconds"), 20.0)
+        ),
     )
     if cfg.chunk_overlap >= cfg.chunk_chars:
         raise ValueError("chunkOverlap must be smaller than chunkChars")

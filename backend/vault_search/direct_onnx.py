@@ -1,19 +1,21 @@
-"""Production ONNX Runtime embedding backend (CUDA/TensorRT path).
+"""Production ONNX Runtime embedding backend (CPU / CUDA / TensorRT).
 
 Loads the derived pooled ONNX model (onnx/model-pooled-normalized.onnx) via
-onnxruntime-gpu with CUDAExecutionProvider or TensorrtExecutionProvider. Mean
-pooling and L2 normalization run inside the ONNX graph; only [N, 768] sentence
-vectors are returned to the host. Reproduces SentenceTransformers semantics:
-inputs are sorted by character length (descending) before internal batching
-and restored to the original order afterwards.
+onnxruntime with CPUExecutionProvider (device=cpu), CUDAExecutionProvider, or
+TensorrtExecutionProvider. Mean pooling and L2 normalization run inside the
+ONNX graph; only [N, 768] sentence vectors are returned to the host.
+Reproduces SentenceTransformers semantics: inputs are sorted by character
+length (descending) before internal batching and restored to the original
+order afterwards.
 
-When provider="auto" (default) TensorRT is preferred when available because it
+On CUDA, provider="auto" (default) prefers TensorRT when available because it
 is substantially faster than the CUDA EP for this encoder; the CUDA EP is used
 as a fallback. TRT engines are cached on disk keyed by the ONNX path hash so
-the one-time engine build (~30 s) is not repeated.
+the one-time engine build (~30 s) is not repeated. On CPU the provider setting
+is ignored and the CPU execution provider is always used.
 
 This is the production twin of the benchmark tool direct_e5_onnx.py. Unlike
-the benchmark, it must run inside the managed CUDA venv which also imports
+the benchmark, it must run inside the managed venv which also imports
 torch/kiwipiepy, so the "forbidden imports" check is omitted.
 """
 
@@ -175,12 +177,41 @@ def _resolve_provider(provider: str) -> str:
     """Resolve the config value to an actual ONNX Runtime EP name.
 
     "auto" prefers TensorRT when it is actually usable, otherwise CUDA.
+    "cpu" selects the CPU execution provider (used when the ONNX engine
+    runs on a CPU-only runtime or when device=cpu).
     """
+    if provider == "cpu":
+        return "CPUExecutionProvider"
     if provider == "cuda":
         return "CUDAExecutionProvider"
     if provider == "tensorrt":
         return "TensorrtExecutionProvider"
     return "TensorrtExecutionProvider" if _trt_available() else "CUDAExecutionProvider"
+
+
+def runtime_capabilities() -> dict[str, bool]:
+    """Report what the current runtime's onnxruntime can actually execute.
+
+    Drives conditional UI exposure: the TensorRT provider option is only
+    shown when the runtime really has a usable TRT installation, and the CUDA
+    provider option only when a CUDA-capable EP is present. The values are
+    stable for the process lifetime (the managed runtime is fixed), so the
+    service caches the result.
+    """
+    caps = {
+        "onnx_available": False,
+        "cuda_available": False,
+        "tensorrt_available": False,
+    }
+    try:
+        import onnxruntime as ort
+    except Exception:
+        return caps
+    caps["onnx_available"] = True
+    providers = ort.get_available_providers()
+    caps["cuda_available"] = "CUDAExecutionProvider" in providers
+    caps["tensorrt_available"] = _trt_available()
+    return caps
 
 
 class DirectE5Onnx:
@@ -262,6 +293,10 @@ class DirectE5Onnx:
         also have CUDA as its primary EP; there is no lower fallback.
         """
         resolved = _resolve_provider(requested)
+        if resolved == "CPUExecutionProvider":
+            session = DirectE5Onnx._build_session(
+                onnx_path, "CPUExecutionProvider", trt_cache_dir, trt_max_batch)
+            return session, "CPUExecutionProvider"
         if resolved != "TensorrtExecutionProvider":
             session = DirectE5Onnx._build_session(
                 onnx_path, "CUDAExecutionProvider", trt_cache_dir, trt_max_batch)
@@ -322,6 +357,12 @@ class DirectE5Onnx:
                            "CUDAExecutionProvider"])
             _enforce_cache_quota(cache_root, cache_dir)
             return session
+
+        if provider == "CPUExecutionProvider":
+            return ort.InferenceSession(
+                str(onnx_path),
+                sess_options=ort.SessionOptions(),
+                providers=["CPUExecutionProvider"])
 
         session_options = ort.SessionOptions()
         session_options.add_session_config_entry("session.enable_cuda_mem_arena", "0")

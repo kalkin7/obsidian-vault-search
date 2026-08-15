@@ -87,11 +87,15 @@ def test_future_state_schema_is_rejected_without_downgrade(tmp_path: Path):
     assert hashlib.sha256(config.db_path.read_bytes()).hexdigest() == before
     with pytest.raises(RuntimeError, match="future state schema version 3"):
         init_db(config.db_path)
-    with pytest.raises(RuntimeError, match="future state schema version 3"):
-        manager.rebuild_all()
+    # rebuild_all archives the unreadable DB and rebuilds from the vault
+    # instead of being blocked forever by the future schema.
+    rebuilt = manager.rebuild_all()
+    assert rebuilt["files"] == 1
+    assert list(config.index_dir.glob("chunks.db.unreadable-*.bak"))
     connection = sqlite3.connect(str(config.db_path))
     try:
-        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert connection.execute("SELECT COUNT(*) FROM file_state").fetchone()[0] == 1
     finally:
         connection.close()
 

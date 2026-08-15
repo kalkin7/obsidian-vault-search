@@ -1,6 +1,6 @@
 param(
     [string]$PythonExecutable = "python",
-    [string]$Version = "0.1.1",
+    [string]$Version = "0.1.3",
     [ValidateSet("cpu", "cuda")][string]$Runtime,
     [switch]$Force
 )
@@ -36,7 +36,7 @@ function Test-Runtime([string]$Python, [string]$Kind) {
     if ($Kind -eq "cuda") {
         & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available(); assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()" 2>$null
     } else {
-        & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,vault_search; assert vault_search.__version__ == '$Version'" 2>$null
+        & $Python -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()" 2>$null
     }
     return $LASTEXITCODE -eq 0
 }
@@ -86,7 +86,7 @@ try {
     if ($Runtime -eq "cuda") {
         & $TargetPython -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert torch.version.cuda; assert torch.cuda.is_available(); assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()"
     } else {
-        & $TargetPython -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,vault_search; assert vault_search.__version__ == '$Version'"
+        & $TargetPython -X utf8 -c "import torch,transformers,tokenizers,sentence_transformers,kiwipiepy,usearch,numpy,onnxruntime,vault_search; assert vault_search.__version__ == '$Version'; assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()"
     }
     if ($LASTEXITCODE -ne 0) {
         throw "Runtime validation failed. For CUDA, check the NVIDIA driver."

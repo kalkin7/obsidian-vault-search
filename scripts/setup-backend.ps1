@@ -1,6 +1,6 @@
 param(
     [string]$PythonExecutable = "python",
-    [string]$Version = "0.1.1",
+    [string]$Version = "0.1.3",
     [string]$Vault = "",
     [ValidateSet("auto", "cpu", "cuda")][string]$Runtime = "auto",
     [switch]$AcceptCudaDownload,

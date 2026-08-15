@@ -15,8 +15,9 @@ SCHEMA_VERSION = 2
 LEXICAL_SCHEMA_VERSION = 2
 
 
-def expected_metadata(config: SearchConfig, dimension: int,
-                      effective_provider: str | None = None) -> dict[str, Any]:
+def expected_metadata(
+    config: SearchConfig, dimension: int, effective_provider: str | None = None
+) -> dict[str, Any]:
     payload = {
         "schema_version": SCHEMA_VERSION,
         "lexical_schema_version": LEXICAL_SCHEMA_VERSION,
@@ -24,7 +25,7 @@ def expected_metadata(config: SearchConfig, dimension: int,
         "model_id": config.model_id,
         "engine": config.engine,
         "provider": config.provider,
-        "embedding_dimension": int(dimension),
+        "embedding_dimension": dimension,
         "normalize_embeddings": config.normalize_embeddings,
         "query_prefix": config.query_prefix,
         "document_prefix": config.document_prefix,
@@ -37,24 +38,44 @@ def expected_metadata(config: SearchConfig, dimension: int,
     }
     if config.engine == "onnx":
         if effective_provider is None:
-            from .direct_onnx import _resolve_provider
-            effective_provider = _resolve_provider(config.provider)
+            if config.device == "cpu":
+                effective_provider = "CPUExecutionProvider"
+            else:
+                import onnxruntime as ort
+
+                available = ort.get_available_providers()
+                if (
+                    "CUDAExecutionProvider" not in available
+                    and "TensorrtExecutionProvider" not in available
+                ):
+                    effective_provider = "CPUExecutionProvider"
+                else:
+                    from .direct_onnx import _resolve_provider
+
+                    effective_provider = _resolve_provider(config.provider)
         payload["effective_provider"] = effective_provider
     return payload
 
 
-def build_metadata(config: SearchConfig, dimension: int, vector_path: Path,
-                   vector_count: int, previous: dict[str, Any] | None = None,
-                   effective_provider: str | None = None) -> dict[str, Any]:
+def build_metadata(
+    config: SearchConfig,
+    dimension: int,
+    vector_path: Path,
+    vector_count: int,
+    previous: dict[str, Any] | None = None,
+    effective_provider: str | None = None,
+) -> dict[str, Any]:
     payload = expected_metadata(config, dimension, effective_provider)
     now = time.time()
-    payload.update({
-        "index_generation": uuid.uuid4().hex,
-        "vector_count": int(vector_count),
-        "vector_file_size": vector_path.stat().st_size,
-        "created_at": (previous or {}).get("created_at", now),
-        "updated_at": now,
-    })
+    payload.update(
+        {
+            "index_generation": uuid.uuid4().hex,
+            "vector_count": vector_count,
+            "vector_file_size": vector_path.stat().st_size,
+            "created_at": (previous or {}).get("created_at", now),
+            "updated_at": now,
+        }
+    )
     return payload
 
 
@@ -65,41 +86,63 @@ def load_metadata(path: Path) -> dict[str, Any] | None:
         return None
 
 
-def validate_metadata(actual: dict[str, Any] | None, expected: dict[str, Any],
-                      check_scope: bool = False) -> list[str]:
+def validate_metadata(
+    actual: dict[str, Any] | None, expected: dict[str, Any], check_scope: bool = False
+) -> list[str]:
     if actual is None:
         return ["metadata missing"]
     keys = [
-        "schema_version", "model_id", "embedding_dimension",
+        "schema_version",
+        "model_id",
+        "embedding_dimension",
         "lexical_schema_version",
-        "engine", "provider",
-        "normalize_embeddings", "query_prefix", "document_prefix",
-        "chunk_chars", "chunk_overlap", "chunking_strategy", "chunker_version",
+        "engine",
+        "provider",
+        "normalize_embeddings",
+        "query_prefix",
+        "document_prefix",
+        "chunk_chars",
+        "chunk_overlap",
+        "chunking_strategy",
+        "chunker_version",
         "tokenizer_version",
     ]
     if "effective_provider" in expected:
         keys.append("effective_provider")
     if check_scope:
         keys.append("scope_config_hash")
-    return [f"{key}: expected {expected.get(key)!r}, found {actual.get(key)!r}"
-            for key in keys if actual.get(key) != expected.get(key)]
+    return [
+        f"{key}: expected {expected.get(key)!r}, found {actual.get(key)!r}"
+        for key in keys
+        if actual.get(key) != expected.get(key)
+    ]
 
 
-def validate_index_files(config: SearchConfig, dimension: int,
-                         check_scope: bool = False,
-                         effective_provider: str | None = None) -> list[str]:
+def validate_index_files(
+    config: SearchConfig,
+    dimension: int,
+    check_scope: bool = False,
+    effective_provider: str | None = None,
+) -> list[str]:
     actual = load_metadata(config.metadata_path)
-    problems = validate_metadata(
-        actual, expected_metadata(config, dimension, effective_provider), check_scope)
+    expected = expected_metadata(config, dimension, effective_provider)
+    problems = validate_metadata(actual, expected, check_scope)
     if actual is None:
         return problems
     db_metadata = read_index_metadata(config.db_path)
     if db_metadata is None:
         problems.append("SQLite index_metadata missing")
-    elif db_metadata.get("index_generation") != actual.get("index_generation"):
-        problems.append("SQLite/metadata generation mismatch")
+    else:
+        if db_metadata.get("index_generation") != actual.get("index_generation"):
+            problems.append("SQLite/metadata generation mismatch")
+        # Cross-check the SQLite metadata against the expected engine/model
+        # contract too. A generation match alone is insufficient: the SQLite
+        # copy could have been written by a different engine or tokenizer.
+        sqlite_problems = validate_metadata(db_metadata, expected, check_scope)
+        problems.extend(sqlite_problems)
     if config.db_path.exists():
         import sqlite3
+
         connection = sqlite3.connect(str(config.db_path))
         try:
             problems.extend(lexical_index_problems(connection))
@@ -112,11 +155,15 @@ def validate_index_files(config: SearchConfig, dimension: int,
         return problems
     try:
         from usearch.index import Index
+
         vector_index = Index.restore(str(config.vector_path))
+        assert vector_index is not None  # restore failed -> problems below
         actual_dimension = int(vector_index.ndim)
         actual_count = len(vector_index)
         if actual_dimension != int(dimension):
-            problems.append(f"vector dimension: expected {dimension}, found {actual_dimension}")
+            problems.append(
+                f"vector dimension: expected {dimension}, found {actual_dimension}"
+            )
         db_count = index_counts(config.db_path)["vector_chunks"]
         if actual_count != db_count:
             problems.append(f"vector count: expected {db_count}, found {actual_count}")
@@ -129,7 +176,68 @@ def validate_index_files(config: SearchConfig, dimension: int,
     return problems
 
 
+REBUILD_VECTORS_PREFIXES = (
+    "engine:",
+    "provider:",
+    "effective_provider:",
+    "model_id:",
+    "embedding_dimension:",
+    "normalize_embeddings:",
+    "query_prefix:",
+    "document_prefix:",
+    "vector ",
+    "metadata/vector",
+)
+REBUILD_ALL_PREFIXES = (
+    "schema_version:",
+    "lexical_schema_version:",
+    "chunking_strategy:",
+    "chunker_version:",
+    "chunk_chars:",
+    "chunk_overlap:",
+    "tokenizer_version:",
+    "scope_config_hash:",
+    "SQLite ",
+    "metadata missing",
+    "generation mismatch",
+    "lexical ",
+    "missing lexical",
+    "file lexical",
+    "body lexical",
+    "heading lexical",
+    "chunk_headings_fts",
+    "index missing",
+    "Unsupported future state schema version",
+    "Lexical migration",
+    "State migration",
+    "state schema",
+    "core schema",
+)
+
+
+def classify_index_problems(problems: list[str]) -> str:
+    """Classify compatibility problems into the minimal recovery action.
+
+    ``rebuild_vectors`` re-embeds the same chunks (engine/provider/model/
+    normalization/vector-file mismatches); ``rebuild_all`` re-chunks the vault
+    (schema/chunking/tokenizer/scope/lexical mismatches). Any structural
+    problem forces ``rebuild_all`` even if vector-only problems are also
+    present.
+    """
+    if not problems:
+        return "none"
+    for problem in problems:
+        if any(problem.startswith(prefix) for prefix in REBUILD_ALL_PREFIXES):
+            return "rebuild_all"
+    for problem in problems:
+        if any(problem.startswith(prefix) for prefix in REBUILD_VECTORS_PREFIXES):
+            return "rebuild_vectors"
+    return "rebuild_all"
+
+
 def write_metadata(path: Path, metadata: dict[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+    temp.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     os.replace(temp, path)

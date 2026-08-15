@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
-from pathlib import Path
 from typing import Any
 
 import yaml
@@ -15,14 +14,19 @@ PRESERVE_RESULTS = 30
 MAX_WIKI_FILES = 5
 MAX_SOURCE_RESULTS = 5
 MAX_WIKI_BYTES = 256 * 1024
-WIKI_PREFIXES = ("5_Wiki/issues/", "5_Wiki/entities/", "5_Wiki/decisions/")
 RELATION_QUERY_RE = re.compile(
     r"(?:전체\s*(?:경과|이력|전말|연결)|공통\s*패턴|(?:사례|사안|문서|이슈|업체|인물|담당자).{0,12}연결)"
 )
 
 
-def should_expand_wiki_sources(query: str, intent: str | None, top_k: int,
-                               direct_count: int) -> bool:
+def _wiki_prefixes(config: SearchConfig) -> tuple[str, ...]:
+    """Trailing-slash prefixes for the configured wiki folders."""
+    return tuple(f"{folder.rstrip('/')}/" for folder in config.wiki_folders)
+
+
+def should_expand_wiki_sources(
+    query: str, intent: str | None, top_k: int, direct_count: int
+) -> bool:
     if direct_count == 0 or (direct_count >= top_k and top_k <= PRESERVE_RESULTS):
         return False
     if intent is not None:
@@ -47,7 +51,7 @@ def expand_wiki_sources(
     wiki_paths = [
         str(item["file_path"])
         for item in direct[:PRESERVE_RESULTS]
-        if str(item["file_path"]).startswith(WIKI_PREFIXES)
+        if str(item["file_path"]).startswith(_wiki_prefixes(config))
     ][:MAX_WIKI_FILES]
     if not wiki_paths:
         return direct
@@ -87,18 +91,20 @@ def expand_wiki_sources(
             "linked_from": wiki_path,
         }
         if verbose:
-            entry.update({
-                "channels": ["wiki_sources"],
-                "query_tokens": query_tokens,
-                "match_mode": match_mode,
-                "bm25_rank": -1,
-                "body_rank": -1,
-                "heading_rank": -1,
-                "file_rank": -1,
-                "vector_rank": -1,
-                "title_rank": -1,
-                "rrf_contributions": {},
-            })
+            entry.update(
+                {
+                    "channels": ["wiki_sources"],
+                    "query_tokens": query_tokens,
+                    "match_mode": match_mode,
+                    "bm25_rank": -1,
+                    "body_rank": -1,
+                    "heading_rank": -1,
+                    "file_rank": -1,
+                    "vector_rank": -1,
+                    "title_rank": -1,
+                    "rrf_contributions": {},
+                }
+            )
         expanded.append(entry)
 
     if not expanded:
@@ -106,7 +112,7 @@ def expand_wiki_sources(
     insertion = min(PRESERVE_RESULTS, len(direct))
     merged = [*direct[:insertion], *expanded, *direct[insertion:]]
     merged = merged[:top_k]
-    tail_score = min(float(item["score"]) for item in direct[:insertion])
+    tail_score = min(item["score"] for item in direct[:insertion])
     for rank, item in enumerate(merged, 1):
         item["rank"] = rank
         if item.get("expanded"):
@@ -129,8 +135,14 @@ def _read_sources(config: SearchConfig, wiki_path: str) -> list[str]:
     lines = text.removeprefix("\ufeff").splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         return []
-    end = next((index for index, line in enumerate(lines[1:], 1)
-                if line.strip() in {"---", "..."}), None)
+    end = next(
+        (
+            index
+            for index, line in enumerate(lines[1:], 1)
+            if line.strip() in {"---", "..."}
+        ),
+        None,
+    )
     if end is None:
         return []
     try:
@@ -159,8 +171,9 @@ def _read_sources(config: SearchConfig, wiki_path: str) -> list[str]:
     return sources
 
 
-def _source_rows(connection: sqlite3.Connection,
-                 paths: list[str]) -> dict[str, tuple[str, list[str], int]]:
+def _source_rows(
+    connection: sqlite3.Connection, paths: list[str]
+) -> dict[str, tuple[str, list[str], int]]:
     if not paths:
         return {}
     placeholders = ",".join("?" for _ in paths)
@@ -172,6 +185,9 @@ def _source_rows(connection: sqlite3.Connection,
     result: dict[str, tuple[str, list[str], int]] = {}
     for file_path, content, heading_path, start_line in rows:
         path = str(file_path)
-        result.setdefault(path, (
-            str(content), json.loads(str(heading_path)), int(start_line)))
+        try:
+            heading = json.loads(str(heading_path))
+        except ValueError:
+            heading = []
+        result.setdefault(path, (str(content), heading, start_line))
     return result

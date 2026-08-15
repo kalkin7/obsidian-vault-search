@@ -136,6 +136,12 @@ def process_exists(pid: int) -> bool:
 
 def run_server(args: argparse.Namespace) -> int:
     config = load_config(args.config, args.vault, args.data_dir)
+    standalone = getattr(args, "owner", "plugin") == "standalone"
+    if getattr(args, "lazy_model", False):
+        config.lazy_model = True
+    if getattr(args, "model_idle_seconds", 0.0) > 0:
+        config.model_idle_timeout_seconds = float(args.model_idle_seconds)
+    idle_exit_seconds = float(getattr(args, "idle_exit_seconds", 0.0) or 0.0)
     try:
         writer_lock = ServiceLock.acquire(config.data_dir)
     except ServiceLockError as exc:
@@ -159,7 +165,8 @@ def run_server(args: argparse.Namespace) -> int:
         "vault_id": vault_id(config.vault_path),
         "vault_path": config.vault_path.as_posix(),
         "pid": os.getpid(),
-        "parent_pid": args.parent_pid,
+        "parent_pid": 0 if standalone else args.parent_pid,
+        "owner": "standalone" if standalone else "plugin",
         "host": host,
         "port": port,
         "token": token,
@@ -168,7 +175,10 @@ def run_server(args: argparse.Namespace) -> int:
         "started_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     atomic_write_json(config.runtime_path, runtime)
-    emit("listening", runtime)
+    # The token must never reach stdout: plugin-owned children and CLI
+    # standalone spawns both persist stdout to backend.log. Consumers read the
+    # token from runtime.json (written above) instead.
+    emit("listening", {**runtime, "token": "<redacted>"})
 
     server_thread = threading.Thread(
         target=server.serve_forever, kwargs={"poll_interval": 0.2}, daemon=True)
@@ -178,55 +188,76 @@ def run_server(args: argparse.Namespace) -> int:
     else:
         service.start_initialization()
 
-    if args.watch_stdin:
-        def watch_stdin() -> None:
-            try:
-                if os.name == "nt":
-                    import ctypes
-                    import msvcrt
-                    handle = msvcrt.get_osfhandle(sys.stdin.fileno())
-                    available = ctypes.c_ulong(0)
-                    while ctypes.windll.kernel32.PeekNamedPipe(
-                            handle, None, 0, None, ctypes.byref(available), None):
-                        time.sleep(0.5)
-                else:
-                    import select
-                    while True:
-                        readable, _, _ = select.select([sys.stdin], [], [], 0.5)
-                        if readable and not os.read(sys.stdin.fileno(), 1):
-                            break
-            except Exception:
-                pass
-            emit("parent_disconnected", {})
-            server.shutdown()
-        threading.Thread(target=watch_stdin, daemon=True).start()
+    if not standalone:
+        if args.watch_stdin:
+            def watch_stdin() -> None:
+                try:
+                    if os.name == "nt":
+                        import ctypes
+                        import msvcrt
+                        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+                        available = ctypes.c_ulong(0)
+                        while ctypes.windll.kernel32.PeekNamedPipe(
+                                handle, None, 0, None, ctypes.byref(available), None):
+                            time.sleep(0.5)
+                    else:
+                        import select
+                        while True:
+                            readable, _, _ = select.select([sys.stdin], [], [], 0.5)
+                            if readable and not os.read(sys.stdin.fileno(), 1):
+                                break
+                except Exception:
+                    pass
+                emit("parent_disconnected", {})
+                server.shutdown()
+            threading.Thread(target=watch_stdin, daemon=True).start()
 
-    if args.parent_pid:
-        def watch_parent() -> None:
-            while process_exists(args.parent_pid):
+        if args.parent_pid:
+            def watch_parent() -> None:
+                while process_exists(args.parent_pid):
+                    time.sleep(1.0)
+                emit("parent_pid_exited", {"parent_pid": args.parent_pid})
+                server.shutdown()
+            threading.Thread(target=watch_parent, daemon=True).start()
+
+        def watch_heartbeat() -> None:
+            while True:
                 time.sleep(1.0)
-            emit("parent_pid_exited", {"parent_pid": args.parent_pid})
-            server.shutdown()
-        threading.Thread(target=watch_parent, daemon=True).start()
-
-    def watch_heartbeat() -> None:
-        while True:
-            time.sleep(1.0)
-            # Model imports/initialization can hold the GIL long enough to delay the
-            # loopback heartbeat handler. stdin EOF still protects parent failure.
-            timeout = max(config.heartbeat_timeout_seconds, 300.0) \
-                if service.state not in {"idle", "ready", "ready_no_index", "error"} \
-                else config.heartbeat_timeout_seconds
-            if time.monotonic() - service.last_heartbeat > timeout:
-                # Electron can throttle renderer timers while the window is in the
-                # background. A live parent PID is a stronger liveness signal.
-                if args.parent_pid and process_exists(args.parent_pid):
-                    service.last_heartbeat = time.monotonic()
+                # Model imports/initialization can hold the GIL long enough to delay the
+                # loopback heartbeat handler. stdin EOF still protects parent failure.
+                timeout = max(config.heartbeat_timeout_seconds, 300.0) \
+                    if service.state not in {"idle", "ready", "ready_no_index", "error"} \
+                    else config.heartbeat_timeout_seconds
+                if time.monotonic() - service.last_heartbeat > timeout:
+                    # Electron can throttle renderer timers while the window is in the
+                    # background. A live parent PID is a stronger liveness signal.
+                    if args.parent_pid and process_exists(args.parent_pid):
+                        service.last_heartbeat = time.monotonic()
+                        continue
+                    emit("heartbeat_timeout", {"timeout_seconds": timeout})
+                    server.shutdown()
+                    return
+        threading.Thread(target=watch_heartbeat, daemon=True).start()
+    else:
+        def watch_idle_exit() -> None:
+            if idle_exit_seconds <= 0:
+                return
+            while True:
+                time.sleep(1.0)
+                if service.state not in {"ready", "ready_no_index", "idle"}:
                     continue
-                emit("heartbeat_timeout", {"timeout_seconds": timeout})
+                if service.initialization_requested.is_set():
+                    continue
+                # An attached plugin keeps the daemon alive by heartbeating, so
+                # the process exits only after both model/activity and heartbeat
+                # have been idle for the window.
+                last_seen = max(service.last_activity, service.last_heartbeat)
+                if time.monotonic() - last_seen <= idle_exit_seconds:
+                    continue
+                emit("idle_exit", {"idle_exit_seconds": idle_exit_seconds})
                 server.shutdown()
                 return
-    threading.Thread(target=watch_heartbeat, daemon=True).start()
+        threading.Thread(target=watch_idle_exit, daemon=True).start()
 
     try:
         while server_thread.is_alive():
@@ -271,6 +302,10 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--data-dir")
     serve.add_argument("--parent-pid", type=int, default=0)
     serve.add_argument("--watch-stdin", action="store_true")
+    serve.add_argument("--owner", choices=("plugin", "standalone"), default="plugin")
+    serve.add_argument("--idle-exit-seconds", type=float, default=0.0)
+    serve.add_argument("--lazy-model", action="store_true")
+    serve.add_argument("--model-idle-seconds", type=float, default=0.0)
     return parser
 
 

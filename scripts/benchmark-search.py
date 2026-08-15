@@ -36,6 +36,7 @@ ALLOWED_INTENTS = {"exact", "known-item", "topic", "timeline", "value", "korean-
 DEFAULT_TOP_K = 40
 MAX_TOP_K = 200
 MEASURE_REPEATS = 5
+STARTUP_TIMEOUT = 180.0
 
 
 class SchemaError(ValueError):
@@ -147,8 +148,35 @@ def _search(vault: Path, params: dict[str, Any], timeout: float) -> dict[str, An
         response = call_runtime(vault, "search", params, timeout)
     except ServiceUnavailable as exc:
         raise SearchRequestError(str(exc)) from exc
-    if not response.get("ok"):
+    error = response.get("error") or {}
+    # A lazy backend returns MODEL_LOADING on the first request while it warms
+    # the model. Retry by polling status until ready, like the CLI does, so a
+    # cold benchmark run does not fail spuriously.
+    if not response.get("ok") and error.get("code") == "MODEL_LOADING":
+        deadline = time.monotonic() + max(1.0, STARTUP_TIMEOUT)
+        while time.monotonic() < deadline:
+            time.sleep(0.25)
+            status: dict[str, Any] | None = None
+            try:
+                status = call_runtime(vault, "status", {}, timeout)
+            except ServiceUnavailable:
+                state = "error"
+            else:
+                state = (status.get("data") or {}).get("state") if status.get("ok") else "error"
+            if state in {"ready", "ready_no_index"}:
+                try:
+                    response = call_runtime(vault, "search", params, timeout)
+                except ServiceUnavailable as exc:
+                    raise SearchRequestError(str(exc)) from exc
+                break
+            if state == "error":
+                status_data = (status or {}).get("data") or {}
+                message = status_data.get("error") or "Backend initialization failed"
+                raise SearchRequestError(f"[BACKEND_ERROR] {message}")
+        else:
+            raise SearchRequestError("[MODEL_LOADING] Model startup timed out")
         error = response.get("error") or {}
+    if not response.get("ok"):
         raise SearchRequestError(
             f"[{error.get('code', 'ERROR')}] {error.get('message', 'search failed')}")
     data = response.get("data") or {}
