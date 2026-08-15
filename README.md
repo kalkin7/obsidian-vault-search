@@ -23,6 +23,9 @@ automatically, and keeps it in sync with the plugin version. Use **설정 → Py
 백엔드 → 백엔드 설치/복구** to re-download or recover. First indexing still
 needs a vector rebuild and the embedding model snapshot (see below).
 
+AI 답변 provider와 API 키는 **설정 → AI 답변**에서 관리합니다. API 키는 Obsidian
+보안 저장소에 저장되며 `data.json`이나 vault 파일에 기록되지 않습니다.
+
 Reload Obsidian and open **Vault Search Service** settings. The first installation needs **전체 재구축**. Indexes, runtime tokens, logs, and the Python path stay outside the vault under `%LOCALAPPDATA%\ObsidianVaultSearch`.
 
 `setup-backend.ps1` defaults to `-Runtime auto`. It always prepares a CPU runtime and, when an NVIDIA

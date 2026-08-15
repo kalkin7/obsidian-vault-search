@@ -57,6 +57,91 @@
  min-width: 0;
 }
 
+.vault-search-settings {
+ max-width: 100%;
+ min-width: 0;
+}
+
+.vault-search-settings-tabs {
+ display: grid;
+ grid-template-columns: repeat(3, minmax(0, 1fr));
+ gap: var(--size-4-1);
+ margin: 0 0 var(--size-4-3);
+ padding: 0 0 var(--size-4-1);
+ border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.vault-search-settings-tab {
+ min-width: 0;
+ overflow: hidden;
+ text-overflow: ellipsis;
+ white-space: nowrap;
+}
+
+.vault-search-settings-tab.is-active {
+ color: var(--text-accent);
+ box-shadow: inset 0 -2px 0 var(--interactive-accent);
+}
+
+.vault-search-settings-panel {
+ display: none;
+ min-width: 0;
+}
+
+.vault-search-settings-panel.is-active {
+ display: block;
+}
+
+.vault-search-settings-panel .setting-item {
+ min-width: 0;
+}
+
+.vault-search-settings-panel .setting-item-control {
+ min-width: 0;
+ max-width: 100%;
+}
+
+.vault-search-settings-panel .setting-item-control > input,
+.vault-search-settings-panel .setting-item-control > textarea,
+.vault-search-settings-panel .setting-item-control > select {
+ max-width: 100%;
+ min-width: 0;
+}
+
+.setting-item.vault-search-fields-below .setting-item-control {
+ display: grid;
+ grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+ width: 100%;
+ min-width: 0;
+ gap: var(--size-4-2);
+}
+
+.setting-item.vault-search-fields-below .vault-search-num-field {
+ width: 100%;
+ min-width: 0;
+}
+
+@media (max-width: 560px) {
+ .vault-search-settings-tabs {
+  gap: 0;
+ }
+
+ .vault-search-settings-tab {
+  padding-inline: var(--size-4-1);
+  font-size: var(--font-ui-smaller);
+ }
+
+ .vault-search-settings-panel .setting-item {
+  display: block;
+ }
+
+ .vault-search-settings-panel .setting-item-control {
+  justify-content: flex-start;
+  width: 100%;
+  margin-top: var(--size-4-2);
+ }
+}
+
 .vault-search-error {
  color: var(--text-error);
 }

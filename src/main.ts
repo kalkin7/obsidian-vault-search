@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, normalizePath, Plugin, TFile } from "obsidian";
+import { FileSystemAdapter, Notice, normalizePath, Plugin, requestUrl, TFile } from "obsidian";
 import * as path from "path";
 import {
   agentIntegrationNotice,
@@ -11,6 +11,7 @@ import { BackendManager } from "./backend-manager";
 import {
   DEFAULT_SETTINGS,
   LIGHTNING_ICON_ASSET,
+  LLM_MODEL_ENDPOINTS,
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
@@ -29,6 +30,8 @@ import { selectedTextQuery } from "./search-session";
 import { confirmRuntimeInstall } from "./runtime-install-modal";
 import { selectRuntime } from "./runtime-selection";
 import { VaultSearchItemView } from "./search-item-view";
+import { getProviderSecret, hasSecretStorage, providerEnvironment, setProviderSecret } from "./llm-secrets";
+import type { LLMProviderId } from "./types";
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -68,6 +71,7 @@ export default class VaultSearchPlugin extends Plugin {
       () => this.settings,
       (status) => this.handleStatus(status),
       this.manifest.version,
+      () => providerEnvironment(this.app),
     );
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
@@ -182,6 +186,41 @@ export default class VaultSearchPlugin extends Plugin {
     const { pythonExecutable, ...portable } = this.settings;
     await this.saveData(portable);
     if (this.backend) await this.backend.writeMachinePython(pythonExecutable);
+  }
+
+  getProviderApiKey(provider: LLMProviderId): string {
+    return getProviderSecret(this.app, provider);
+  }
+
+  async saveProviderApiKey(provider: LLMProviderId, value: string): Promise<void> {
+    if (!hasSecretStorage(this.app)) {
+      throw new Error("Obsidian 1.11.4 이상에서만 API 키를 보안 저장할 수 있습니다.");
+    }
+    setProviderSecret(this.app, provider, value);
+    if (this.backend.status.state !== "stopped") await this.backend.restart();
+  }
+
+  async fetchProviderModels(provider: LLMProviderId): Promise<string[]> {
+    const apiKey = getProviderSecret(this.app, provider);
+    if (!apiKey) throw new Error("먼저 이 provider의 API 키를 저장해 주세요.");
+    const response = await requestUrl({
+      url: LLM_MODEL_ENDPOINTS[provider],
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    const data = response.json?.data;
+    if (!Array.isArray(data)) throw new Error("provider가 모델 목록을 반환하지 않았습니다.");
+    const models = data
+      .map((item: unknown) => {
+        if (!item || typeof item !== "object") return null;
+        const value = item as { id?: unknown; created?: unknown };
+        return typeof value.id === "string" && value.id.trim()
+          ? { id: value.id.trim(), created: typeof value.created === "number" ? value.created : 0 }
+          : null;
+      })
+      .filter((item): item is { id: string; created: number } => item !== null)
+      .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
+    return [...new Set(models.map((item) => item.id))].slice(0, 200);
   }
 
   resetDraftSettings(): void {

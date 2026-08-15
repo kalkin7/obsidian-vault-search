@@ -88,8 +88,9 @@ set are removed.
 
 The response contains `answer`, `citations`, safe `evidence`, `provider`, `model`,
 `grounded`, and diagnostics. Supported providers are `openai`, `opencode-go`, and
-`deepseek`. Their keys are read only from `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`,
-and `DEEPSEEK_API_KEY`; keys are never part of plugin data, runtime configuration,
+`deepseek`. Their keys are stored by the Obsidian plugin in `secretStorage` and
+injected into the sidecar as `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, or
+`DEEPSEEK_API_KEY`; keys are never part of plugin data, runtime configuration,
 protocol responses, or backend logs. HTTP 429/5xx are retried once after 500 ms;
 auth and other 4xx errors are not retried. The provider is never silently switched.
 

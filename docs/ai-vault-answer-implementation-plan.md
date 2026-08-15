@@ -48,7 +48,7 @@
 ### 설계 가정
 
 - LLM 호출은 TypeScript UI가 아니라 Python sidecar가 담당한다. sidecar가 검색과 grounding을 모두 소유하므로 검색 결과와 prompt 조립이 한 경계에 남고, provider별 HTTP 구현을 UI와 분리할 수 있다.
-- API key는 초기 버전에서 plugin `data.json`, `runtime.json`, `service-config.json`에 저장하지 않는다. sidecar가 상속받는 환경변수에서만 읽는다.
+- API key는 plugin `data.json`, `runtime.json`, `service-config.json`에 저장하지 않는다. 설정 화면에서 Obsidian `secretStorage`에 저장하고, sidecar 시작 시 환경변수로만 주입한다.
 - 초기 answer는 완료 응답 방식으로 구현한다. 현재 protocol이 한 요청당 한 JSON 응답 구조이고 2 MiB 제한이 있으므로, 스트리밍은 별도 protocol 변경으로 분리한다.
 - 대화 기록은 패널 생명주기 동안만 유지하며 최대 4개 user/assistant turn을 사용한다. 영속 세션 파일은 후속 범위다.
 
@@ -280,8 +280,9 @@ idle → retrieving → answering → answer | unavailable
 | `src/search-modal.ts` | private search 로직을 `search-api.ts` 사용으로 교체 |
 | `src/types.ts` | `LLMProviderId`, `AnswerRequest`, `AnswerResult`, `Citation`, `AnswerState` 추가 |
 | `src/settings.ts` | LLM 설정의 impact/migration/clone 처리 |
-| `src/constants.ts` | provider 기본값, endpoint, model, env 이름 |
-| `src/settings-tab.ts` | provider/model/context/output/token env 안내와 연결 상태 표시 |
+| `src/constants.ts` | provider 기본값, endpoint, model, env 이름, secret ID |
+| `src/llm-secrets.ts` | Obsidian secretStorage와 sidecar 환경변수 매핑 |
+| `src/settings-tab.ts` | 탭형 provider/model/key/context/output/token 설정과 연결 상태 표시 |
 | `styles.css` | panel flex layout, answer bubble, citation, source card, loading/error 상태 |
 | `tests/plugin/obsidian-stub.ts` | 최소 `ItemView`, `WorkspaceLeaf`, `Plugin.registerView`, fake DOM helper |
 
@@ -309,7 +310,7 @@ idle → retrieving → answering → answer | unavailable
 | `backend/tests/test_protocol.py` | answer payload/error contract regression |
 | `backend/tests/test_lifecycle.py` | model loading 중 answer, timeout, shutdown 상호작용 |
 | `docs/protocol.md` | answer schema, limits, error codes |
-| `docs/settings.md` | provider 설정과 환경변수 안내 |
+| `docs/settings.md` | provider 설정, secretStorage, 모델 최신화 안내 |
 
 새 외부 Python dependency는 우선 추가하지 않는다. MVP는 표준 library HTTP client로 구현하고, 스트리밍을 도입할 때 dependency와 transport를 재검토한다.
 
@@ -350,7 +351,7 @@ idle → retrieving → answering → answer | unavailable
 2. grounding context builder 연결
 3. OpenAI adapter
 4. OpenCode Go/DeepSeek compatible adapter
-5. settings UI와 env key 안내
+5. settings UI와 secretStorage key 관리 및 모델 최신화
 6. answer renderer/citation parser 연결
 
 완료 조건: 세 provider 각각 mock fixture와 실제 한 번의 live smoke test가 통과한다.

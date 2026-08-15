@@ -71,11 +71,11 @@ Paths are vault-relative POSIX-style globs. Absolute paths and traversal are rej
 ## AI Vault 답변
 
 The AI Vault Search panel uses the local hybrid search results as its only context.
-Choose `openai`, `opencode-go`, or `deepseek`, then set the model ID and limits in
-the settings tab. The API key is not a plugin setting: configure it in the
-environment inherited by the sidecar (`OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, or
-`DEEPSEEK_API_KEY`). The panel keeps up to four conversation turns only while it
-is open and does not persist chat history.
+Choose `openai`, `opencode-go`, or `deepseek`, enter the API key in the settings
+tab, and use **모델 최신화** to fetch the provider's current model list. The key is
+stored through Obsidian's `secretStorage`, not in plugin data or the vault; it is
+only passed to the sidecar process when it starts. The panel keeps up to four
+conversation turns only while it is open and does not persist chat history.
 
 The provider receives bounded source snippets, not the whole vault. Source text is
 treated as untrusted data, and citations such as `[S1]` open the corresponding

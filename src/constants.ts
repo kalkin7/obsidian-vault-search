@@ -4,7 +4,7 @@ export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
 export const LIGHTNING_ICON_ASSET = "lightning.search.png";
-export const BACKEND_VERSION = "0.1.10";
+export const BACKEND_VERSION = "0.1.11";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
 export const MODEL_PROFILES: Record<
@@ -86,4 +86,16 @@ export const LLM_PROVIDER_DEFAULTS = {
   openai: { name: "OpenAI Responses API", model: "gpt-5.6", env: "OPENAI_API_KEY" },
   "opencode-go": { name: "OpenCode Go", model: "deepseek-v4-flash", env: "OPENCODE_GO_API_KEY" },
   deepseek: { name: "DeepSeek", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" },
+} as const;
+
+export const LLM_SECRET_IDS = {
+  openai: "vault-search-openai-api-key",
+  "opencode-go": "vault-search-opencode-go-api-key",
+  deepseek: "vault-search-deepseek-api-key",
+} as const;
+
+export const LLM_MODEL_ENDPOINTS = {
+  openai: "https://api.openai.com/v1/models",
+  "opencode-go": "https://opencode.ai/zen/go/v1/models",
+  deepseek: "https://api.deepseek.com/models",
 } as const;

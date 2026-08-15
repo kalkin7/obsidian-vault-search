@@ -18,6 +18,7 @@ import type {
 import { BACKEND_VERSION, GITHUB_REPO, PROTOCOL_VERSION } from "./constants";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
+import { mergeProviderEnvironment } from "./llm-secrets";
 
 interface BackendEvent {
   event: string;
@@ -49,6 +50,7 @@ export class BackendManager {
     private readonly getSettings: () => VaultSearchSettings,
     private readonly statusChanged: (status: BackendStatus) => void,
     private readonly manifestVersion = BACKEND_VERSION,
+    private readonly getEnvironment: () => Record<string, string> = () => ({}),
   ) {}
 
   get dataDir(): string {
@@ -467,7 +469,8 @@ export class BackendManager {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
-    if (await this.tryAttachStandalone()) return;
+    const providerEnvironment = this.getEnvironment();
+    if (Object.keys(providerEnvironment).length === 0 && await this.tryAttachStandalone()) return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -503,7 +506,7 @@ export class BackendManager {
       String(process.pid),
       "--watch-stdin",
     ];
-    const env = { ...process.env };
+    const env = mergeProviderEnvironment(process.env, providerEnvironment);
     env.PYTHONUTF8 = "1";
     env.PYTHONPATH =
       this.backendRoot +

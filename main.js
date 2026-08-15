@@ -3010,7 +3010,7 @@ var import_obsidian = require("obsidian");
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
 var LIGHTNING_ICON_ASSET = "lightning.search.png";
-var BACKEND_VERSION = "0.1.10";
+var BACKEND_VERSION = "0.1.11";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -3081,6 +3081,16 @@ var LLM_PROVIDER_DEFAULTS = {
   "opencode-go": { name: "OpenCode Go", model: "deepseek-v4-flash", env: "OPENCODE_GO_API_KEY" },
   deepseek: { name: "DeepSeek", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" }
 };
+var LLM_SECRET_IDS = {
+  openai: "vault-search-openai-api-key",
+  "opencode-go": "vault-search-opencode-go-api-key",
+  deepseek: "vault-search-deepseek-api-key"
+};
+var LLM_MODEL_ENDPOINTS = {
+  openai: "https://api.openai.com/v1/models",
+  "opencode-go": "https://opencode.ai/zen/go/v1/models",
+  deepseek: "https://api.deepseek.com/models"
+};
 
 // src/backend-protocol.ts
 var net = __toESM(require("net"));
@@ -3146,14 +3156,51 @@ function vaultDataDir(vaultPath) {
   return path2.join(localDataRoot(), "vaults", vaultId(vaultPath));
 }
 
+// src/llm-secrets.ts
+function storage(app) {
+  return app.secretStorage;
+}
+function hasSecretStorage(app) {
+  return Boolean(storage(app));
+}
+function getProviderSecret(app, provider) {
+  return storage(app)?.getSecret(LLM_SECRET_IDS[provider])?.trim() || "";
+}
+function setProviderSecret(app, provider, secret) {
+  const secretStorage = storage(app);
+  if (!secretStorage) {
+    throw new Error("\uC774 \uBC84\uC804\uC758 Obsidian\uC740 \uBCF4\uC548 \uD0A4 \uC800\uC7A5\uC18C\uB97C \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. Obsidian 1.11.4 \uC774\uC0C1\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
+  }
+  secretStorage.setSecret(LLM_SECRET_IDS[provider], secret.trim());
+}
+function providerEnvironment(app) {
+  const environment = {};
+  const secretStorage = storage(app);
+  if (!secretStorage) return environment;
+  for (const provider of Object.keys(LLM_PROVIDER_DEFAULTS)) {
+    const stored = secretStorage.getSecret(LLM_SECRET_IDS[provider]);
+    if (stored !== null) {
+      environment[LLM_PROVIDER_DEFAULTS[provider].env] = stored.trim();
+    }
+  }
+  return environment;
+}
+function mergeProviderEnvironment(inherited, providerValues) {
+  const environment = { ...inherited };
+  for (const name of Object.keys(providerValues)) delete environment[name];
+  Object.assign(environment, providerValues);
+  return environment;
+}
+
 // src/backend-manager.ts
 var BackendManager = class {
-  constructor(vaultPath, pluginDir, getSettings, statusChanged, manifestVersion = BACKEND_VERSION) {
+  constructor(vaultPath, pluginDir, getSettings, statusChanged, manifestVersion = BACKEND_VERSION, getEnvironment = () => ({})) {
     this.vaultPath = vaultPath;
     this.pluginDir = pluginDir;
     this.getSettings = getSettings;
     this.statusChanged = statusChanged;
     this.manifestVersion = manifestVersion;
+    this.getEnvironment = getEnvironment;
   }
   child = null;
   runtime = null;
@@ -3511,7 +3558,8 @@ var BackendManager = class {
     this.stopping = false;
     this.setStatus({ state: "starting" });
     await (0, import_promises2.mkdir)(this.dataDir, { recursive: true });
-    if (await this.tryAttachStandalone()) return;
+    const providerEnvironment2 = this.getEnvironment();
+    if (Object.keys(providerEnvironment2).length === 0 && await this.tryAttachStandalone()) return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -3544,7 +3592,7 @@ var BackendManager = class {
       String(process.pid),
       "--watch-stdin"
     ];
-    const env = { ...process.env };
+    const env = mergeProviderEnvironment(process.env, providerEnvironment2);
     env.PYTHONUTF8 = "1";
     env.PYTHONPATH = this.backendRoot + (env.PYTHONPATH ? path3.delimiter + env.PYTHONPATH : "");
     env.HF_HUB_DISABLE_PROGRESS_BARS = "1";
@@ -4094,6 +4142,8 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
     super(owner.app, owner);
     this.owner = owner;
   }
+  activeTab = "general";
+  providerModels = {};
   display() {
     const { containerEl } = this;
     const draft = this.owner.draftSettings;
@@ -4195,9 +4245,67 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       });
     });
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(`\uD658\uACBD\uBCC0\uC218: ${answerProvider.env}`).addText((text) => text.setValue(draft.answerModel).onChange((value) => {
-      draft.answerModel = value.trim() || answerProvider.model;
-    }));
+    const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
+    let apiKeyInput = null;
+    new import_obsidian2.Setting(containerEl).setName("API \uD0A4").setDesc(savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428" : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4").addText((text) => {
+      text.inputEl.type = "password";
+      text.setPlaceholder(savedApiKey ? "\uC800\uC7A5\uB41C \uD0A4\uB97C \uAD50\uCCB4\uD558\uB824\uBA74 \uC785\uB825" : `${answerProvider.env} \uC785\uB825`);
+      apiKeyInput = text.inputEl;
+      return text;
+    }).addButton(
+      (button) => button.setButtonText("\uC800\uC7A5").setCta().onClick(async () => {
+        const value = apiKeyInput?.value.trim() || "";
+        if (!value) {
+          new import_obsidian2.Notice("\uC800\uC7A5\uD560 API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.");
+          return;
+        }
+        try {
+          await this.owner.saveProviderApiKey(draft.answerProvider, value);
+          new import_obsidian2.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
+          this.display();
+        } catch (error) {
+          this.showError(error);
+        }
+      })
+    ).addButton(
+      (button) => button.setButtonText("\uC0AD\uC81C").onClick(async () => {
+        try {
+          await this.owner.saveProviderApiKey(draft.answerProvider, "");
+          new import_obsidian2.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC0AD\uC81C\uD588\uC2B5\uB2C8\uB2E4.`);
+          this.display();
+        } catch (error) {
+          this.showError(error);
+        }
+      })
+    );
+    const modelListId = `vault-search-models-${draft.answerProvider}`;
+    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(`\uAE30\uBCF8\uAC12: ${answerProvider.model}`).addText((text) => {
+      text.setValue(draft.answerModel);
+      text.inputEl.setAttribute("list", modelListId);
+      text.onChange((value) => {
+        draft.answerModel = value.trim() || answerProvider.model;
+      });
+      return text;
+    }).addButton(
+      (button) => button.setButtonText("\uBAA8\uB378 \uCD5C\uC2E0\uD654").onClick(async () => {
+        button.setDisabled(true);
+        try {
+          const models = await this.owner.fetchProviderModels(draft.answerProvider);
+          this.providerModels[draft.answerProvider] = models;
+          if (models.length && !models.includes(draft.answerModel)) draft.answerModel = models[0];
+          new import_obsidian2.Notice(`${answerProvider.name}: \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.`);
+          this.display();
+        } catch (error) {
+          this.showError(error);
+        } finally {
+          button.setDisabled(false);
+        }
+      })
+    );
+    const modelList = containerEl.createEl("datalist", { attr: { id: modelListId } });
+    for (const model of this.providerModels[draft.answerProvider] || []) {
+      modelList.createEl("option", { attr: { value: model } });
+    }
     new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText((text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
       draft.answerMaxContextChars = Math.max(8e3, Math.min(32e3, this.nonnegativeNumber(value, draft.answerMaxContextChars)));
     }));
@@ -4508,6 +4616,72 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         draft.startupReconcile = value;
       })
     );
+    this.renderTabs();
+  }
+  renderTabs() {
+    const root = this.containerEl;
+    const rendered = Array.from(root.children);
+    root.empty();
+    root.addClass("vault-search-settings");
+    const tabs = root.createDiv({ cls: "vault-search-settings-tabs" });
+    const panels = {
+      general: root.createDiv({ cls: "vault-search-settings-panel" }),
+      answer: root.createDiv({ cls: "vault-search-settings-panel" }),
+      search: root.createDiv({ cls: "vault-search-settings-panel" })
+    };
+    const labels = {
+      general: "\uC77C\uBC18",
+      answer: "AI \uB2F5\uBCC0",
+      search: "\uAC80\uC0C9\xB7\uB7F0\uD0C0\uC784"
+    };
+    const buttons = /* @__PURE__ */ new Map();
+    const updateActive = () => {
+      for (const tab of Object.keys(panels)) {
+        panels[tab].toggleClass("is-active", tab === this.activeTab);
+        buttons.get(tab)?.toggleClass("is-active", tab === this.activeTab);
+      }
+    };
+    for (const tab of Object.keys(labels)) {
+      const button = tabs.createEl("button", {
+        text: labels[tab],
+        cls: "vault-search-settings-tab",
+        attr: { type: "button" }
+      });
+      button.addEventListener("click", () => {
+        this.activeTab = tab;
+        updateActive();
+      });
+      buttons.set(tab, button);
+    }
+    let panel = "general";
+    const searchSettingNames = /* @__PURE__ */ new Set([
+      "\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569",
+      "\uC784\uBCA0\uB529 \uBAA8\uB378",
+      "\uBAA8\uB378 ID",
+      "\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC",
+      "\uC778\uB371\uC2A4 \uAD00\uB9AC",
+      "\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9",
+      "\uCCAD\uD0B9 \uC804\uB7B5",
+      "BM25 / \uBCA1\uD130 / \uCD5C\uC885 \uD6C4\uBCF4 / RRF k",
+      "\uAC80\uC0C9 \uB2E4\uC591\uC131 / \uC81C\uBAA9 \uAC00\uC911\uCE58",
+      "\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31",
+      "\uB3D9\uAE30\uD654 debounce (ms)",
+      "\uC790\uB3D9 \uC99D\uBD84 \uB3D9\uAE30\uD654",
+      "\uC2DC\uC791 \uC2DC \uC804\uCCB4 \uB300\uC870"
+    ]);
+    for (const child of rendered) {
+      const element = child;
+      if (element.tagName === "H3") {
+        if (element.textContent?.includes("AI Vault")) panel = "answer";
+        if (element.textContent?.includes("\uACE0\uAE09")) panel = "search";
+      }
+      const settingName = element.querySelector(".setting-item-name")?.textContent?.trim();
+      if (panel === "answer" && settingName && searchSettingNames.has(settingName)) {
+        panel = "search";
+      }
+      panels[panel].appendChild(element);
+    }
+    updateActive();
   }
   /** Render a numeric row as labeled horizontal fields (label above each
    *  input) laid out BELOW the setting name/description across the full width,
@@ -5242,7 +5416,8 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       pluginDir,
       () => this.settings,
       (status) => this.handleStatus(status),
-      this.manifest.version
+      this.manifest.version,
+      () => providerEnvironment(this.app)
     );
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
@@ -5346,6 +5521,33 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     const { pythonExecutable, ...portable } = this.settings;
     await this.saveData(portable);
     if (this.backend) await this.backend.writeMachinePython(pythonExecutable);
+  }
+  getProviderApiKey(provider) {
+    return getProviderSecret(this.app, provider);
+  }
+  async saveProviderApiKey(provider, value) {
+    if (!hasSecretStorage(this.app)) {
+      throw new Error("Obsidian 1.11.4 \uC774\uC0C1\uC5D0\uC11C\uB9CC API \uD0A4\uB97C \uBCF4\uC548 \uC800\uC7A5\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.");
+    }
+    setProviderSecret(this.app, provider, value);
+    if (this.backend.status.state !== "stopped") await this.backend.restart();
+  }
+  async fetchProviderModels(provider) {
+    const apiKey = getProviderSecret(this.app, provider);
+    if (!apiKey) throw new Error("\uBA3C\uC800 \uC774 provider\uC758 API \uD0A4\uB97C \uC800\uC7A5\uD574 \uC8FC\uC138\uC694.");
+    const response = await (0, import_obsidian6.requestUrl)({
+      url: LLM_MODEL_ENDPOINTS[provider],
+      method: "GET",
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    const data = response.json?.data;
+    if (!Array.isArray(data)) throw new Error("provider\uAC00 \uBAA8\uB378 \uBAA9\uB85D\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
+    const models = data.map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const value = item;
+      return typeof value.id === "string" && value.id.trim() ? { id: value.id.trim(), created: typeof value.created === "number" ? value.created : 0 } : null;
+    }).filter((item) => item !== null).sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
+    return [...new Set(models.map((item) => item.id))].slice(0, 200);
   }
   resetDraftSettings() {
     this.draftSettings = cloneSettings(this.settings);

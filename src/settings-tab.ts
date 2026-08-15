@@ -4,9 +4,14 @@ import { LLM_PROVIDER_DEFAULTS, MODEL_PROFILES } from "./constants";
 import { defaultLoadPolicy, settingsImpact } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
-import type { BackendStatus } from "./types";
+import type { BackendStatus, LLMProviderId } from "./types";
+
+type SettingsTabId = "general" | "answer" | "search";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
+  private activeTab: SettingsTabId = "general";
+  private providerModels: Partial<Record<LLMProviderId, string[]>> = {};
+
   constructor(private readonly owner: VaultSearchPlugin) {
     super(owner.app, owner);
   }
@@ -165,12 +170,79 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         });
       });
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
+    const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
+    let apiKeyInput: HTMLInputElement | null = null;
+    new Setting(containerEl)
+      .setName("API 키")
+      .setDesc(savedApiKey ? "Obsidian 보안 저장소에 저장됨" : "Obsidian 보안 저장소에 저장합니다")
+      .addText((text) => {
+        text.inputEl.type = "password";
+        text.setPlaceholder(savedApiKey ? "저장된 키를 교체하려면 입력" : `${answerProvider.env} 입력`);
+        apiKeyInput = text.inputEl;
+        return text;
+      })
+      .addButton((button) =>
+        button
+          .setButtonText("저장")
+          .setCta()
+          .onClick(async () => {
+            const value = apiKeyInput?.value.trim() || "";
+            if (!value) {
+              new Notice("저장할 API 키를 입력해 주세요.");
+              return;
+            }
+            try {
+              await this.owner.saveProviderApiKey(draft.answerProvider, value);
+              new Notice(`${answerProvider.name} API 키를 저장했습니다.`);
+              this.display();
+            } catch (error) {
+              this.showError(error);
+            }
+          }),
+      )
+      .addButton((button) =>
+        button.setButtonText("삭제").onClick(async () => {
+          try {
+            await this.owner.saveProviderApiKey(draft.answerProvider, "");
+            new Notice(`${answerProvider.name} API 키를 삭제했습니다.`);
+            this.display();
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      );
+    const modelListId = `vault-search-models-${draft.answerProvider}`;
     new Setting(containerEl)
       .setName("답변 모델")
-      .setDesc(`환경변수: ${answerProvider.env}`)
-      .addText((text) => text.setValue(draft.answerModel).onChange((value) => {
-        draft.answerModel = value.trim() || answerProvider.model;
-      }));
+      .setDesc(`기본값: ${answerProvider.model}`)
+      .addText((text) => {
+        text.setValue(draft.answerModel);
+        text.inputEl.setAttribute("list", modelListId);
+        text.onChange((value) => {
+          draft.answerModel = value.trim() || answerProvider.model;
+        });
+        return text;
+      })
+      .addButton((button) =>
+        button.setButtonText("모델 최신화").onClick(async () => {
+          button.setDisabled(true);
+          try {
+            const models = await this.owner.fetchProviderModels(draft.answerProvider);
+            this.providerModels[draft.answerProvider] = models;
+            if (models.length && !models.includes(draft.answerModel)) draft.answerModel = models[0];
+            new Notice(`${answerProvider.name}: 모델 ${models.length}개를 확인했습니다.`);
+            this.display();
+          } catch (error) {
+            this.showError(error);
+          } finally {
+            button.setDisabled(false);
+          }
+        }),
+      );
+    const modelList = containerEl.createEl("datalist", { attr: { id: modelListId } });
+    for (const model of this.providerModels[draft.answerProvider] || []) {
+      modelList.createEl("option", { attr: { value: model } });
+    }
     new Setting(containerEl)
       .setName("답변 context 문자 수")
       .setDesc("8,000~32,000자")
@@ -601,6 +673,75 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         draft.startupReconcile = value;
       }),
     );
+    this.renderTabs();
+  }
+
+  private renderTabs(): void {
+    const root = this.containerEl;
+    const rendered = Array.from(root.children);
+    root.empty();
+    root.addClass("vault-search-settings");
+
+    const tabs = root.createDiv({ cls: "vault-search-settings-tabs" });
+    const panels = {
+      general: root.createDiv({ cls: "vault-search-settings-panel" }),
+      answer: root.createDiv({ cls: "vault-search-settings-panel" }),
+      search: root.createDiv({ cls: "vault-search-settings-panel" }),
+    } satisfies Record<SettingsTabId, HTMLElement>;
+    const labels: Record<SettingsTabId, string> = {
+      general: "일반",
+      answer: "AI 답변",
+      search: "검색·런타임",
+    };
+    const buttons = new Map<SettingsTabId, HTMLButtonElement>();
+    const updateActive = () => {
+      for (const tab of Object.keys(panels) as SettingsTabId[]) {
+        panels[tab].toggleClass("is-active", tab === this.activeTab);
+        buttons.get(tab)?.toggleClass("is-active", tab === this.activeTab);
+      }
+    };
+    for (const tab of Object.keys(labels) as SettingsTabId[]) {
+      const button = tabs.createEl("button", {
+        text: labels[tab],
+        cls: "vault-search-settings-tab",
+        attr: { type: "button" },
+      });
+      button.addEventListener("click", () => {
+        this.activeTab = tab;
+        updateActive();
+      });
+      buttons.set(tab, button);
+    }
+
+    let panel: SettingsTabId = "general";
+    const searchSettingNames = new Set([
+      "에이전트 통합",
+      "임베딩 모델",
+      "모델 ID",
+      "임베딩 백엔드",
+      "인덱스 관리",
+      "청크 크기 / 오버랩",
+      "청킹 전략",
+      "BM25 / 벡터 / 최종 후보 / RRF k",
+      "검색 다양성 / 제목 가중치",
+      "접두사 검색 폴백",
+      "동기화 debounce (ms)",
+      "자동 증분 동기화",
+      "시작 시 전체 대조",
+    ]);
+    for (const child of rendered) {
+      const element = child as HTMLElement;
+      if (element.tagName === "H3") {
+        if (element.textContent?.includes("AI Vault")) panel = "answer";
+        if (element.textContent?.includes("고급")) panel = "search";
+      }
+      const settingName = element.querySelector(".setting-item-name")?.textContent?.trim();
+      if (panel === "answer" && settingName && searchSettingNames.has(settingName)) {
+        panel = "search";
+      }
+      panels[panel].appendChild(element);
+    }
+    updateActive();
   }
 
   /** Render a numeric row as labeled horizontal fields (label above each
