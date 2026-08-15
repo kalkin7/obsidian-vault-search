@@ -1,5 +1,10 @@
 # 검색 품질 개선 및 Omnisearch 라이브 대조 — 2026-08-11
 
+> **기준일 주의 (2026-08-13)**: 이 문서는 2026-08-11 당시의 구조를 기록한 역사 문서다.
+> §2의 `file_titles`/`titles_fts` 테이블은 이후 `file_fields`/`file_fields_fts`
+> (`basename_tokens`·`directory_tokens`·`alias_tokens`·`tag_tokens`·`property_tokens`) 구조로
+> 대체됐다. `titleRrfWeight`로 가중된 “file” 채널이 제목 신호를 흡수한다. 아래 내용은 당시 기준으로 읽어야 한다.
+
 ## 결론
 
 Obsidian Omnisearch와 Vault Search Service는 대체 관계가 아니라 용도가 다른 보완 관계다.

@@ -31,6 +31,25 @@ Status responses may include `pending_recovery_required: true` and `pending_reco
 transient startup replay failure. The existing searchable generation remains available; a later sync
 or restart retries the journal.
 
+Status responses also expose index compatibility state: `index_validation_state`
+(`pending` | `compatible` | `incompatible`), `index_rebuild_required`, `index_problems`, and
+`recommended_action` (`rebuild_vectors` | `rebuild_all` | null). The action is the minimal recovery
+the CLI, settings tab, and startup notice all recommend. Validation is cached at
+initialization/reconcile/rebuild boundaries and never recomputed per status call.
+
+`search` responses include an optional `diagnostics` object inside the data payload with
+`candidate_pool_size`, `requested_top_k`, and `returned_count`. When `requested_top_k` exceeds
+`candidate_pool_size`, the CLI prints a warning on stderr. `rebuild_vectors` and `rebuild_all`
+perform the corresponding recovery and clear the incompatibility cache on success.
+
+`rebuild_vectors` fails with a coded `INDEX_REBUILD_REQUIRED` error (including
+`recommended_action: rebuild_all`) when the base lexical index is missing or structurally
+incompatible — a vectors-only rebuild cannot create `chunks.db` — instead of a raw
+`FileNotFoundError`. The CLI prints the matching Korean recovery hint for either action.
+
+The wiki sources expansion in `intent: timeline` follows the configured `wikiFolders` (see
+[Settings](settings.md)); an empty folder list disables the expansion.
+
 `status` and `heartbeat` return cached index counts and never open SQLite. `count_available: false`
 means the backend could not refresh counts at a worker-controlled boundary, including an incompatible
 future database shape; compatibility errors are still returned through the existing rebuild-required path.

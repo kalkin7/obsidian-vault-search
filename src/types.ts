@@ -1,10 +1,20 @@
 export type LoadPolicy = "vault-open" | "first-search" | "manual";
 export type DevicePreference = "auto" | "cpu" | "cuda";
 export type EnginePreference = "pytorch" | "onnx";
+export type ProviderPreference = "auto" | "cuda" | "tensorrt";
 export type ChunkingStrategy = "paragraph-v1" | "markdown-v2";
 export type BackendState =
-  | "stopped" | "starting" | "idle" | "loading_model" | "ready" | "ready_no_index"
-  | "syncing" | "reconciling" | "rebuilding" | "rebuilding_vectors" | "error";
+  | "stopped"
+  | "starting"
+  | "idle"
+  | "loading_model"
+  | "ready"
+  | "ready_no_index"
+  | "syncing"
+  | "reconciling"
+  | "rebuilding"
+  | "rebuilding_vectors"
+  | "error";
 
 export interface VaultSearchSettings {
   loadPolicy: LoadPolicy;
@@ -12,12 +22,14 @@ export interface VaultSearchSettings {
   modelProfile: string;
   modelId: string;
   engine: EnginePreference;
+  provider: ProviderPreference;
   device: DevicePreference;
   queryPrefix: string;
   documentPrefix: string;
   normalizeEmbeddings: boolean;
   includeGlobs: string[];
   excludeGlobs: string[];
+  wikiFolders: string[];
   chunkChars: number;
   chunkOverlap: number;
   chunkingStrategy: ChunkingStrategy;
@@ -32,6 +44,7 @@ export interface VaultSearchSettings {
   autoSync: boolean;
   startupReconcile: boolean;
   modelIdleTimeoutSeconds: number;
+  settingsVersion?: number;
 }
 
 export interface BackendStatus {
@@ -50,6 +63,17 @@ export interface BackendStatus {
   pending_recovery_required?: boolean;
   pending_recovery_warning?: string | null;
   runtime_warning?: string | null;
+  index_validation_state?: "pending" | "compatible" | "incompatible";
+  index_rebuild_required?: boolean;
+  index_problems?: string[];
+  recommended_action?: "rebuild_vectors" | "rebuild_all" | null;
+  capabilities?: {
+    onnx_available?: boolean;
+    cuda_available?: boolean;
+    tensorrt_available?: boolean;
+    model_available?: boolean;
+    derived_model_available?: boolean;
+  };
 }
 
 export interface PythonRuntimeInfo {
@@ -62,13 +86,19 @@ export interface PythonRuntimeInfo {
 }
 
 export interface RuntimeInfo {
+  runtime_schema?: number;
   protocol_version: number;
+  backend_version?: string;
+  vault_id?: string;
+  vault_path?: string;
   host: string;
   port: number;
   token: string;
   pid: number;
   state: string;
   model_id: string;
+  owner?: "plugin" | "standalone";
+  parent_pid?: number;
 }
 
 export interface BackendResponse<T = unknown> {

@@ -1,7 +1,9 @@
 import { Notice, PluginSettingTab, Setting } from "obsidian";
 import type VaultSearchPlugin from "./main";
 import { MODEL_PROFILES } from "./constants";
-import { settingsImpact } from "./settings";
+import { defaultLoadPolicy, settingsImpact } from "./settings";
+import { agentIntegrationNotice } from "./agent-integration";
+import type { AgentIntegrationStatus } from "./agent-integration";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
   constructor(private readonly owner: VaultSearchPlugin) {
@@ -15,58 +17,164 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Vault Search Service" });
     const status = this.owner.backend?.status || { state: "stopped" as const };
     const statusEl = containerEl.createDiv({ cls: "vault-search-status" });
-    statusEl.setText([
-      `상태: ${status.state}`,
-      status.model_id ? `모델: ${status.model_id}` : "",
-      status.device ? `디바이스: ${status.device}` : "",
-      status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
-      status.count_available === false ? "인덱스 개수: 확인 불가" :
-        status.files !== undefined ? `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개` : "",
-      status.model_load_seconds !== undefined ? `최근 모델 로딩: ${status.model_load_seconds}초` : "",
-      status.progress ? `진행: ${status.progress}` : "",
-      status.pending_recovery_required ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}` : "",
-      status.error ? `오류: ${status.error}` : ""
-      , this.owner.runtimeSummary
-      , this.owner.runtimeWarning || ""
-    ].filter(Boolean).join("\n"));
+    statusEl.setText(
+      [
+        `상태: ${status.state}`,
+        status.model_id ? `모델: ${status.model_id}` : "",
+        status.device ? `디바이스: ${status.device}` : "",
+        status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
+        status.count_available === false
+          ? "인덱스 개수: 확인 불가"
+          : status.files === undefined
+            ? ""
+            : `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개`,
+        status.model_load_seconds === undefined
+          ? ""
+          : `최근 모델 로딩: ${status.model_load_seconds}초`,
+        status.progress ? `진행: ${status.progress}` : "",
+        status.pending_recovery_required
+          ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}`
+          : "",
+        status.index_rebuild_required
+          ? `인덱스 호환성 문제: ${status.recommended_action === "rebuild_vectors" ? "벡터 재구축 필요" : "전체 재구축 필요"}`
+          : "",
+        status.error ? `오류: ${status.error}` : "",
+        this.owner.runtimeSummary,
+        this.owner.runtimeWarning || "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    );
     if (status.error) statusEl.addClass("vault-search-error");
 
     const impact = settingsImpact(this.owner.settings, draft);
     new Setting(containerEl)
       .setName("서비스 제어 및 설정 적용")
-      .setDesc(`모델은 이 볼트에서만 상주합니다. 대기 중인 설정 영향: ${impact}`)
-      .addButton(button => button.setButtonText("시작").onClick(async () => {
-        try { await this.owner.startBackend(); } catch (error) { this.showError(error); }
-      }))
-      .addButton(button => button.setButtonText("중지").onClick(async () => {
-        try { await this.owner.stopBackend(); } catch (error) { this.showError(error); }
-      }))
-      .addButton(button => button.setButtonText("설정 적용").setCta().onClick(async () => {
-        try { await this.owner.applyDraftSettings(); } catch (error) { this.showError(error); }
-      }))
-      .addButton(button => button.setButtonText("변경 취소").onClick(() => this.owner.resetDraftSettings()));
+      .setDesc(
+        `모델은 이 볼트에서만 상주합니다. 대기 중인 설정 영향: ${impact}`,
+      )
+      .addButton((button) =>
+        button.setButtonText("시작").onClick(async () => {
+          try {
+            await this.owner.startBackend();
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("중지").onClick(async () => {
+          try {
+            await this.owner.stopBackend();
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("설정 적용")
+          .setCta()
+          .onClick(async () => {
+            try {
+              await this.owner.applyDraftSettings();
+            } catch (error) {
+              this.showError(error);
+            }
+          }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("변경 취소")
+          .onClick(() => this.owner.resetDraftSettings()),
+      );
 
-    new Setting(containerEl).setName("시작 정책").addDropdown(dropdown => dropdown
-      .addOption("vault-open", "볼트를 열 때 모델 로드")
-      .addOption("first-search", "첫 검색 때 모델 로드")
-      .addOption("manual", "수동 시작")
-      .setValue(draft.loadPolicy)
-      .onChange(value => { draft.loadPolicy = value as typeof draft.loadPolicy; this.display(); }));
+    new Setting(containerEl)
+      .setName("시작 정책")
+      .setDesc(
+        "기본값은 엔진에 따라 자동 조정됩니다: ONNX는 첫 검색 시 로드, PyTorch는 볼트 열 때 로드. 여기서 직접 선택하면 그 값이 유지됩니다.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("vault-open", "볼트를 열 때 모델 로드")
+          .addOption("first-search", "첫 검색 때 모델 로드")
+          .addOption("manual", "수동 시작")
+          .setValue(draft.loadPolicy)
+          .onChange((value) => {
+            draft.loadPolicy = value as typeof draft.loadPolicy;
+            this.display();
+          }),
+      );
 
-    new Setting(containerEl).setName("유휴 모델 언로드 (초)")
-      .setDesc("0이면 비활성(로드 후 상주). 검색이 없으면 이 시간 후 모델을 언로드합니다. ONNX 엔진은 ORT 세션을 해제해 VRAM/RAM을 반환하고, 다음 검색 시 다시 로드합니다. PyTorch 엔진은 참조를 해제하되 CUDA 캐시로 VRAM 일부가 남을 수 있습니다.")
-      .addText(text => text.setValue(String(draft.modelIdleTimeoutSeconds)).onChange(value => {
-        draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(value, draft.modelIdleTimeoutSeconds);
-      }));
+    new Setting(containerEl)
+      .setName("유휴 모델 언로드 (초)")
+      .setDesc(
+        "0이면 비활성(로드 후 상주). 검색이 없으면 이 시간 후 모델을 언로드합니다. ONNX 엔진은 ORT 세션을 해제해 VRAM/RAM을 반환하고, 다음 검색 시 다시 로드합니다. PyTorch 엔진은 참조를 해제하되 CUDA 캐시로 VRAM 일부가 남을 수 있습니다.",
+      )
+      .addText((text) =>
+        text
+          .setValue(String(draft.modelIdleTimeoutSeconds))
+          .onChange((value) => {
+            draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(
+              value,
+              draft.modelIdleTimeoutSeconds,
+            );
+          }),
+      );
 
-    new Setting(containerEl).setName("Python 실행 파일")
+    new Setting(containerEl)
+      .setName("Python 실행 파일")
       .setDesc("전용 venv의 python.exe를 권장합니다.")
-      .addText(text => text.setValue(draft.pythonExecutable).setPlaceholder("python")
-        .onChange(value => { draft.pythonExecutable = value.trim() || "python"; }));
+      .addText((text) =>
+        text
+          .setValue(draft.pythonExecutable)
+          .setPlaceholder("python")
+          .onChange((value) => {
+            draft.pythonExecutable = value.trim() || "python";
+          }),
+      );
+    new Setting(containerEl)
+      .setName("Python 백엔드")
+      .setDesc(
+        "BRAT 설치는 main.js/manifest/styles.css만 넣으므로, 백엔드는 GitHub 릴리스에서 자동으로 받습니다. 이 버튼으로 다시 받거나 버전을 맞춥니다.",
+      )
+      .addButton((button) =>
+        button.setButtonText("백엔드 설치/복구").onClick(async () => {
+          try {
+            await this.owner.provisionBackend();
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      );
 
-    new Setting(containerEl).setName("임베딩 모델").addDropdown(dropdown => {
-      for (const [id, profile] of Object.entries(MODEL_PROFILES)) dropdown.addOption(id, profile.name);
-      dropdown.setValue(draft.modelProfile).onChange(id => {
+    const agent = this.owner.agentIntegration;
+    new Setting(containerEl)
+      .setName("에이전트 통합")
+      .setDesc(
+        "AI 에이전트(Claude Code, Codex, Gemini CLI 등)가 이 볼트에서 vault-search를 사용하도록 지시 파일과 검색 래퍼를 설치합니다. " +
+          "볼트 루트 파일은 명시적으로 설치할 때만 수정되며, 기존 검색 지시가 있으면 자동으로 건너뜁니다. " +
+          (agent ? this.agentStatusText(agent) : "상태 확인 중…"),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("설치/갱신")
+          .setCta()
+          .onClick(async () => {
+            try {
+              const result = await this.owner.runAgentIntegrationInstall();
+              new Notice(agentIntegrationNotice(result), 8000);
+              this.display();
+            } catch (error) {
+              this.showError(error);
+            }
+          }),
+      );
+
+    new Setting(containerEl).setName("임베딩 모델").addDropdown((dropdown) => {
+      for (const [id, profile] of Object.entries(MODEL_PROFILES))
+        dropdown.addOption(id, profile.name);
+      dropdown.setValue(draft.modelProfile).onChange((id) => {
         const profile = MODEL_PROFILES[id];
         draft.modelProfile = id;
         if (id !== "custom" && profile) {
@@ -78,129 +186,406 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       });
     });
 
-    new Setting(containerEl).setName("모델 ID")
-      .setDesc(MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers 모델 ID")
-      .addText(text => text.setValue(draft.modelId).onChange(value => { draft.modelId = value.trim(); }));
-    new Setting(containerEl).setName("디바이스")
-      .setDesc("자동은 NVIDIA GPU와 검증된 CUDA 런타임이 있으면 GPU를, 아니면 사유를 표시하고 CPU를 사용합니다." +
-        (draft.engine === "onnx" ? " ONNX 엔진에서는 CUDA로 고정됩니다." : ""))
-      .addDropdown(dropdown => dropdown
-      .addOption("auto", "자동").addOption("cpu", "CPU").addOption("cuda", "CUDA")
-      .setValue(draft.device)
-      .setDisabled(draft.engine === "onnx")
-      .onChange(value => { draft.device = value as typeof draft.device; }));
-    new Setting(containerEl).setName("임베딩 엔진")
-      .setDesc("ONNX는 GPU에서 풀링을 수행해 콜드 시작과 웜 검색이 빠르고 VRAM 반환이 가능하지만, 벌크 인코딩은 PyTorch보다 느립니다. ONNX를 선택하면 디바이스가 CUDA로 고정됩니다.")
-      .addDropdown(dropdown => dropdown
-        .addOption("pytorch", "PyTorch (기본)")
-        .addOption("onnx", "ONNX Runtime (CUDA)")
-        .setValue(draft.engine).onChange(value => {
-          draft.engine = value as typeof draft.engine;
-          if (draft.engine === "onnx") draft.device = "cuda";
-          this.display();
-        }));
-    new Setting(containerEl).setName("CUDA 런타임")
-      .setDesc("NVIDIA GPU용 PyTorch를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.")
-      .addButton(button => button.setButtonText("CUDA 런타임 설치").onClick(async () => {
-        try { await this.owner.installCudaRuntime(); } catch (error) { this.showError(error); }
-      }));
-    new Setting(containerEl).setName("임베딩 정규화").addToggle(toggle => toggle
-      .setValue(draft.normalizeEmbeddings).onChange(value => { draft.normalizeEmbeddings = value; }));
-    new Setting(containerEl).setName("Query prefix").addText(text => text
-      .setValue(draft.queryPrefix).onChange(value => { draft.queryPrefix = value; }));
-    new Setting(containerEl).setName("Document prefix").addText(text => text
-      .setValue(draft.documentPrefix).onChange(value => { draft.documentPrefix = value; }));
+    new Setting(containerEl)
+      .setName("모델 ID")
+      .setDesc(
+        MODEL_PROFILES[draft.modelProfile]?.note ||
+          "Sentence Transformers 모델 ID",
+      )
+      .addText((text) =>
+        text.setValue(draft.modelId).onChange((value) => {
+          draft.modelId = value.trim();
+        }),
+      );
+    new Setting(containerEl)
+      .setName("임베딩 백엔드")
+      .setDesc(
+        "ONNX Runtime(기본): 직접 ONNX 경로로 시작이 빠르고 유휴 시 VRAM/RAM을 해제합니다. GPU가 있으면 TensorRT/CUDA를, 없으면 CPU를 자동 사용합니다. PyTorch: 벌크 인덱싱이 가장 빠르지만 시작이 느립니다. 백엔드를 바꾸면 시작 정책 기본값도 함께 조정됩니다.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("onnx", "ONNX Runtime (기본, 권장)")
+          .addOption("pytorch", "PyTorch")
+          .setValue(draft.engine)
+          .onChange((value) => {
+            const previous = draft.engine;
+            draft.engine = value as typeof draft.engine;
+            if (draft.loadPolicy === defaultLoadPolicy(previous)) {
+              draft.loadPolicy = defaultLoadPolicy(draft.engine);
+            }
+            this.display();
+          }),
+      );
 
-    new Setting(containerEl).setName("Include globs").setDesc("볼트 상대 경로, 한 줄에 하나")
-      .addTextArea(area => {
-        area.setValue(draft.includeGlobs.join("\n")); area.inputEl.rows = 7;
-        area.onChange(value => { draft.includeGlobs = this.lines(value); });
+    containerEl.createEl("h3", { text: "고급 설정" });
+
+    new Setting(containerEl)
+      .setName("디바이스")
+      .setDesc(
+        "자동(기본)은 GPU와 검증된 CUDA 런타임이 있으면 GPU를, 없으면 CPU를 사용합니다. CUDA를 명시하면 대용량 런타임 다운로드가 필요할 수 있습니다.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("auto", "자동")
+          .addOption("cpu", "CPU")
+          .addOption("cuda", "CUDA")
+          .setValue(draft.device)
+          .onChange((value) => {
+            draft.device = value as typeof draft.device;
+          }),
+      );
+    const caps = status.capabilities;
+    if (
+      draft.engine === "onnx" &&
+      caps &&
+      caps.derived_model_available === false
+    ) {
+      new Setting(containerEl)
+        .setName("ONNX 파생 모델 준비")
+        .setDesc(
+          caps.model_available === false
+            ? "e5-base 모델 스냅샷이 로컬에 없습니다. 먼저 intfloat/multilingual-e5-base를 받아 주세요."
+            : "로컬 스냅샷에 파생 풀링 그래프(onnx/model-pooled-normalized.onnx)가 없습니다. 생성을 실행하면 ONNX 엔진을 사용할 수 있습니다.",
+        )
+        .addButton((button) => {
+          button.setButtonText("파생 모델 생성").setCta();
+          if (caps.model_available === false) button.setDisabled(true);
+          button.onClick(async () => {
+            try {
+              await this.owner.provisionOnnx();
+            } catch (error) {
+              this.showError(error);
+            }
+          });
+        });
+    }
+    // Options are gated on capabilities only once the backend has reported
+    // them; unknown (service stopped / not started yet) keeps every choice so
+    // the user can pick one. The saved value is always present and selected:
+    // falling back to "auto" here would silently misrepresent the stored
+    // provider after a restart and make it look like the choice was reset.
+    const providerOptions: Array<[string, string]> = [["auto", "자동"]];
+    if (caps?.cuda_available !== false) providerOptions.push(["cuda", "CUDA"]);
+    if (caps?.tensorrt_available !== false)
+      providerOptions.push(["tensorrt", "TensorRT"]);
+    const providerLabels: Record<string, string> = {
+      auto: "자동",
+      cuda: "CUDA",
+      tensorrt: "TensorRT",
+    };
+    const providerValue = draft.provider;
+    if (!providerOptions.some(([value]) => value === providerValue)) {
+      providerOptions.push([
+        providerValue,
+        providerLabels[providerValue] || providerValue,
+      ]);
+    }
+    const supported = caps
+      ? [caps.cuda_available && "CUDA", caps.tensorrt_available && "TensorRT"]
+          .filter(Boolean)
+          .join(", ") || "CPU만"
+      : "서비스 시작 후 확인";
+    new Setting(containerEl)
+      .setName("ONNX 실행 제공자 (provider)")
+      .setDesc(
+        `CUDA에서만 사용됩니다. 이 머신 지원: ${supported}. auto는 TensorRT가 설치되어 있으면 우선하고, 아니면 CUDA로 폴백합니다.`,
+      )
+      .addDropdown((dropdown) => {
+        for (const [value, label] of providerOptions)
+          dropdown.addOption(value, label);
+        dropdown
+          .setValue(providerValue)
+          .setDisabled(draft.engine !== "onnx" || draft.device !== "cuda")
+          .onChange((value) => {
+            draft.provider = value as typeof draft.provider;
+          });
       });
-    new Setting(containerEl).setName("Exclude globs").setDesc("볼트 상대 경로, 한 줄에 하나")
-      .addTextArea(area => {
-        area.setValue(draft.excludeGlobs.join("\n")); area.inputEl.rows = 7;
-        area.onChange(value => { draft.excludeGlobs = this.lines(value); });
+    const cudaInstalled = caps?.cuda_available === true;
+    new Setting(containerEl)
+      .setName("CUDA 런타임")
+      .setDesc(
+        cudaInstalled
+          ? "CUDA 런타임이 설치되어 사용 가능합니다. 재설치가 필요하면 런타임 폴더를 정리한 뒤 다시 설치하세요."
+          : "NVIDIA GPU용 PyTorch와 onnxruntime-gpu를 별도 설치합니다. 수 GB 다운로드와 벡터 재구축으로 수 분 이상 걸릴 수 있습니다.",
+      )
+      .addButton((button) => {
+        button
+          .setButtonText(
+            cudaInstalled ? "CUDA 런타임 설치됨" : "CUDA 런타임 설치",
+          )
+          .setDisabled(cudaInstalled)
+          .onClick(async () => {
+            try {
+              await this.owner.installCudaRuntime();
+            } catch (error) {
+              this.showError(error);
+            }
+          });
+      });
+    new Setting(containerEl).setName("임베딩 정규화").addToggle((toggle) =>
+      toggle.setValue(draft.normalizeEmbeddings).onChange((value) => {
+        draft.normalizeEmbeddings = value;
+      }),
+    );
+    new Setting(containerEl).setName("Query prefix").addText((text) =>
+      text.setValue(draft.queryPrefix).onChange((value) => {
+        draft.queryPrefix = value;
+      }),
+    );
+    new Setting(containerEl).setName("Document prefix").addText((text) =>
+      text.setValue(draft.documentPrefix).onChange((value) => {
+        draft.documentPrefix = value;
+      }),
+    );
+
+    new Setting(containerEl)
+      .setName("Include globs")
+      .setDesc("볼트 상대 경로, 한 줄에 하나")
+      .addTextArea((area) => {
+        area.setValue(draft.includeGlobs.join("\n"));
+        area.inputEl.rows = 7;
+        area.onChange((value) => {
+          draft.includeGlobs = this.lines(value);
+        });
+      });
+    new Setting(containerEl)
+      .setName("Exclude globs")
+      .setDesc("볼트 상대 경로, 한 줄에 하나")
+      .addTextArea((area) => {
+        area.setValue(draft.excludeGlobs.join("\n"));
+        area.inputEl.rows = 7;
+        area.onChange((value) => {
+          draft.excludeGlobs = this.lines(value);
+        });
       });
 
-    new Setting(containerEl).setName("인덱스 관리")
-      .setDesc("설정 적용 후 범위를 확인하세요. 재구축은 임시 파일 검증 후 원자적으로 교체됩니다.")
-      .addButton(button => button.setButtonText("범위 미리보기").onClick(async () => {
-        try { const result = await this.owner.previewScope(); new Notice(`검색 대상: ${result.count}개 파일`); }
-        catch (error) { this.showError(error); }
-      }))
-      .addButton(button => button.setButtonText("정밀 대조").onClick(async () => {
-        try { await this.owner.reconcile("strict"); } catch (error) { this.showError(error); }
-      }))
-      .addButton(button => button.setButtonText("벡터 재구축").onClick(async () => {
-        try { await this.owner.rebuildVectors(); } catch (error) { this.showError(error); }
-      }))
-      .addButton(button => button.setButtonText("전체 재구축").setWarning().onClick(async () => {
-        try { await this.owner.rebuildAll(); } catch (error) { this.showError(error); }
-      }));
+    new Setting(containerEl)
+      .setName("위키 폴더")
+      .setDesc(
+        "타임라인/관계 검색에서 sources 참조를 따라가는 위키 폴더 목록입니다 (볼트 상대 경로, 한 줄에 하나). " +
+          "기본값(5_Wiki/…)은 K_Notes 배치입니다. 위키가 다른 폴더에 있으면 여기서 지정하고, 위키가 없으면 비워 두면 확장이 동작하지 않습니다.",
+      )
+      .addTextArea((area) => {
+        area.setValue(draft.wikiFolders.join("\n"));
+        area.inputEl.rows = 4;
+        area.onChange((value) => {
+          draft.wikiFolders = this.lines(value);
+        });
+      });
 
-    new Setting(containerEl).setName("청크 크기 / 오버랩")
+    new Setting(containerEl)
+      .setName("인덱스 관리")
+      .setDesc(
+        "설정 적용 후 범위를 확인하세요. 재구축은 임시 파일 검증 후 원자적으로 교체됩니다.",
+      )
+      .addButton((button) =>
+        button.setButtonText("범위 미리보기").onClick(async () => {
+          try {
+            const result = await this.owner.previewScope();
+            new Notice(`검색 대상: ${result.count}개 파일`);
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("정밀 대조").onClick(async () => {
+          try {
+            await this.owner.reconcile("strict");
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("벡터 재구축").onClick(async () => {
+          try {
+            await this.owner.rebuildVectors();
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("전체 재구축")
+          .setWarning()
+          .onClick(async () => {
+            try {
+              await this.owner.rebuildAll();
+            } catch (error) {
+              this.showError(error);
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("청크 크기 / 오버랩")
+      .setClass("vault-search-num-inputs")
       .setDesc("값을 변경하면 전체 인덱스 재구축이 필요합니다.")
-      .addText(text => text.setValue(String(draft.chunkChars)).onChange(value => {
-        draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
-      })).addText(text => text.setValue(String(draft.chunkOverlap)).onChange(value => {
-        draft.chunkOverlap = this.nonnegativeNumber(value, draft.chunkOverlap);
-      }));
-    new Setting(containerEl).setName("청킹 전략")
-      .setDesc("Markdown 구조 인식 전략을 포함해 변경 시 전체 인덱스 재구축이 필요합니다.")
-      .addDropdown(dropdown => dropdown
-        .addOption("paragraph-v1", "문단 기반 (기본값)")
-        .addOption("markdown-v2", "Markdown 구조 인식")
-        .setValue(draft.chunkingStrategy)
-        .onChange(value => {
-          draft.chunkingStrategy = value as typeof draft.chunkingStrategy;
-          this.display();
-        }));
-    new Setting(containerEl).setName("BM25 / 벡터 / 최종 후보 / RRF k")
-      .setDesc("최종 후보는 16~40개를 권장합니다.")
-      .addText(text => text.setValue(String(draft.bm25TopK)).onChange(value => {
-        draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);
-      })).addText(text => text.setValue(String(draft.vectorTopK)).onChange(value => {
-        draft.vectorTopK = this.positiveNumber(value, draft.vectorTopK);
-      })).addText(text => text.setValue(String(draft.finalTopK)).onChange(value => {
-        draft.finalTopK = this.positiveNumber(value, draft.finalTopK);
-      })).addText(text => text.setValue(String(draft.rrfK)).onChange(value => {
-        draft.rrfK = this.positiveNumber(value, draft.rrfK);
-      }));
-    new Setting(containerEl).setName("검색 다양성 / 제목 가중치")
-      .setDesc("파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.")
-      .addText(text => text.setValue(String(draft.maxChunksPerFile)).onChange(value => {
-        draft.maxChunksPerFile = this.positiveNumber(value, draft.maxChunksPerFile);
-      })).addText(text => text.setValue(String(draft.titleRrfWeight)).onChange(value => {
-        draft.titleRrfWeight = this.nonnegativeNumber(value, draft.titleRrfWeight);
-      }));
-    new Setting(containerEl).setName("접두사 검색 폴백")
-      .setDesc("정확 BM25 결과가 없을 때 토큰 접두사 검색으로 한 번 더 찾습니다.")
-      .addToggle(toggle => toggle.setValue(draft.prefixFallback)
-        .onChange(value => { draft.prefixFallback = value; }));
-    new Setting(containerEl).setName("동기화 debounce (ms)").addText(text => text
-      .setValue(String(draft.syncDebounceMs)).onChange(value => {
+      .addText((text) =>
+        text.setValue(String(draft.chunkChars)).onChange((value) => {
+          draft.chunkChars = this.positiveNumber(value, draft.chunkChars);
+        }),
+      )
+      .addText((text) =>
+        text.setValue(String(draft.chunkOverlap)).onChange((value) => {
+          draft.chunkOverlap = this.nonnegativeNumber(
+            value,
+            draft.chunkOverlap,
+          );
+        }),
+      );
+    new Setting(containerEl)
+      .setName("청킹 전략")
+      .setDesc(
+        "Markdown 구조 인식 전략을 포함해 변경 시 전체 인덱스 재구축이 필요합니다.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("paragraph-v1", "문단 기반 (기본값)")
+          .addOption("markdown-v2", "Markdown 구조 인식")
+          .setValue(draft.chunkingStrategy)
+          .onChange((value) => {
+            draft.chunkingStrategy = value as typeof draft.chunkingStrategy;
+            this.display();
+          }),
+      );
+    new Setting(containerEl)
+      .setName("BM25 / 벡터 / 최종 후보 / RRF k")
+      .setClass("vault-search-num-inputs")
+      .setDesc(
+        "검색이 '후보를 넓게 모아 융합한 뒤 최종 결과만 반환'하는 너비를 조정합니다. " +
+          "기본값 80 / 80 / 40은 K_Notes 골드셋 기준 recall@40 0.856으로 측정해 정한 값입니다.",
+      )
+      .addText((text) =>
+        text.setValue(String(draft.bm25TopK)).onChange((value) => {
+          draft.bm25TopK = this.positiveNumber(value, draft.bm25TopK);
+        }),
+      )
+      .addText((text) =>
+        text.setValue(String(draft.vectorTopK)).onChange((value) => {
+          draft.vectorTopK = this.positiveNumber(value, draft.vectorTopK);
+        }),
+      )
+      .addText((text) =>
+        text.setValue(String(draft.finalTopK)).onChange((value) => {
+          draft.finalTopK = this.positiveNumber(value, draft.finalTopK);
+        }),
+      )
+      .addText((text) =>
+        text.setValue(String(draft.rrfK)).onChange((value) => {
+          draft.rrfK = this.positiveNumber(value, draft.rrfK);
+        }),
+      );
+    containerEl.createEl("div", {
+      cls: "vault-search-setting-hint",
+      text:
+        "• bm25TopK: 키워드(BM25)로 뽑는 후보 청크 수. 넓히면 정확한 단어가 흩어진 파일도 놓치지 않지만, " +
+        "잡음이 늘 수 있습니다.\n" +
+        "• vectorTopK: 의미(임베딩) 유사도로 뽑는 후보 청크 수. 넓히면 표현이 달라도 관련된 파일이 회수됩니다.\n" +
+        "• finalTopK: 최종 반환 결과 수. 에이전트가 넓게 조사할 때는 40개 정도가 적당합니다.\n" +
+        "• rrfK: 여러 채널 결과를 융합할 때 순위 점수를 평탄화하는 상수입니다. " +
+        "결과가 한 채널에 치우치면 이 값을 줄여 보세요.\n" +
+        "바꾸면 실행 중 서비스에 즉시 반영되며, 결과가 이상하면 기본값으로 되돌리면 됩니다.",
+    });
+    new Setting(containerEl)
+      .setName("검색 다양성 / 제목 가중치")
+      .setClass("vault-search-num-inputs")
+      .setDesc(
+        "파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.",
+      )
+      .addText((text) =>
+        text.setValue(String(draft.maxChunksPerFile)).onChange((value) => {
+          draft.maxChunksPerFile = this.positiveNumber(
+            value,
+            draft.maxChunksPerFile,
+          );
+        }),
+      )
+      .addText((text) =>
+        text.setValue(String(draft.titleRrfWeight)).onChange((value) => {
+          draft.titleRrfWeight = this.nonnegativeNumber(
+            value,
+            draft.titleRrfWeight,
+          );
+        }),
+      );
+    containerEl.createEl("div", {
+      cls: "vault-search-setting-hint",
+      text:
+        "• maxChunksPerFile: 한 파일이 최종 결과에서 차지할 수 있는 청크 수. 1이면 각 파일은 결과 1개로 제한되어 " +
+        "다른 파일도 볼 수 있습니다. 한 파일의 여러 구절을 보려면 늘려 보세요.\n" +
+        "• titleRrfWeight: 파일명·경로·헤딩 매치가 결과 순위에 미치는 가중치. 파일 제목을 중요하게 여기려면 올리세요.",
+    });
+    new Setting(containerEl)
+      .setName("접두사 검색 폴백")
+      .setDesc(
+        "정확 BM25 결과가 없을 때 토큰 접두사 검색으로 한 번 더 찾습니다.",
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(draft.prefixFallback).onChange((value) => {
+          draft.prefixFallback = value;
+        }),
+      );
+    new Setting(containerEl).setName("동기화 debounce (ms)").addText((text) =>
+      text.setValue(String(draft.syncDebounceMs)).onChange((value) => {
         draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);
-      }));
-    new Setting(containerEl).setName("자동 증분 동기화").addToggle(toggle => toggle
-      .setValue(draft.autoSync).onChange(value => { draft.autoSync = value; }));
-    new Setting(containerEl).setName("시작 시 전체 대조").addToggle(toggle => toggle
-      .setValue(draft.startupReconcile).onChange(value => { draft.startupReconcile = value; }));
+      }),
+    );
+    new Setting(containerEl).setName("자동 증분 동기화").addToggle((toggle) =>
+      toggle.setValue(draft.autoSync).onChange((value) => {
+        draft.autoSync = value;
+      }),
+    );
+    new Setting(containerEl).setName("시작 시 전체 대조").addToggle((toggle) =>
+      toggle.setValue(draft.startupReconcile).onChange((value) => {
+        draft.startupReconcile = value;
+      }),
+    );
   }
 
   private lines(value: string): string[] {
-    return value.split(/\r?\n/).map(line => line.trim().replace(/\\/g, "/")).filter(Boolean);
+    return value
+      .split(/\r?\n/)
+      .map((line) => line.trim().replace(/\\/g, "/"))
+      .filter(Boolean);
+  }
+
+  private agentStatusText(agent: AgentIntegrationStatus): string {
+    const agents =
+      agent.agentsFile === "absent"
+        ? "AGENTS.md: 없음"
+        : agent.agentsFile === "managed"
+          ? "AGENTS.md: 관리 블록 있음"
+          : agent.agentsFile === "conflict"
+            ? "AGENTS.md: 기존 검색 지시 있음 (자동 통합 안 함)"
+            : "AGENTS.md: 기존 파일 있음";
+    const wrapper = agent.wrapper ? "래퍼: 설치됨" : "래퍼: 없음";
+    const skill =
+      agent.skill === "absent"
+        ? "스킬: 없음"
+        : agent.skill === "managed"
+          ? "스킬: 관리됨"
+          : "스킬: 기존 파일";
+    return `현재 상태 — ${agents} / ${wrapper} / ${skill}`;
   }
 
   private positiveNumber(value: string, fallback: number): number {
-    const parsed = Number(value); return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
 
   private nonnegativeNumber(value: string, fallback: number): number {
-    const parsed = Number(value); return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
   }
 
   private showError(error: unknown): void {
-    new Notice(`Vault Search 오류: ${error instanceof Error ? error.message : String(error)}`, 8000);
+    new Notice(
+      `Vault Search 오류: ${error instanceof Error ? error.message : String(error)}`,
+      8000,
+    );
     this.display();
   }
 }

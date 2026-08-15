@@ -1,6 +1,6 @@
 {
   "name": "obsidian-vault-search",
-  "version": "0.1.1",
+  "version": "0.1.9",
   "private": true,
   "description": "Plugin-managed local hybrid search service for Obsidian vaults",
   "main": "main.js",
@@ -10,7 +10,9 @@
     "test": "vitest run"
   },
   "devDependencies": {
+    "@types/adm-zip": "^0.5.8",
     "@types/node": "^24.0.0",
+    "adm-zip": "^0.5.16",
     "builtin-modules": "^4.0.0",
     "esbuild": "^0.25.0",
     "obsidian": "latest",

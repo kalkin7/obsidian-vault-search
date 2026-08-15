@@ -2,14 +2,45 @@
 
 Portable settings are stored in plugin `data.json`. The Python executable is machine-local and stored in `%LOCALAPPDATA%/ObsidianVaultSearch/vaults/<vault-id>/machine.json`.
 
-- Search top-k, RRF, `maxChunksPerFile`, `titleRrfWeight`, and `prefixFallback` changes are hot-applied.
+## Runtime selection (P1)
+
+- The plugin inspects candidate Pythons with the plugin-side backend on
+  `PYTHONPATH`. CUDA capability is judged by **onnxruntime providers**
+  (`CUDAExecutionProvider` / `TensorrtExecutionProvider`), not torch alone — a
+  CUDA torch with a CPU-only onnxruntime is not selected as a GPU runtime.
+- The selected executable is **resolved to its real interpreter path
+  (`sys.executable`)** and persisted to `machine.json`, so the choice survives
+  restarts instead of being re-derived from the default (`python`) every time.
+- Bare command names (e.g. `python`) are still accepted: the wrapper resolves
+  them via `Get-Command` and the CLI via `shutil.which`.
+
+## Agent integration (P2-1)
+
+Settings tab → **에이전트 통합** installs, on explicit user action, a search
+wrapper, a marker-guarded `AGENTS.md` section, and a skill. It never runs
+automatically and never overwrites user-authored search guidance. See
+[Agent integration](agent-integration.md).
+
+## Settings
+
+- `loadPolicy` defaults are engine-aware: `first-search` for `engine=onnx` (fast cold start), `vault-open` for `engine=pytorch` (slow cold start). The default applies only when the setting is not explicitly chosen; changing the engine also updates the load policy while it is still at the previous engine's default.
+
+- Search top-k, RRF, `maxChunksPerFile`, `titleRrfWeight`, `prefixFallback`, and
+  `wikiFolders` changes are hot-applied — including to a live backend whose
+  model is not loaded yet (lazy sidecar): `apply_search_config` is accepted in
+  any live state, not only `ready`.
+- `wikiFolders` (default `5_Wiki/issues`, `5_Wiki/entities`, `5_Wiki/decisions`)
+  selects which vault-relative folders count as wiki pages whose `sources:`
+  frontmatter feeds timeline/relation search expansion. An **empty list disables
+  expansion** (no 5_Wiki layout needed). Changing it never triggers a rebuild.
 - `maxChunksPerFile` defaults to 1 to maximize distinct-file coverage for agent retrieval.
 - `titleRrfWeight` is the independent title retrieval channel weight; 0 disables the channel so only body/vector candidates remain.
 - `prefixFallback` retries FTS5 with token prefixes only when exact BM25 returns no results.
 - Include/exclude changes are hot-applied and reconciled.
 - Model, device, engine, provider, prefixes, and normalization trigger an atomic vector rebuild.
-- `engine` selects the embedding backend: `pytorch` (default) or `onnx` (direct ONNX Runtime, requires `device=cuda` and the `intfloat/multilingual-e5-base` model).
-- `provider` (used when `engine=onnx`) is `auto` (default), `cuda`, or `tensorrt`. `auto` prefers TensorRT when installed and falls back to the CUDA EP. See [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
+- `engine` selects the embedding backend: `onnx` (default) or `pytorch`. `onnx` is a direct ONNX Runtime path for the `intfloat/multilingual-e5-base` model and runs on CPU or CUDA; see [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
+- `device` is `auto` (default), `cpu`, or `cuda`. With `engine=onnx`, `auto` uses CUDA when a CUDA-capable execution provider exists and CPU otherwise.
+- `provider` (used only when `engine=onnx` and `device=cuda`) is `auto` (default), `cuda`, or `tensorrt`. `auto` prefers TensorRT when installed and falls back to the CUDA EP. The plugin exposes only the provider options the running runtime reports as usable (status `capabilities`). See [ONNX / TensorRT engine](onnx-tensorrt-engine.md).
 - `chunkingStrategy` defaults to `paragraph-v1`, which preserves the original paragraph chunker.
 - `markdown-v2` keeps Markdown headings as embedding breadcrumbs and groups fences, tables, lists, and callouts at atom boundaries.
 - Changing the chunking strategy, chunk size, or overlap triggers an atomic complete rebuild.

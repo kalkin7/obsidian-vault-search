@@ -1,9 +1,9 @@
 {
   "id": "obsidian-vault-search",
   "name": "Vault Search Service",
-  "version": "0.1.1",
+  "version": "0.1.9",
   "minAppVersion": "1.7.0",
-  "description": "Loads a local hybrid-search model only while this vault is open and exposes it to CLI tools.",
+  "description": "Runs a local hybrid-search backend for the vault and exposes it to CLI tools; a CLI can also start a standalone service when Obsidian is closed.",
   "author": "K_Notes",
   "isDesktopOnly": true
 }

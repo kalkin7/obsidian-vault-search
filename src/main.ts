@@ -1,9 +1,22 @@
 import { FileSystemAdapter, Notice, Plugin, TFile } from "obsidian";
 import * as path from "path";
+import {
+  agentIntegrationNotice,
+  agentIntegrationStatus,
+  installAgentIntegration,
+  type AgentIntegrationResult,
+  type AgentIntegrationStatus,
+} from "./agent-integration";
 import { BackendManager } from "./backend-manager";
 import { DEFAULT_SETTINGS } from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
-import { cloneSettings, hotConfig, settingsImpact } from "./settings";
+import {
+  cloneSettings,
+  defaultLoadPolicy,
+  hotConfig,
+  migrateSettings,
+  settingsImpact,
+} from "./settings";
 import type { BackendStatus, VaultSearchSettings } from "./types";
 import { VaultEventQueue } from "./vault-event-queue";
 import { VaultSearchModal } from "./search-modal";
@@ -24,72 +37,121 @@ export default class VaultSearchPlugin extends Plugin {
   private runtimeChangePromise: Promise<void> | null = null;
   runtimeSummary = "런타임: 확인 전";
   runtimeWarning: string | null = null;
+  /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
+  agentIntegration: AgentIntegrationStatus | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
-      new Notice("Vault Search Service는 데스크톱 파일시스템 볼트만 지원합니다.");
+      new Notice(
+        "Vault Search Service는 데스크톱 파일시스템 볼트만 지원합니다.",
+      );
       return;
     }
     const vaultPath = adapter.getBasePath();
-    const pluginDir = path.join(vaultPath, this.app.vault.configDir, "plugins", this.manifest.id);
-    this.backend = new BackendManager(vaultPath, pluginDir, () => this.settings,
-      status => this.handleStatus(status));
+    const pluginDir = path.join(
+      vaultPath,
+      this.app.vault.configDir,
+      "plugins",
+      this.manifest.id,
+    );
+    this.backend = new BackendManager(
+      vaultPath,
+      pluginDir,
+      () => this.settings,
+      (status) => this.handleStatus(status),
+      this.manifest.version,
+    );
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
     this.draftSettings = cloneSettings(this.settings);
-    this.queue = new VaultEventQueue(() => this.settings.syncDebounceMs,
+    this.queue = new VaultEventQueue(
+      () => this.settings.syncDebounceMs,
       async (changed, deleted) => {
         if (!this.settings.autoSync) return true;
         if (!this.isReady()) return false;
         await this.backend.call("sync_paths", { changed, deleted }, 120_000);
         return true;
-      });
+      },
+    );
 
-    this.registerEvent(this.app.vault.on("create", file => {
-      if (file instanceof TFile) this.queue.markChanged(file.path);
-    }));
-    this.registerEvent(this.app.vault.on("modify", file => {
-      if (file instanceof TFile) this.queue.markChanged(file.path);
-    }));
-    this.registerEvent(this.app.vault.on("delete", file => {
-      if (file instanceof TFile) this.queue.markDeleted(file.path);
-    }));
-    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
-      if (file instanceof TFile) {
-        this.queue.markDeleted(oldPath);
-        this.queue.markChanged(file.path);
-      }
-    }));
+    this.registerEvent(
+      this.app.vault.on("create", (file) => {
+        if (file instanceof TFile) this.queue.markChanged(file.path);
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("modify", (file) => {
+        if (file instanceof TFile) this.queue.markChanged(file.path);
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("delete", (file) => {
+        if (file instanceof TFile) this.queue.markDeleted(file.path);
+      }),
+    );
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        if (file instanceof TFile) {
+          this.queue.markDeleted(oldPath);
+          this.queue.markChanged(file.path);
+        }
+      }),
+    );
 
     this.settingTab = new VaultSearchSettingTab(this);
     this.addSettingTab(this.settingTab);
     this.registerCommands();
+    void this.refreshAgentIntegration();
 
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.loadPolicy === "vault-open") {
-        void this.startBackend().catch(error =>
-          new Notice(`Vault Search 시작 실패: ${this.errorMessage(error)}`, 10000));
+        void this.startBackend().catch(
+          (error) =>
+            new Notice(
+              `Vault Search 시작 실패: ${this.errorMessage(error)}`,
+              10000,
+            ),
+        );
       } else if (this.settings.loadPolicy === "first-search") {
-        void this.startLazyBackend().catch(error =>
-          new Notice(`Vault Search 대기 서비스 시작 실패: ${this.errorMessage(error)}`, 10000));
+        void this.startLazyBackend().catch(
+          (error) =>
+            new Notice(
+              `Vault Search 대기 서비스 시작 실패: ${this.errorMessage(error)}`,
+              10000,
+            ),
+        );
       }
     });
   }
 
   onunload(): void {
     this.queue?.clear();
-    if (this.backend) void this.backend.stop();
+    // Plugin unload must not kill a standalone daemon started by the CLI; it
+    // only detaches from it (heartbeat stops, process survives).
+    if (this.backend) void this.backend.stop(true);
   }
 
   async loadSettings(): Promise<void> {
-    const loaded = await this.loadData() as Partial<VaultSearchSettings> | null;
+    const loaded =
+      (await this.loadData()) as Partial<VaultSearchSettings> | null;
     this.settings = { ...DEFAULT_SETTINGS, ...(loaded || {}) };
-    this.settings.includeGlobs = loaded?.includeGlobs || [...DEFAULT_SETTINGS.includeGlobs];
-    this.settings.excludeGlobs = loaded?.excludeGlobs || [...DEFAULT_SETTINGS.excludeGlobs];
+    this.settings.includeGlobs = loaded?.includeGlobs || [
+      ...DEFAULT_SETTINGS.includeGlobs,
+    ];
+    this.settings.excludeGlobs = loaded?.excludeGlobs || [
+      ...DEFAULT_SETTINGS.excludeGlobs,
+    ];
+    const migrated = migrateSettings(this.settings);
+    if (loaded?.loadPolicy === undefined) {
+      this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
+    }
     this.draftSettings = cloneSettings(this.settings);
+    if (migrated || loaded?.loadPolicy === undefined) {
+      await this.saveSettings();
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -106,18 +168,23 @@ export default class VaultSearchPlugin extends Plugin {
   async applyDraftSettings(): Promise<void> {
     if (this.runtimeChangePromise) return this.runtimeChangePromise;
     this.runtimeChangePromise = this.applyDraftSettingsInternal();
-    try { await this.runtimeChangePromise; }
-    finally { this.runtimeChangePromise = null; }
+    try {
+      await this.runtimeChangePromise;
+    } finally {
+      this.runtimeChangePromise = null;
+    }
   }
 
   private async applyDraftSettingsInternal(): Promise<void> {
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
-    if (next.engine === "onnx") next.device = "cuda";
     const impact = settingsImpact(previous, next);
     if (impact === "none") return;
-    if (previous.device !== next.device || previous.engine !== next.engine ||
-        previous.pythonExecutable !== next.pythonExecutable) {
+    if (
+      previous.device !== next.device ||
+      previous.engine !== next.engine ||
+      previous.pythonExecutable !== next.pythonExecutable
+    ) {
       await this.prepareRuntime(next, true);
     }
     const previousWasRunning = this.backend.status.state !== "stopped";
@@ -129,25 +196,40 @@ export default class VaultSearchPlugin extends Plugin {
         await this.saveSettings();
         await this.backend.start(false);
         await this.backend.waitUntilReady();
-        if (impact === "all") await this.backend.call("rebuild_all", {}, 3_600_000);
-        if (impact === "vectors") await this.backend.call("rebuild_vectors", {}, 3_600_000);
-        if (!previousWasRunning && this.settings.loadPolicy === "manual") await this.backend.stop();
+        if (impact === "all")
+          await this.backend.call("rebuild_all", {}, 3_600_000);
+        if (impact === "vectors")
+          await this.backend.call("rebuild_vectors", {}, 3_600_000);
+        if (!previousWasRunning && this.settings.loadPolicy === "manual")
+          await this.backend.stop();
       } else {
         this.settings = next;
         await this.saveSettings();
-        if (this.isReady()) {
+        // Hot settings must reach a live backend even before the model loads
+        // (lazy sidecar): the service applies them without the model. Scope
+        // changes additionally need a ready index to reconcile.
+        if (this.backend.status.state !== "stopped") {
           await this.backend.call("apply_search_config", hotConfig(next));
-          if (impact === "scope") await this.backend.call("reconcile", { mode: "fast" }, 600_000);
+          if (impact === "scope" && this.isReady())
+            await this.backend.call("reconcile", { mode: "fast" }, 600_000);
         }
       }
       this.draftSettings = cloneSettings(this.settings);
-      new Notice(impact === "all" ? "설정을 적용하고 전체 인덱스를 재구축했습니다."
-        : impact === "vectors" ? "설정을 적용하고 벡터 인덱스를 재구축했습니다."
-        : "Vault Search 설정을 적용했습니다.");
+      new Notice(
+        impact === "all"
+          ? "설정을 적용하고 전체 인덱스를 재구축했습니다."
+          : impact === "vectors"
+            ? "설정을 적용하고 벡터 인덱스를 재구축했습니다."
+            : "Vault Search 설정을 적용했습니다.",
+      );
     } catch (error) {
       await this.backend.stop().catch(() => undefined);
       this.settings = previous;
-      this.draftSettings = cloneSettings(previous);
+      // Keep the user's attempted draft so a failed apply does not silently
+      // revert their device/provider choice in the UI — otherwise the change
+      // appears to "reset to auto" after a restart. They can retry 적용 or
+      // revert with 변경 취소.
+      this.draftSettings = next;
       await this.saveSettings();
       if (previousWasRunning) {
         await this.backend.start(false);
@@ -170,21 +252,49 @@ export default class VaultSearchPlugin extends Plugin {
   async installCudaRuntime(): Promise<void> {
     if (this.runtimeChangePromise) return this.runtimeChangePromise;
     this.runtimeChangePromise = this.installCudaRuntimeInternal();
-    try { await this.runtimeChangePromise; }
-    finally { this.runtimeChangePromise = null; }
+    try {
+      await this.runtimeChangePromise;
+    } finally {
+      this.runtimeChangePromise = null;
+    }
   }
 
   private async installCudaRuntimeInternal(): Promise<void> {
-    if (!await this.backend.hasNvidiaGpu()) {
+    if (!(await this.backend.hasNvidiaGpu())) {
       throw new Error("NVIDIA GPU 또는 드라이버를 찾을 수 없습니다.");
     }
-    if (!await confirmRuntimeInstall(this.app, true)) return;
-    const current = await this.backend.inspectPython(this.settings.pythonExecutable);
+    // Do not reinstall when a CUDA runtime is already usable: setup-runtime.ps1
+    // is a multi-GB download, so pressing the button must not blindly re-run it.
+    const current = await this.backend.inspectPython(
+      this.settings.pythonExecutable,
+    );
+    const cuda = await this.backend.managedRuntime("cuda");
+    if (current?.cudaAvailable || cuda?.cudaAvailable) {
+      new Notice(
+        current?.cudaAvailable
+          ? "현재 런타임이 이미 CUDA를 사용 중입니다."
+          : "설치된 CUDA 런타임이 이미 사용 가능합니다.",
+        8000,
+      );
+      this.settingTab?.display();
+      return;
+    }
+    if (!(await confirmRuntimeInstall(this.app, true))) return;
     const cpu = await this.backend.managedRuntime("cpu");
-    const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
-    new Notice("CUDA 런타임을 설치하고 있습니다. 수 분 이상 걸릴 수 있습니다.", 10000);
-    const installed = await this.backend.installManagedRuntime("cuda", basePython,
-      text => { if (text) this.runtimeSummary = `CUDA 설치 중: ${text.split(/\r?\n/).at(-1)}`; });
+    const basePython =
+      current?.baseExecutable || cpu?.baseExecutable || "python";
+    new Notice(
+      "CUDA 런타임을 설치하고 있습니다. 수 분 이상 걸릴 수 있습니다.",
+      10000,
+    );
+    const installed = await this.backend.installManagedRuntime(
+      "cuda",
+      basePython,
+      (text) => {
+        if (text)
+          this.runtimeSummary = `CUDA 설치 중: ${text.split(/\r?\n/).at(-1)}`;
+      },
+    );
     this.runtimeSummary = `런타임: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`;
     this.runtimeWarning = null;
     if (this.settings.device === "cpu") {
@@ -192,7 +302,10 @@ export default class VaultSearchPlugin extends Plugin {
       this.runtimeSummary = active
         ? `런타임: CPU / PyTorch ${active.torchVersion} (CUDA 런타임 설치됨)`
         : "런타임: CPU (CUDA 런타임 설치됨)";
-      new Notice("CUDA 런타임을 설치했습니다. 현재 CPU 명시 설정은 유지됩니다.", 10000);
+      new Notice(
+        "CUDA 런타임을 설치했습니다. 현재 CPU 명시 설정은 유지됩니다.",
+        10000,
+      );
       this.settingTab?.display();
       return;
     }
@@ -232,10 +345,39 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async ensureSearchStarted(): Promise<void> {
-    if (this.backend.status.state === "stopped" || this.backend.status.state === "error") {
+    if (
+      this.backend.status.state === "stopped" ||
+      this.backend.status.state === "error"
+    ) {
       await this.prepareRuntime(this.settings, false);
     }
     await this.backend.ensureStarted();
+  }
+
+  async provisionOnnx(): Promise<void> {
+    if (this.backend.status.state === "stopped") {
+      await this.prepareRuntime(this.settings, false);
+      await this.backend.start(false);
+      try {
+        await this.backend.waitUntilAvailable();
+      } catch {
+        /* sidecar may be in error state until the derived graph exists */
+      }
+    }
+    const result = await this.backend.call<{
+      provisioned: boolean;
+      path?: string;
+    }>("provision_onnx", {}, 600_000);
+    if (!result.provisioned) throw new Error("ONNX 파생 모델 생성 실패");
+    new Notice("ONNX 파생 모델을 생성했습니다. 서비스를 재시작합니다.", 8000);
+    await this.restartBackend();
+  }
+
+  async provisionBackend(): Promise<void> {
+    await this.backend.stop();
+    await this.backend.ensureBackendProvisioned({ force: true });
+    new Notice("Python 백엔드를 설치했습니다. 서비스를 재시작합니다.", 8000);
+    await this.restartBackend();
   }
 
   async stopBackend(): Promise<void> {
@@ -243,7 +385,6 @@ export default class VaultSearchPlugin extends Plugin {
     await this.backend.stop();
     this.settingTab?.display();
   }
-
   async restartBackend(): Promise<void> {
     this.startupPrepared = false;
     await this.prepareRuntime(this.settings, false);
@@ -260,43 +401,133 @@ export default class VaultSearchPlugin extends Plugin {
 
   async reconcile(mode: "fast" | "strict" = "strict"): Promise<void> {
     await this.ensureSearchStarted();
-    const result = await this.backend.call<Record<string, unknown>>("reconcile", { mode }, 600_000);
-    new Notice(result.rebuild_required ? `재구축 필요: ${result.reason}` : "인덱스 증분 대조를 완료했습니다.", 8000);
+    const result = await this.backend.call<Record<string, unknown>>(
+      "reconcile",
+      { mode },
+      600_000,
+    );
+    new Notice(
+      result.rebuild_required
+        ? `재구축 필요: ${result.reason}`
+        : "인덱스 증분 대조를 완료했습니다.",
+      8000,
+    );
     this.settingTab?.display();
   }
 
   async rebuildAll(): Promise<void> {
     await this.ensureSearchStarted();
     new Notice("전체 인덱스 재구축을 시작합니다. 백그라운드에서 진행됩니다.");
-    const result = await this.backend.call<{ files: number; chunks: number }>("rebuild_all", {}, 3_600_000);
-    new Notice(`전체 재구축 완료: 파일 ${result.files}개, 청크 ${result.chunks}개`, 10000);
+    const result = await this.backend.call<{ files: number; chunks: number }>(
+      "rebuild_all",
+      {},
+      3_600_000,
+    );
+    new Notice(
+      `전체 재구축 완료: 파일 ${result.files}개, 청크 ${result.chunks}개`,
+      10000,
+    );
     this.settingTab?.display();
   }
 
   async rebuildVectors(): Promise<void> {
     await this.ensureSearchStarted();
     new Notice("벡터 인덱스 재구축을 시작합니다.");
-    const result = await this.backend.call<{ chunks: number }>("rebuild_vectors", {}, 3_600_000);
+    const result = await this.backend.call<{ chunks: number }>(
+      "rebuild_vectors",
+      {},
+      3_600_000,
+    );
     new Notice(`벡터 재구축 완료: 청크 ${result.chunks}개`, 10000);
     this.settingTab?.display();
   }
 
   private registerCommands(): void {
-    this.addCommand({ id: "open-search", name: "Open search", callback: () => this.openSearch() });
+    this.addCommand({
+      id: "open-search",
+      name: "Open search",
+      callback: () => this.openSearch(),
+    });
     this.addCommand({
       id: "search-selected-text",
       name: "Search selected text",
-      editorCallback: editor => this.openSearch(selectedTextQuery(editor))
+      editorCallback: (editor) => this.openSearch(selectedTextQuery(editor)),
     });
-    this.addCommand({ id: "start-service", name: "Start search service", callback: () => void this.startBackend() });
-    this.addCommand({ id: "stop-service", name: "Stop search service", callback: () => void this.stopBackend() });
-    this.addCommand({ id: "restart-service", name: "Restart search service", callback: () => void this.restartBackend() });
-    this.addCommand({ id: "reconcile-index", name: "Reconcile search index", callback: () => void this.reconcile() });
-    this.addCommand({ id: "rebuild-index", name: "Rebuild complete search index", callback: () => void this.rebuildAll() });
-    this.addCommand({ id: "rebuild-vectors", name: "Rebuild vector index", callback: () => void this.rebuildVectors() });
+    this.addCommand({
+      id: "start-service",
+      name: "Start search service",
+      callback: () => void this.startBackend(),
+    });
+    this.addCommand({
+      id: "stop-service",
+      name: "Stop search service",
+      callback: () => void this.stopBackend(),
+    });
+    this.addCommand({
+      id: "restart-service",
+      name: "Restart search service",
+      callback: () => void this.restartBackend(),
+    });
+    this.addCommand({
+      id: "reconcile-index",
+      name: "Reconcile search index",
+      callback: () => void this.reconcile(),
+    });
+    this.addCommand({
+      id: "rebuild-index",
+      name: "Rebuild complete search index",
+      callback: () => void this.rebuildAll(),
+    });
+    this.addCommand({
+      id: "rebuild-vectors",
+      name: "Rebuild vector index",
+      callback: () => void this.rebuildVectors(),
+    });
+    this.addCommand({
+      id: "install-agent-integration",
+      name: "Install agent integration (AGENTS.md + wrapper + skill)",
+      callback: () => {
+        void this.runAgentIntegrationInstall()
+          .then((result) => {
+            new Notice(agentIntegrationNotice(result), 8000);
+            this.settingTab?.display();
+          })
+          .catch(
+            (error) =>
+              new Notice(
+                `Vault Search 오류: ${this.errorMessage(error)}`,
+                8000,
+              ),
+          );
+      },
+    });
   }
 
-  private async prepareRuntime(target: VaultSearchSettings, interactive: boolean): Promise<void> {
+  async refreshAgentIntegration(): Promise<void> {
+    this.agentIntegration = await agentIntegrationStatus(
+      this.backend.vaultPath,
+      this.backend.pluginDir,
+    );
+    this.settingTab?.display();
+  }
+
+  async runAgentIntegrationInstall(): Promise<AgentIntegrationResult> {
+    const result = await installAgentIntegration(
+      this.backend.vaultPath,
+      this.backend.pluginDir,
+    );
+    await this.refreshAgentIntegration();
+    return result;
+  }
+
+  private async prepareRuntime(
+    target: VaultSearchSettings,
+    interactive: boolean,
+  ): Promise<void> {
+    // Ensure the plugin-side backend matches the manifest before inspecting it:
+    // inspectPython resolves vault_search via the backend folder, so a stale
+    // (or not-yet-provisioned) folder would be read and every runtime rejected.
+    await this.backend.ensureBackendProvisioned();
     const current = await this.backend.inspectPython(target.pythonExecutable);
     const cpu = await this.backend.managedRuntime("cpu");
     const cuda = await this.backend.managedRuntime("cuda");
@@ -305,44 +536,75 @@ export default class VaultSearchPlugin extends Plugin {
       this.runtimeSummary = summary;
       this.runtimeWarning = null;
     };
+    // Persist the resolved python to machine.json so the selection survives
+    // restarts. Without this, every vault open re-derives the runtime from the
+    // machine.json default ("python") and can pick a different python than the
+    // previous session, which makes GPU/CPU behavior flip between restarts.
+    const persist = () =>
+      this.backend.writeMachinePython(target.pythonExecutable);
 
     const hasGpu = await this.backend.hasNvidiaGpu();
     const selection = selectRuntime(target.device, current, cpu, cuda, hasGpu);
     if (selection.kind === "error") throw new Error(selection.message);
     if (selection.kind === "selected") {
       const selected = selection.runtime;
-      choose(selected.pythonExecutable, selected.cudaAvailable
-        ? `런타임: CUDA ${selected.cudaBuild || ""} / ${selected.deviceName || "GPU"}`
-        : `런타임: CPU / PyTorch ${selected.torchVersion}`);
+      choose(
+        selected.pythonExecutable,
+        selected.cudaAvailable
+          ? `런타임: CUDA ${selected.cudaBuild || ""} / ${selected.deviceName || "GPU"}`
+          : `런타임: CPU / PyTorch ${selected.torchVersion}`,
+      );
+      await persist();
       return;
     }
     if (selection.kind === "cpu-fallback" && !interactive) {
       target.pythonExecutable = selection.runtime.pythonExecutable;
       this.runtimeSummary = `런타임: CPU / PyTorch ${selection.runtime.torchVersion}`;
       this.runtimeWarning = selection.warning;
+      await persist();
       return;
     }
 
-    const install = interactive && await confirmRuntimeInstall(this.app, target.device === "cuda");
+    const install =
+      interactive &&
+      (await confirmRuntimeInstall(this.app, target.device === "cuda"));
     if (!install) {
-      if (target.device === "cuda") throw new Error(interactive
-        ? "CUDA 런타임 설치가 취소되어 설정을 적용하지 않았습니다."
-        : "CUDA 런타임이 없습니다. 설정에서 CUDA 런타임을 먼저 설치해 주세요.");
-      const selected = selection.kind === "cpu-fallback" ? selection.runtime : cpu || current;
+      if (target.device === "cuda")
+        throw new Error(
+          interactive
+            ? "CUDA 런타임 설치가 취소되어 설정을 적용하지 않았습니다."
+            : "CUDA 런타임이 없습니다. 설정에서 CUDA 런타임을 먼저 설치해 주세요.",
+        );
+      const selected =
+        selection.kind === "cpu-fallback" ? selection.runtime : cpu || current;
       if (!selected) throw new Error("사용 가능한 CPU 검색 런타임이 없습니다.");
       target.pythonExecutable = selected.pythonExecutable;
       this.runtimeSummary = `런타임: CPU / PyTorch ${selected.torchVersion}`;
-      this.runtimeWarning = "NVIDIA GPU가 감지됐지만 CUDA 런타임이 설치되지 않아 CPU를 사용합니다.";
+      this.runtimeWarning =
+        "NVIDIA GPU가 감지됐지만 CUDA 런타임이 설치되지 않아 CPU를 사용합니다.";
+      await persist();
       return;
     }
 
-    const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
+    const basePython =
+      current?.baseExecutable || cpu?.baseExecutable || "python";
     try {
-      new Notice("CUDA 런타임을 설치하고 있습니다. 수 분 이상 걸릴 수 있습니다.", 10000);
-      const installed = await this.backend.installManagedRuntime("cuda", basePython,
-        text => { if (text) this.runtimeSummary = `CUDA 설치 중: ${text.split(/\r?\n/).at(-1)}`; });
-      choose(installed.pythonExecutable,
-        `런타임: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`);
+      new Notice(
+        "CUDA 런타임을 설치하고 있습니다. 수 분 이상 걸릴 수 있습니다.",
+        10000,
+      );
+      const installed = await this.backend.installManagedRuntime(
+        "cuda",
+        basePython,
+        (text) => {
+          if (text)
+            this.runtimeSummary = `CUDA 설치 중: ${text.split(/\r?\n/).at(-1)}`;
+        },
+      );
+      choose(
+        installed.pythonExecutable,
+        `런타임: CUDA ${installed.cudaBuild || ""} / ${installed.deviceName || "GPU"}`,
+      );
     } catch (error) {
       if (target.device === "cuda") throw error;
       const selected = cpu || current;
@@ -351,6 +613,7 @@ export default class VaultSearchPlugin extends Plugin {
       this.runtimeSummary = `런타임: CPU / PyTorch ${selected.torchVersion}`;
       this.runtimeWarning = `CUDA 런타임 설치 실패로 CPU를 사용합니다: ${this.errorMessage(error)}`;
     }
+    await persist();
   }
 
   private handleStatus(status: BackendStatus): void {
@@ -363,15 +626,27 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   private async completeStartup(): Promise<void> {
-    if (this.startupPrepared || this.startupInProgress || !this.isReady()) return;
+    if (this.startupPrepared || this.startupInProgress || !this.isReady())
+      return;
     this.startupInProgress = true;
     try {
       this.queue?.clear();
       if (this.settings.startupReconcile) {
         const result = await this.backend.call<Record<string, unknown>>(
-          "reconcile", { mode: "fast" }, 600_000);
+          "reconcile",
+          { mode: "fast" },
+          600_000,
+        );
         if (result.rebuild_required) {
-          new Notice("Vault Search 인덱스가 없습니다. 설정에서 전체 재구축을 실행하세요.", 8000);
+          const status = this.backend.status;
+          const action =
+            status.recommended_action === "rebuild_vectors"
+              ? "벡터 재구축"
+              : "전체 재구축";
+          new Notice(
+            `Vault Search 인덱스에 호환성 문제가 있습니다. 설정에서 ${action}을 실행하세요.`,
+            8000,
+          );
         }
       }
       this.startupPrepared = true;
@@ -404,15 +679,17 @@ export default class VaultSearchPlugin extends Plugin {
     }
     await this.app.workspace.getLeaf(false).openFile(file, {
       active: true,
-      eState: { line: location.line - 1 }
+      eState: { line: location.line - 1 },
     });
     this.searchModal?.close();
   }
 
   openSearchSettings(): void {
-    const setting = (this.app as typeof this.app & {
-      setting: { open(): void; openTabById(id: string): void };
-    }).setting;
+    const setting = (
+      this.app as typeof this.app & {
+        setting: { open(): void; openTabById(id: string): void };
+      }
+    ).setting;
     setting.open();
     setting.openTabById(this.manifest.id);
   }

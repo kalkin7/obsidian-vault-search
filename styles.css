@@ -1,112 +1,140 @@
 .vault-search-status {
-  padding: 8px 10px;
-  margin-bottom: 12px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-secondary);
-  white-space: pre-wrap;
+ padding: 8px 10px;
+ margin-bottom: 12px;
+ border: 1px solid var(--background-modifier-border);
+ border-radius: 6px;
+ background: var(--background-secondary);
+ white-space: pre-wrap;
+}
+
+.vault-search-setting-hint {
+ margin: -8px 0 16px;
+ padding: 8px 10px;
+ border-left: 3px solid var(--interactive-accent);
+ border-radius: 0 6px 6px 0;
+ background: var(--background-secondary);
+ color: var(--text-muted);
+ font-size: var(--font-ui-small);
+ line-height: 1.6;
+ white-space: pre-wrap;
+}
+
+/* Multi-number input rows (chunk size/overlap, BM25/vector/final/RRF k,
+ * diversity/weight). Obsidian's default text inputs (~160px each) overflow the
+ * control column when several are placed on one row; the flex layout then
+ * squashes .setting-item-info (min-width: 0) to zero width, wrapping its
+ * description one character per line and inflating the card height. Constrain
+ * the inputs so every row right-aligns like single-control rows. */
+.setting-item.vault-search-num-inputs .setting-item-control {
+ flex-wrap: wrap;
+}
+
+.setting-item.vault-search-num-inputs .setting-item-control input[type="text"] {
+ width: 80px;
+ min-width: 0;
+ flex: 0 1 80px;
 }
 
 .vault-search-error {
-  color: var(--text-error);
+ color: var(--text-error);
 }
 
 .vault-search-modal .modal-content {
-  padding-top: var(--size-4-4);
+ padding-top: var(--size-4-4);
 }
 
 .vault-search-modal h2 {
-  margin: 0 0 var(--size-4-3);
+ margin: 0 0 var(--size-4-3);
 }
 
 .vault-search-input {
-  width: 100%;
-  font-size: var(--font-ui-medium);
+ width: 100%;
+ font-size: var(--font-ui-medium);
 }
 
 .vault-search-modal-status {
-  min-height: 28px;
-  padding: var(--size-4-2) 2px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
+ min-height: 28px;
+ padding: var(--size-4-2) 2px;
+ color: var(--text-muted);
+ font-size: var(--font-ui-smaller);
 }
 
 .vault-search-results {
-  max-height: min(62vh, 620px);
-  overflow-y: auto;
-  border-top: 1px solid var(--background-modifier-border);
+ max-height: min(62vh, 620px);
+ overflow-y: auto;
+ border-top: 1px solid var(--background-modifier-border);
 }
 
 .vault-search-result {
-  display: block;
-  width: 100%;
-  padding: var(--size-4-3) var(--size-4-2);
-  border: 0;
-  border-bottom: 1px solid var(--background-modifier-border);
-  border-radius: 0;
-  background: transparent;
-  color: var(--text-normal);
-  text-align: left;
-  box-shadow: none;
+ display: block;
+ width: 100%;
+ padding: var(--size-4-3) var(--size-4-2);
+ border: 0;
+ border-bottom: 1px solid var(--background-modifier-border);
+ border-radius: 0;
+ background: transparent;
+ color: var(--text-normal);
+ text-align: left;
+ box-shadow: none;
 }
 
 .vault-search-result:hover,
 .vault-search-result:focus-visible {
-  background: var(--background-modifier-hover);
+ background: var(--background-modifier-hover);
 }
 
 .vault-search-result-header {
-  display: flex;
-  gap: var(--size-4-2);
-  align-items: center;
+ display: flex;
+ gap: var(--size-4-2);
+ align-items: center;
 }
 
 .vault-search-result-file {
-  overflow: hidden;
-  font-weight: var(--font-semibold);
-  text-overflow: ellipsis;
-  white-space: nowrap;
+ overflow: hidden;
+ font-weight: var(--font-semibold);
+ text-overflow: ellipsis;
+ white-space: nowrap;
 }
 
 .vault-search-result-badges {
-  display: flex;
-  gap: 4px;
-  margin-left: auto;
+ display: flex;
+ gap: 4px;
+ margin-left: auto;
 }
 
 .vault-search-channel {
-  padding: 1px 5px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: var(--radius-s);
-  color: var(--text-muted);
-  font-size: var(--font-ui-smallest);
-  font-weight: var(--font-medium);
+ padding: 1px 5px;
+ border: 1px solid var(--background-modifier-border);
+ border-radius: var(--radius-s);
+ color: var(--text-muted);
+ font-size: var(--font-ui-smallest);
+ font-weight: var(--font-medium);
 }
 
 .vault-search-result-heading {
-  margin-top: 3px;
-  color: var(--text-accent);
-  font-size: var(--font-ui-smaller);
+ margin-top: 3px;
+ color: var(--text-accent);
+ font-size: var(--font-ui-smaller);
 }
 
 .vault-search-result-snippet {
-  display: -webkit-box;
-  margin-top: var(--size-4-1);
-  overflow: hidden;
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-  line-height: var(--line-height-normal);
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+ display: -webkit-box;
+ margin-top: var(--size-4-1);
+ overflow: hidden;
+ color: var(--text-muted);
+ font-size: var(--font-ui-small);
+ line-height: var(--line-height-normal);
+ -webkit-box-orient: vertical;
+ -webkit-line-clamp: 3;
 }
 
 .vault-search-empty,
 .vault-search-unavailable {
-  padding: var(--size-4-5) var(--size-4-2);
-  color: var(--text-muted);
-  text-align: center;
+ padding: var(--size-4-5) var(--size-4-2);
+ color: var(--text-muted);
+ text-align: center;
 }
 
 .vault-search-unavailable button {
-  margin-top: var(--size-4-3);
+ margin-top: var(--size-4-3);
 }
