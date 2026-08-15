@@ -2747,9 +2747,8 @@ var AGENTS_MARKER_END = "<!-- vault-search:end -->";
 var SKILL_MARKER = "<!-- vault-search:managed -->";
 var AGENTS_FILE = "AGENTS.md";
 var CLAUDE_FILE = "CLAUDE.md";
-var GEMINI_FILE = "GEMINI.md";
 var WRAPPER_REL = "search.ps1";
-var INSTRUCTION_FILES = [AGENTS_FILE, CLAUDE_FILE, GEMINI_FILE];
+var INSTRUCTION_FILES = [AGENTS_FILE, CLAUDE_FILE];
 var SKILL_TARGETS = [
   [".claude", "skills", "vault-search", "SKILL.md"],
   [".agents", "skills", "vault-search", "SKILL.md"],
@@ -2947,9 +2946,8 @@ async function installSkills(vaultPath) {
 function agentIntegrationNotice(result) {
   const agents = result.agentsFile === "created" ? "AGENTS.md \uC0DD\uC131" : result.agentsFile === "updated" ? "AGENTS.md \uAC31\uC2E0" : result.agentsFile === "conflict" ? "AGENTS.md\uC5D0 \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC5B4 \uAC74\uB108\uB700" : "AGENTS.md \uB3D9\uC77C";
   const claude = result.claudeFile === "created" ? "CLAUDE.md \uC0DD\uC131" : result.claudeFile === "updated" ? "CLAUDE.md \uAC31\uC2E0" : result.claudeFile === "conflict" ? "CLAUDE.md\uC5D0 \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC5B4 \uAC74\uB108\uB700" : "CLAUDE.md \uB3D9\uC77C";
-  const gemini = result.geminiFile === "created" ? "GEMINI.md \uC0DD\uC131" : result.geminiFile === "updated" ? "GEMINI.md \uAC31\uC2E0" : result.geminiFile === "conflict" ? "GEMINI.md\uC5D0 \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC5B4 \uAC74\uB108\uB700" : "GEMINI.md \uB3D9\uC77C";
   const skill = result.skill === "written" ? "\uC2A4\uD0AC \uC124\uCE58" : result.skill === "skipped" ? "\uAE30\uC874 \uC2A4\uD0AC \uC720\uC9C0(\uAC74\uB108\uB700)" : "\uC2A4\uD0AC \uB3D9\uC77C";
-  return `\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569: ${agents} / ${claude} / ${gemini} / \uB798\uD37C ${result.wrapper === "written" ? "\uC124\uCE58" : "\uB3D9\uC77C"} / ${skill} (Claude/Codex/Antigravity/OpenCode)`;
+  return `\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569: ${agents} / ${claude} / \uB798\uD37C ${result.wrapper === "written" ? "\uC124\uCE58" : "\uB3D9\uC77C"} / ${skill} (Claude/Codex/Antigravity/OpenCode)`;
 }
 async function installAgentIntegration(vaultPath, pluginDir) {
   const wrapperPath = path.join(pluginDir, WRAPPER_REL);
@@ -2969,7 +2967,6 @@ async function installAgentIntegration(vaultPath, pluginDir) {
   return {
     agentsFile: fileStatus[AGENTS_FILE] ?? "unchanged",
     claudeFile: fileStatus[CLAUDE_FILE] ?? "unchanged",
-    geminiFile: fileStatus[GEMINI_FILE] ?? "unchanged",
     wrapper,
     skill,
     wrapperPath: path.join(
@@ -2990,7 +2987,6 @@ async function agentIntegrationStatus(vaultPath, pluginDir) {
   };
   const agentsFile = await readFileStatus(AGENTS_FILE);
   const claudeFile = await readFileStatus(CLAUDE_FILE);
-  const geminiFile = await readFileStatus(GEMINI_FILE);
   const wrapper = await readForStatus(path.join(pluginDir, WRAPPER_REL)) !== null;
   const skillContent = await readForStatus(
     path.join(vaultPath, ...SKILL_TARGETS[0])
@@ -2999,7 +2995,7 @@ async function agentIntegrationStatus(vaultPath, pluginDir) {
   const agentsSkill = await readForStatus(
     path.join(vaultPath, ".agents", "skills", "vault-search", "SKILL.md")
   ) !== null;
-  return { agentsFile, claudeFile, geminiFile, wrapper, skill, agentsSkill };
+  return { agentsFile, claudeFile, wrapper, skill, agentsSkill };
 }
 
 // src/backend-manager.ts
@@ -4527,11 +4523,10 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
   agentStatusText(agent) {
     const agents = agent.agentsFile === "absent" ? "AGENTS.md: \uC5C6\uC74C" : agent.agentsFile === "managed" ? "AGENTS.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C" : agent.agentsFile === "conflict" ? "AGENTS.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "AGENTS.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
     const claude = agent.claudeFile === "absent" ? "CLAUDE.md: \uC5C6\uC74C" : agent.claudeFile === "managed" ? "CLAUDE.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C" : agent.claudeFile === "conflict" ? "CLAUDE.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "CLAUDE.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
-    const gemini = agent.geminiFile === "absent" ? "GEMINI.md: \uC5C6\uC74C" : agent.geminiFile === "managed" ? "GEMINI.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C" : agent.geminiFile === "conflict" ? "GEMINI.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "GEMINI.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
     const wrapper = agent.wrapper ? "\uB798\uD37C: \uC124\uCE58\uB428" : "\uB798\uD37C: \uC5C6\uC74C";
     const skill = agent.skill === "absent" ? "\uC2A4\uD0AC(Claude): \uC5C6\uC74C" : agent.skill === "managed" ? "\uC2A4\uD0AC(Claude): \uAD00\uB9AC\uB428" : "\uC2A4\uD0AC(Claude): \uAE30\uC874 \uD30C\uC77C";
     const agentsSkill = agent.agentsSkill ? "\uC2A4\uD0AC(Codex/Antigravity/OpenCode): \uC124\uCE58\uB428" : "\uC2A4\uD0AC(Codex/Antigravity/OpenCode): \uC5C6\uC74C";
-    return `\uD604\uC7AC \uC0C1\uD0DC \u2014 ${agents} / ${claude} / ${gemini} / ${wrapper} / ${skill} / ${agentsSkill}`;
+    return `\uD604\uC7AC \uC0C1\uD0DC \u2014 ${agents} / ${claude} / ${wrapper} / ${skill} / ${agentsSkill}`;
   }
   positiveNumber(value, fallback) {
     const parsed = Number(value);

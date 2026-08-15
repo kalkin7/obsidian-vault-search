@@ -7,10 +7,11 @@ into a vault so agents find and use `vault-search`:
 1. **A search wrapper** (`search.ps1`) in the plugin directory — path
    independent, resolves the vault from its own location.
 2. **A managed `## Vault Search` section** written into each harness's
-   instruction file — `AGENTS.md` (Codex, Antigravity), `CLAUDE.md` (Claude
-   Code, which does not read `AGENTS.md`) and `GEMINI.md` (Antigravity CLI).
-   Every block is a self-contained copy of the same instructions, never an
-   import.
+   instruction file — `AGENTS.md` (Codex, and Antigravity CLI which also
+   reads it) and `CLAUDE.md` (Claude Code, which does not read `AGENTS.md`).
+   `GEMINI.md` is intentionally NOT written: Antigravity already reads
+   `AGENTS.md`, so a third copy would be pure duplication. Every block is a
+   self-contained copy of the same instructions, never an import.
 3. **A skill** (open Agent Skills format: `name` + `description` frontmatter)
    installed into every supported harness's skill directory.
 
@@ -28,9 +29,8 @@ Nothing is written automatically at startup.
 | Artifact | Location | Notes |
 | --- | --- | --- |
 | Wrapper | `<vault>/.obsidian/plugins/obsidian-vault-search/search.ps1` | `$PSScriptRoot/../../..` derives the vault root; no hardcoded paths |
-| AGENTS.md block | `<vault>/AGENTS.md` | Marker-guarded, idempotent; read by Codex and Antigravity |
+| AGENTS.md block | `<vault>/AGENTS.md` | Marker-guarded, idempotent; read by Codex and Antigravity CLI |
 | CLAUDE.md block | `<vault>/CLAUDE.md` | Marker-guarded; for Claude Code (reads `CLAUDE.md`, not `AGENTS.md`) |
-| GEMINI.md block | `<vault>/GEMINI.md` | Marker-guarded; for Antigravity CLI (reads `GEMINI.md` from the workspace root) |
 | Skill (Claude Code) | `<vault>/.claude/skills/vault-search/SKILL.md` | Marker-guarded, never clobbers user skills |
 | Skill (Antigravity / Codex / OpenCode) | `<vault>/.agents/skills/vault-search/SKILL.md` | Universal agent-skills path: Antigravity workspace skills, Codex (scans `.agents/skills` from CWD to repo root; the old `.codex/skills` catalog is deprecated), OpenCode |
 | Skill (OpenCode) | `<vault>/.opencode/skills/vault-search/SKILL.md` | Explicit copy; OpenCode also reads `.claude/skills` and `.agents/skills` |
@@ -74,8 +74,8 @@ The conflict check also applies to content **outside** an existing marker
 block: if a vault later hand-authors search guidance next to our managed block,
 installs abort instead of leaving two instruction sets.
 
-The same rules manage `CLAUDE.md` and `GEMINI.md`: each carries a
-**self-contained copy** of the same vault-search instructions:
+The same rules manage `CLAUDE.md`, which carries a **self-contained copy** of
+the same vault-search instructions:
 
 ```markdown
 <!-- vault-search:start -->
@@ -84,12 +84,11 @@ The same rules manage `CLAUDE.md` and `GEMINI.md`: each carries a
 <!-- vault-search:end -->
 ```
 
-Claude Code reads `CLAUDE.md` (not `AGENTS.md`); Antigravity CLI reads both
-`GEMINI.md` and `AGENTS.md`. The blocks are deliberately NOT `@AGENTS.md`
-imports: an import would pull the entire file — including any user-authored
-content — into that harness's context. Each file carries only the managed
-instructions, so every harness sees exactly the vault-search block and nothing
-else.
+Claude Code reads `CLAUDE.md` (not `AGENTS.md`). The blocks are deliberately
+NOT `@AGENTS.md` imports: an import would pull the entire file — including any
+user-authored content — into that harness's context. Each file carries only
+the managed instructions, so every harness sees exactly the vault-search block
+and nothing else.
 
 ## Skill
 
