@@ -5001,8 +5001,7 @@ var VaultSearchPlugin = class extends import_obsidian5.Plugin {
   }
   async startBackend() {
     await this.prepareRuntime(this.settings, false);
-    await this.backend.start(false);
-    await this.backend.waitUntilReady();
+    await this.backend.ensureStarted();
     await this.completeStartup();
     this.settingTab?.display();
   }

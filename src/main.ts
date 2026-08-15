@@ -243,8 +243,12 @@ export default class VaultSearchPlugin extends Plugin {
 
   async startBackend(): Promise<void> {
     await this.prepareRuntime(this.settings, false);
-    await this.backend.start(false);
-    await this.backend.waitUntilReady();
+    // ensureStarted handles the lazy (first-search) case: if the sidecar is
+    // already running, start() is a no-op and the backend sits in idle waiting
+    // for a search — without loading the model here, waitUntilReady would
+    // spin until its timeout. It waits for availability, loads the model when
+    // idle, then waits for ready.
+    await this.backend.ensureStarted();
     await this.completeStartup();
     this.settingTab?.display();
   }
