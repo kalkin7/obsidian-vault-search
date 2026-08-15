@@ -2,6 +2,7 @@ export type LoadPolicy = "vault-open" | "first-search" | "manual";
 export type DevicePreference = "auto" | "cpu" | "cuda";
 export type EnginePreference = "pytorch" | "onnx";
 export type ProviderPreference = "auto" | "cuda" | "tensorrt";
+export type LLMProviderId = "openai" | "opencode-go" | "deepseek";
 export type ChunkingStrategy = "paragraph-v1" | "markdown-v2";
 export type BackendState =
   | "stopped"
@@ -44,6 +45,11 @@ export interface VaultSearchSettings {
   autoSync: boolean;
   startupReconcile: boolean;
   modelIdleTimeoutSeconds: number;
+  answerProvider: LLMProviderId;
+  answerModel: string;
+  answerMaxContextChars: number;
+  answerMaxOutputTokens: number;
+  answerTimeoutSeconds: number;
   settingsVersion?: number;
 }
 
@@ -130,3 +136,45 @@ export interface SearchResult {
   source?: "wiki_sources";
   linked_from?: string;
 }
+
+export interface Citation {
+  id: string;
+  file_path: string;
+  start_line: number;
+  heading_path: string[];
+  rank: number;
+  score: number;
+}
+
+export interface AnswerEvidence extends Citation {
+  content: string;
+}
+
+export interface AnswerRequest {
+  query: string;
+  top_k?: number;
+  max_context_chars?: number;
+  conversation?: Array<{ role: "user" | "assistant"; content: string }>;
+}
+
+export interface AnswerResult {
+  answer: string;
+  citations: Citation[];
+  evidence: AnswerEvidence[];
+  provider: LLMProviderId;
+  model: string;
+  grounded: boolean;
+  diagnostics: {
+    retrieved_count: number;
+    context_chars: number;
+    answer_chars: number;
+    citation_warning?: string;
+  };
+}
+
+export type AnswerState =
+  | { kind: "idle" }
+  | { kind: "retrieving" }
+  | { kind: "answering" }
+  | { kind: "answer"; result: AnswerResult }
+  | { kind: "unavailable"; message: string; code?: string; evidence?: AnswerEvidence[] };

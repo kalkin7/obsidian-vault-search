@@ -9,7 +9,8 @@ $ErrorActionPreference = "Stop"
 # BRAT-compatible release automation.
 #
 # BRAT requires every release to carry BOTH the plugin zip AND the individual
-# assets (main.js, manifest.json, styles.css, versions.json). Uploading only the
+# assets (main.js, manifest.json, styles.css, versions.json, and the icon).
+# Uploading only the
 # zip makes BRAT unable to update — exactly what happened in v0.1.4.
 #
 # Usage:
@@ -94,12 +95,14 @@ try {
     }
     Write-Host "    clean." -ForegroundColor Green
 
-    # 3. Build the release zip (backend/ + main.js + manifest.json + styles.css)
+    # 3. Build the release zip (backend/ + plugin files + bundled assets)
     Write-Host "==> Building $ZipName" -ForegroundColor Cyan
     $Stage = Join-Path $env:TEMP "release-$Version"
     if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $Stage "backend/vault_search") -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $Stage "assets") -Force | Out-Null
     Copy-Item "main.js", "manifest.json", "styles.css" $Stage
+    Copy-Item -LiteralPath "assets/lightning search.png" (Join-Path $Stage "assets/lightning search.png")
     Copy-Item "backend/pyproject.toml", "backend/requirements.txt", `
         "backend/requirements-runtime.txt", "backend/requirements-optional-tensorrt.txt", `
         "backend/setup-runtime.ps1" (Join-Path $Stage "backend")
@@ -108,6 +111,14 @@ try {
     if (Test-Path $Zip) { Remove-Item $Zip }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($Stage, $Zip)
+    $ZipArchive = [IO.Compression.ZipFile]::OpenRead($Zip)
+    try {
+        if (-not ($ZipArchive.Entries.FullName -contains "assets/lightning search.png")) {
+            throw "Release archive is missing assets/lightning search.png"
+        }
+    } finally {
+        $ZipArchive.Dispose()
+    }
     Write-Host "    zip: $Zip ($((Get-Item $Zip).Length) bytes)" -ForegroundColor Green
 
     if ($SkipPublish) {
@@ -131,14 +142,14 @@ try {
     # 5. Create release with all assets (zip + individual files)
     Write-Host "==> Creating GitHub release $Tag" -ForegroundColor Cyan
     Invoke-Checked {
-        gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" `
+        gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" "assets/lightning search.png" `
             --title $Tag --notes "BRAT-compatible release $Tag (zip + individual assets)"
     } "gh release create"
 
     # 6. Verify asset completeness
     Write-Host "==> Verifying release assets" -ForegroundColor Cyan
     $assets = gh release view $Tag --json assets --jq '.assets[].name'
-    foreach ($required in @($ZipName, "main.js", "manifest.json", "styles.css", "versions.json")) {
+    foreach ($required in @($ZipName, "main.js", "manifest.json", "styles.css", "versions.json", "lightning search.png")) {
         if ($assets -notcontains $required) { throw "Missing release asset: $required" }
     }
     Write-Host "    all assets present." -ForegroundColor Green

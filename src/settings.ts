@@ -43,6 +43,11 @@ const HOT_KEYS: (keyof VaultSearchSettings)[] = [
   "titleRrfWeight",
   "prefixFallback",
   "wikiFolders",
+  "answerProvider",
+  "answerModel",
+  "answerMaxContextChars",
+  "answerMaxOutputTokens",
+  "answerTimeoutSeconds",
 ];
 
 function equal(a: unknown, b: unknown): boolean {
@@ -101,6 +106,11 @@ export function hotConfig(
     includeGlobs: settings.includeGlobs,
     excludeGlobs: settings.excludeGlobs,
     wikiFolders: settings.wikiFolders,
+    answerProvider: settings.answerProvider,
+    answerModel: settings.answerModel,
+    answerMaxContextChars: settings.answerMaxContextChars,
+    answerMaxOutputTokens: settings.answerMaxOutputTokens,
+    answerTimeoutSeconds: settings.answerTimeoutSeconds,
   };
 }
 

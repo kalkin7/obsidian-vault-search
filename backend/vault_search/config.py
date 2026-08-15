@@ -41,6 +41,11 @@ class SearchConfig:
     lazy_model: bool = False
     model_idle_timeout_seconds: float = 0.0
     heartbeat_timeout_seconds: float = 20.0
+    llm_provider: str = "openai"
+    llm_model: str = "gpt-5.6"
+    llm_max_context_chars: int = 24000
+    llm_max_output_tokens: int = 1200
+    llm_timeout_seconds: float = 45.0
 
     @property
     def index_dir(self) -> Path:
@@ -186,7 +191,22 @@ def load_config(
         heartbeat_timeout_seconds=max(
             5.0, _as_float(raw.get("heartbeatTimeoutSeconds"), 20.0)
         ),
+        llm_provider=str(raw.get("answerProvider", raw.get("llmProvider", "openai"))).strip().lower(),
+        llm_model=str(raw.get("answerModel", raw.get("llmModel", "gpt-5.6"))).strip()[:256],
+        llm_max_context_chars=max(
+            8000,
+            min(32000, _as_int(raw.get("answerMaxContextChars", raw.get("llmMaxContextChars")), 24000)),
+        ),
+        llm_max_output_tokens=max(
+            128,
+            min(8000, _as_int(raw.get("answerMaxOutputTokens", raw.get("llmMaxOutputTokens")), 1200)),
+        ),
+        llm_timeout_seconds=max(
+            5.0, min(60.0, _as_float(raw.get("answerTimeoutSeconds", raw.get("llmTimeoutSeconds")), 45.0))
+        ),
     )
+    if cfg.llm_provider not in {"openai", "opencode-go", "deepseek"}:
+        cfg.llm_provider = "openai"
     if cfg.chunk_overlap >= cfg.chunk_chars:
         raise ValueError("chunkOverlap must be smaller than chunkChars")
     if cfg.chunking_strategy not in {"paragraph-v1", "markdown-v2"}:

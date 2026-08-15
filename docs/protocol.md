@@ -2,7 +2,7 @@
 
 The service uses one JSON Lines request per TCP connection on a dynamic `127.0.0.1` port. Every request includes protocol version 1, request ID, and the random token from `runtime.json`.
 
-Methods: `health`, `status`, `load_model`, `search`, `sync_paths`, `reconcile`, `preview_scope`, `rebuild_vectors`, `rebuild_all`, `apply_search_config`, `heartbeat`, `shutdown`.
+Methods: `health`, `status`, `load_model`, `search`, `answer`, `sync_paths`, `reconcile`, `preview_scope`, `rebuild_vectors`, `rebuild_all`, `apply_search_config`, `heartbeat`, `shutdown`.
 
 Messages are limited to 2 MiB. Unknown versions and invalid tokens are rejected. No method accepts commands or unrestricted absolute file paths.
 
@@ -74,3 +74,26 @@ The wiki sources expansion in `intent: timeline` follows the configured `wikiFol
 `status` and `heartbeat` return cached index counts and never open SQLite. `count_available: false`
 means the backend could not refresh counts at a worker-controlled boundary, including an incompatible
 future database shape; compatibility errors are still returned through the existing rebuild-required path.
+
+## `answer`
+
+`answer` is an additive protocol-v1 method. It searches the local hybrid index first,
+then sends only bounded, explicitly labelled source blocks to the selected provider.
+`query` is limited to 8,000 characters, `top_k` to 1–12, context to 8,000–32,000
+characters, and conversation to four complete user/assistant turns with each
+message at most 8,000 characters. Empty evidence returns `GROUNDING_EMPTY` without
+calling a provider. Each source is capped at 3,000 characters and at most two
+chunks per file are included. Provider output citations not present in the source
+set are removed.
+
+The response contains `answer`, `citations`, safe `evidence`, `provider`, `model`,
+`grounded`, and diagnostics. Supported providers are `openai`, `opencode-go`, and
+`deepseek`. Their keys are read only from `OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`,
+and `DEEPSEEK_API_KEY`; keys are never part of plugin data, runtime configuration,
+protocol responses, or backend logs. HTTP 429/5xx are retried once after 500 ms;
+auth and other 4xx errors are not retried. The provider is never silently switched.
+
+Answer-specific errors are coded as `ANSWER_INVALID_PARAMS`, `GROUNDING_EMPTY`,
+`LLM_NOT_CONFIGURED`, `LLM_API_KEY_MISSING`, `LLM_AUTH_FAILED`,
+`LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_PROVIDER_UNAVAILABLE`, `LLM_BAD_RESPONSE`,
+and `ANSWER_TOO_LARGE`.

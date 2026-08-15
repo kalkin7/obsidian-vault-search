@@ -14,7 +14,7 @@ from typing import Any
 
 from . import __version__
 from .config import load_config
-from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION
+from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION, ProtocolError, validate_answer_params
 from .runtime import atomic_write_json, vault_id
 from .service import SearchService, ServiceError
 from .service_lock import ServiceLock, ServiceLockError
@@ -71,6 +71,10 @@ class RequestHandler(socketserver.StreamRequestHandler):
                 threading.Thread(target=server.shutdown, daemon=True).start()
                 return
             params = payload.get("params") or {}
+            if not isinstance(params, dict):
+                raise ProtocolError("params must be an object")
+            if method == "answer":
+                params = validate_answer_params(params)
             if method in {"health", "status", "heartbeat", "load_model"}:
                 result = server.service.call(method, params)
             else:
@@ -86,6 +90,8 @@ class RequestHandler(socketserver.StreamRequestHandler):
             if exc.details is not None:
                 error["details"] = exc.details
             self._send(False, request_id, error=error)
+        except ProtocolError as exc:
+            self._send(False, request_id, error={"code": "ANSWER_INVALID_PARAMS", "message": str(exc)})
         except Exception as exc:
             self._send(False, request_id, error={
                 "code": "INTERNAL_ERROR",

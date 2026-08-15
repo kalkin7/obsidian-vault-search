@@ -17,7 +17,7 @@ $Python = .\scripts\setup-backend.ps1 -Vault "C:\path\to\vault" | Select-Object 
 2. **Add Beta plugin** → `kalkin7/obsidian-vault-search`.
 3. Reload Obsidian. A release must exist for the current plugin version.
 
-BRAT only installs `main.js`/`manifest.json`/`styles.css`. On first run the
+BRAT installs the plugin files and `assets/lightning search.png`. On first run the
 plugin downloads its Python backend (~700 KB) from the matching GitHub release
 automatically, and keeps it in sync with the plugin version. Use **설정 → Python
 백엔드 → 백엔드 설치/복구** to re-download or recover. First indexing still

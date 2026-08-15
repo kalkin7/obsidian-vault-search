@@ -16,6 +16,9 @@ from .index_metadata import classify_index_problems, validate_index_files
 from .indexing import IndexManager
 from .model_manager import ModelManager
 from .search import IndexCompatibilityError, SearchEngine
+from .grounding import build_grounding_context, build_prompt, normalize_citations
+from .llm import ProviderError, create_provider
+from .protocol import validate_answer_params, ProtocolError
 
 
 class SearchService:
@@ -277,6 +280,11 @@ class SearchService:
             return self.status()
         if method == "provision_onnx":
             return self.provision_onnx()
+        if method == "answer":
+            try:
+                params = validate_answer_params(params)
+            except ProtocolError as exc:
+                raise ServiceError("ANSWER_INVALID_PARAMS", str(exc)) from exc
 
         # Everything below touches mutable ready-state references (index,
         # search_engine, state). Re-check under the operation lock so an
@@ -290,7 +298,7 @@ class SearchService:
                 # regardless of state.
                 return self._apply_search_config(params)
             if self.state == "idle":
-                if method == "search":
+                if method in {"search", "answer"}:
                     if self.index_rebuild_reason:
                         raise ServiceError(
                             "INDEX_REBUILD_REQUIRED",
@@ -374,6 +382,8 @@ class SearchService:
                     "device": self.model.device,
                     **outcome.to_dict(),
                 }
+            if method == "answer":
+                return self._answer(params)
             if method == "preview_scope":
                 return self.index.preview_scope()
             if method == "reconcile":
@@ -398,6 +408,65 @@ class SearchService:
                     "rebuilding_vectors", self._rebuild_vectors
                 )
         raise ServiceError("UNKNOWN_METHOD", f"Unknown method: {method}")
+
+    def _answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        if self.index_rebuild_reason:
+            raise ServiceError(
+                "INDEX_REBUILD_REQUIRED",
+                self.index_rebuild_reason,
+                {"problems": self.index_problems, "recommended_action": self.recommended_action},
+            )
+        if self.search_engine is None:
+            raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
+        try:
+            outcome = self.search_engine.search_detailed(
+                params["query"], top_k=params["top_k"], verbose=True
+            )
+        except FileNotFoundError as exc:
+            raise ServiceError("INDEX_MISSING", str(exc)) from exc
+        except IndexCompatibilityError as exc:
+            raise ServiceError("INDEX_REBUILD_REQUIRED", str(exc)) from exc
+        results = list(outcome.results)
+        sources, context = build_grounding_context(results, params["max_context_chars"])
+        if not sources or not context:
+            raise ServiceError("GROUNDING_EMPTY", "No usable vault evidence was found")
+        system, current_user = build_prompt(params["query"], sources)
+        conversation = list(params["conversation"])
+        messages = [*conversation, {"role": "user", "content": current_user}]
+        provider_id = self.config.llm_provider
+        try:
+            provider = create_provider(provider_id, self.config.llm_model)
+            response = provider.complete(
+                system=system,
+                messages=messages,
+                max_output_tokens=self.config.llm_max_output_tokens,
+                timeout_seconds=self.config.llm_timeout_seconds,
+            )
+        except ProviderError as exc:
+            raise ServiceError(
+                exc.code,
+                exc.message,
+                {"evidence": [source.evidence() for source in sources]},
+            ) from exc
+        if len(response.text) > 32000:
+            raise ServiceError("ANSWER_TOO_LARGE", "Provider answer is too large")
+        answer, citations, warning = normalize_citations(response.text, sources)
+        if not answer:
+            raise ServiceError("LLM_BAD_RESPONSE", "Provider returned an empty answer")
+        return {
+            "answer": answer,
+            "citations": citations,
+            "evidence": [source.evidence() for source in sources],
+            "provider": response.provider,
+            "model": response.model,
+            "grounded": bool(citations),
+            "diagnostics": {
+                "retrieved_count": len(results),
+                "context_chars": len(context),
+                "answer_chars": len(answer),
+                **({"citation_warning": warning} if warning else {}),
+            },
+        }
 
     def _apply_search_config(self, params: dict[str, Any]) -> dict[str, Any]:
         integer_fields = {
@@ -430,6 +499,24 @@ class SearchService:
                 for value in params["wikiFolders"]
                 if str(value).strip()
             ]
+        if "answerProvider" in params and str(params["answerProvider"]) in {"openai", "opencode-go", "deepseek"}:
+            self.config.llm_provider = str(params["answerProvider"])
+        if "answerModel" in params and str(params["answerModel"]).strip():
+            self.config.llm_model = str(params["answerModel"]).strip()[:256]
+        for key, attribute, minimum, maximum in (
+            ("answerMaxContextChars", "llm_max_context_chars", 8000, 32000),
+            ("answerMaxOutputTokens", "llm_max_output_tokens", 128, 8000),
+        ):
+            if key in params:
+                try:
+                    setattr(self.config, attribute, max(minimum, min(maximum, int(params[key]))))
+                except (TypeError, ValueError):
+                    pass
+        if "answerTimeoutSeconds" in params:
+            try:
+                self.config.llm_timeout_seconds = max(5.0, min(60.0, float(params["answerTimeoutSeconds"])))
+            except (TypeError, ValueError):
+                pass
         return {"applied": True, **self.status()}
 
     def _rebuild_all(self) -> dict[str, Any]:

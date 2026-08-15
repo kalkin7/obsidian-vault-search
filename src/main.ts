@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, Plugin, TFile } from "obsidian";
+import { FileSystemAdapter, Notice, normalizePath, Plugin, TFile } from "obsidian";
 import * as path from "path";
 import {
   agentIntegrationNotice,
@@ -8,7 +8,11 @@ import {
   type AgentIntegrationStatus,
 } from "./agent-integration";
 import { BackendManager } from "./backend-manager";
-import { DEFAULT_SETTINGS } from "./constants";
+import {
+  DEFAULT_SETTINGS,
+  LIGHTNING_ICON_ASSET,
+  VIEW_TYPE_VAULT_AI_SEARCH,
+} from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
 import {
   cloneSettings,
@@ -24,6 +28,7 @@ import type { SearchResultLocation } from "./search-result-view";
 import { selectedTextQuery } from "./search-session";
 import { confirmRuntimeInstall } from "./runtime-install-modal";
 import { selectRuntime } from "./runtime-selection";
+import { VaultSearchItemView } from "./search-item-view";
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -34,6 +39,7 @@ export default class VaultSearchPlugin extends Plugin {
   private startupPrepared = false;
   private startupInProgress = false;
   private searchModal: VaultSearchModal | null = null;
+  private readonly aiSearchViews = new Set<VaultSearchItemView>();
   private runtimeChangePromise: Promise<void> | null = null;
   runtimeSummary = "런타임: 확인 전";
   runtimeWarning: string | null = null;
@@ -103,6 +109,18 @@ export default class VaultSearchPlugin extends Plugin {
 
     this.settingTab = new VaultSearchSettingTab(this);
     this.addSettingTab(this.settingTab);
+    this.registerView(
+      VIEW_TYPE_VAULT_AI_SEARCH,
+      (leaf) => new VaultSearchItemView(leaf, this),
+    );
+    const ribbonIcon = this.addRibbonIcon("search", "Open AI Vault Search", () => {
+      void this.openAiSearchPanel();
+    });
+    ribbonIcon.empty();
+    ribbonIcon.createEl("img", {
+      cls: "vault-search-lightning-icon",
+      attr: { src: this.lightningIconSrc(), alt: "" },
+    });
     this.registerCommands();
     void this.refreshAgentIntegration();
 
@@ -144,6 +162,12 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings.excludeGlobs = loaded?.excludeGlobs || [
       ...DEFAULT_SETTINGS.excludeGlobs,
     ];
+    if (!(this.settings.answerProvider in { openai: true, "opencode-go": true, deepseek: true }))
+      this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
+    this.settings.answerModel = String(this.settings.answerModel || DEFAULT_SETTINGS.answerModel);
+    this.settings.answerMaxContextChars = Math.max(8000, Math.min(32000, Number(this.settings.answerMaxContextChars) || DEFAULT_SETTINGS.answerMaxContextChars));
+    this.settings.answerMaxOutputTokens = Math.max(128, Math.min(8000, Number(this.settings.answerMaxOutputTokens) || DEFAULT_SETTINGS.answerMaxOutputTokens));
+    this.settings.answerTimeoutSeconds = Math.max(5, Math.min(60, Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds));
     const migrated = migrateSettings(this.settings);
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
@@ -454,6 +478,11 @@ export default class VaultSearchPlugin extends Plugin {
       callback: () => this.openSearch(),
     });
     this.addCommand({
+      id: "open-ai-search",
+      name: "Open AI Vault Search",
+      callback: () => void this.openAiSearchPanel(),
+    });
+    this.addCommand({
       id: "search-selected-text",
       name: "Search selected text",
       editorCallback: (editor) => this.openSearch(selectedTextQuery(editor)),
@@ -624,6 +653,7 @@ export default class VaultSearchPlugin extends Plugin {
   private handleStatus(status: BackendStatus): void {
     this.settingTab?.display();
     this.searchModal?.updateBackendStatus(status);
+    for (const view of this.aiSearchViews) view.updateBackendStatus(status);
     if (status.state === "ready" || status.state === "ready_no_index") {
       if (this.startupPrepared) void this.queue?.flush();
       else void this.completeStartup();
@@ -676,17 +706,52 @@ export default class VaultSearchPlugin extends Plugin {
     this.searchModal.open();
   }
 
-  async openSearchResult(location: SearchResultLocation): Promise<void> {
+  async openSearchResult(location: SearchResultLocation, keepPanel = false): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(location.path);
     if (!(file instanceof TFile)) {
       new Notice(`파일을 찾을 수 없습니다: ${location.path}`);
       return;
     }
-    await this.app.workspace.getLeaf(false).openFile(file, {
+    await this.app.workspace.getLeaf(keepPanel ? "tab" : false).openFile(file, {
       active: true,
       eState: { line: location.line - 1 },
     });
-    this.searchModal?.close();
+    if (!keepPanel) this.searchModal?.close();
+  }
+
+  async openAiSearchPanel(initialQuery = ""): Promise<void> {
+    const leaf =
+      this.app.workspace.getLeavesOfType(VIEW_TYPE_VAULT_AI_SEARCH)[0] ??
+      this.app.workspace.getRightLeaf(false);
+    if (!leaf) {
+      new Notice("AI Vault Search 패널을 열 수 없습니다.");
+      return;
+    }
+    const currentState = leaf.getViewState();
+    await leaf.setViewState({
+      type: VIEW_TYPE_VAULT_AI_SEARCH,
+      active: true,
+      state: {
+        ...(currentState.state || {}),
+        ...(initialQuery ? { query: initialQuery } : {}),
+      },
+    });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  lightningIconSrc(): string {
+    const pluginAssetPath = normalizePath(
+      `${this.app.vault.configDir}/plugins/${this.manifest.id}/${LIGHTNING_ICON_ASSET}`,
+    );
+    return this.app.vault.adapter.getResourcePath(pluginAssetPath);
+  }
+
+  registerAiView(view: VaultSearchItemView): void {
+    this.aiSearchViews.add(view);
+  }
+
+  unregisterAiView(view: VaultSearchItemView): void {
+    this.aiSearchViews.delete(view);
   }
 
   openSearchSettings(): void {

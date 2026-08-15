@@ -67,3 +67,17 @@ automatically and never overwrites user-authored search guidance. See
 - Only one backend may own a vault data directory. Startup waits for the prior managed process to stop and refuses a duplicate writer.
 
 Paths are vault-relative POSIX-style globs. Absolute paths and traversal are rejected by the backend.
+
+## AI Vault 답변
+
+The AI Vault Search panel uses the local hybrid search results as its only context.
+Choose `openai`, `opencode-go`, or `deepseek`, then set the model ID and limits in
+the settings tab. The API key is not a plugin setting: configure it in the
+environment inherited by the sidecar (`OPENAI_API_KEY`, `OPENCODE_GO_API_KEY`, or
+`DEEPSEEK_API_KEY`). The panel keeps up to four conversation turns only while it
+is open and does not persist chat history.
+
+The provider receives bounded source snippets, not the whole vault. Source text is
+treated as untrusted data, and citations such as `[S1]` open the corresponding
+note and line in Obsidian. Missing keys affect only answer generation; ordinary
+vault search remains available.

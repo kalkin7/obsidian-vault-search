@@ -1,6 +1,6 @@
 import { Notice, PluginSettingTab, Setting } from "obsidian";
 import type VaultSearchPlugin from "./main";
-import { MODEL_PROFILES } from "./constants";
+import { LLM_PROVIDER_DEFAULTS, MODEL_PROFILES } from "./constants";
 import { defaultLoadPolicy, settingsImpact } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
@@ -149,6 +149,46 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
         }),
       );
+
+    containerEl.createEl("h3", { text: "AI Vault 답변" });
+    new Setting(containerEl)
+      .setName("답변 provider")
+      .setDesc("검색 근거만 provider에 전달합니다. API key는 플러그인에 저장하지 않고 sidecar가 환경변수에서 읽습니다.")
+      .addDropdown((dropdown) => {
+        for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
+          dropdown.addOption(id, provider.name);
+        dropdown.setValue(draft.answerProvider).onChange((value) => {
+          draft.answerProvider = value as typeof draft.answerProvider;
+          if (!draft.answerModel || draft.answerModel === LLM_PROVIDER_DEFAULTS.openai.model)
+            draft.answerModel = LLM_PROVIDER_DEFAULTS[draft.answerProvider].model;
+          this.display();
+        });
+      });
+    const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
+    new Setting(containerEl)
+      .setName("답변 모델")
+      .setDesc(`환경변수: ${answerProvider.env}`)
+      .addText((text) => text.setValue(draft.answerModel).onChange((value) => {
+        draft.answerModel = value.trim() || answerProvider.model;
+      }));
+    new Setting(containerEl)
+      .setName("답변 context 문자 수")
+      .setDesc("8,000~32,000자")
+      .addText((text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
+        draft.answerMaxContextChars = Math.max(8000, Math.min(32000, this.nonnegativeNumber(value, draft.answerMaxContextChars)));
+      }));
+    new Setting(containerEl)
+      .setName("답변 출력 토큰")
+      .setDesc("128~8,000 토큰")
+      .addText((text) => text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
+        draft.answerMaxOutputTokens = Math.max(128, Math.min(8000, this.nonnegativeNumber(value, draft.answerMaxOutputTokens)));
+      }));
+    new Setting(containerEl)
+      .setName("답변 timeout (초)")
+      .setDesc("provider 요청 timeout은 최대 60초입니다.")
+      .addText((text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
+        draft.answerTimeoutSeconds = Math.max(5, Math.min(60, this.nonnegativeNumber(value, draft.answerTimeoutSeconds)));
+      }));
 
     const agent = this.owner.agentIntegration;
     new Setting(containerEl)

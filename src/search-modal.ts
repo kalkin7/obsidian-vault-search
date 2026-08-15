@@ -1,8 +1,8 @@
 import { Modal } from "obsidian";
 import { SearchSession, type SearchSessionState } from "./search-session";
 import { SearchResultView, type SearchResultLocation } from "./search-result-view";
-import { BackendCallError } from "./backend-manager";
 import type { BackendStatus, SearchResult } from "./types";
+import { SearchApi } from "./search-api";
 
 export interface SearchModalOwner {
   app: Modal["app"];
@@ -23,6 +23,7 @@ export class VaultSearchModal extends Modal {
   private resultsEl!: HTMLElement;
   private resultView!: SearchResultView;
   private session!: SearchSession;
+  private searchApi!: SearchApi;
 
   constructor(private readonly owner: SearchModalOwner, private readonly initialQuery = "") {
     super(owner.app);
@@ -40,7 +41,8 @@ export class VaultSearchModal extends Modal {
     this.resultsEl = this.contentEl.createDiv({ cls: "vault-search-results" });
     this.resultView = new SearchResultView(this.resultsEl,
       location => this.owner.openSearchResult(location));
-    this.session = new SearchSession(query => this.search(query), state => this.renderState(state));
+    this.searchApi = new SearchApi(this.owner);
+    this.session = new SearchSession(query => this.searchApi.search(query), state => this.renderState(state));
     this.inputEl.addEventListener("input", () => this.session.setQuery(this.inputEl.value));
     this.inputEl.value = this.initialQuery;
     this.renderBackendStatus(this.owner.backend.status);
@@ -57,28 +59,6 @@ export class VaultSearchModal extends Modal {
 
   updateBackendStatus(status: BackendStatus): void {
     if (this.statusEl) this.renderBackendStatus(status);
-  }
-
-  private async search(query: string): Promise<SearchResult[]> {
-    await this.owner.ensureSearchStarted();
-    try {
-      return await this.runSearch(query);
-    } catch (error) {
-      // The idle watchdog may have unloaded the model between ensureSearchStarted
-      // and this search. A MODEL_LOADING response means the backend just started
-      // re-initializing; retry once after waiting for ready.
-      if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
-        await this.owner.ensureSearchStarted();
-        return await this.runSearch(query);
-      }
-      throw error;
-    }
-  }
-
-  private async runSearch(query: string): Promise<SearchResult[]> {
-    const response = await this.owner.backend.call<{ results: SearchResult[] }>(
-      "search", { query, verbose: true }, 30_000);
-    return response.results;
   }
 
   private renderState(state: SearchSessionState): void {

@@ -2,6 +2,8 @@ import type { VaultSearchSettings } from "./types";
 
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
+export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
+export const LIGHTNING_ICON_ASSET = "assets/lightning search.png";
 export const BACKEND_VERSION = "0.1.9";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
@@ -73,4 +75,15 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   autoSync: true,
   startupReconcile: true,
   modelIdleTimeoutSeconds: 0,
+  answerProvider: "openai",
+  answerModel: "gpt-5.6",
+  answerMaxContextChars: 24000,
+  answerMaxOutputTokens: 1200,
+  answerTimeoutSeconds: 60,
 };
+
+export const LLM_PROVIDER_DEFAULTS = {
+  openai: { name: "OpenAI Responses API", model: "gpt-5.6", env: "OPENAI_API_KEY" },
+  "opencode-go": { name: "OpenCode Go", model: "deepseek-v4-flash", env: "OPENCODE_GO_API_KEY" },
+  deepseek: { name: "DeepSeek", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" },
+} as const;
