@@ -1,6 +1,10 @@
 import { requestUrl, type App, type SecretStorage } from "obsidian";
 import type { LLMProviderId } from "./types";
-import { LLM_MODEL_ENDPOINTS, LLM_PROVIDER_DEFAULTS, LLM_SECRET_IDS } from "./constants";
+import {
+  LLM_MODEL_ENDPOINTS,
+  LLM_PROVIDER_DEFAULTS,
+  LLM_SECRET_IDS,
+} from "./constants";
 
 type SecretCapableApp = App & { secretStorage?: SecretStorage };
 
@@ -23,7 +27,9 @@ export function setProviderSecret(
 ): void {
   const secretStorage = storage(app);
   if (!secretStorage) {
-    throw new Error("이 버전의 Obsidian은 보안 키 저장소를 지원하지 않습니다. Obsidian 1.11.4 이상이 필요합니다.");
+    throw new Error(
+      "이 버전의 Obsidian은 보안 키 저장소를 지원하지 않습니다. Obsidian 1.11.4 이상이 필요합니다.",
+    );
   }
   secretStorage.setSecret(LLM_SECRET_IDS[provider], secret.trim());
 }
@@ -32,7 +38,9 @@ export function providerEnvironment(app: App): Record<string, string> {
   const environment: Record<string, string> = {};
   const secretStorage = storage(app);
   if (!secretStorage) return environment;
-  for (const provider of Object.keys(LLM_PROVIDER_DEFAULTS) as LLMProviderId[]) {
+  for (const provider of Object.keys(
+    LLM_PROVIDER_DEFAULTS,
+  ) as LLMProviderId[]) {
     const stored = secretStorage.getSecret(LLM_SECRET_IDS[provider]);
     if (stored !== null) {
       environment[LLM_PROVIDER_DEFAULTS[provider].env] = stored.trim();

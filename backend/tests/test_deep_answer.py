@@ -256,9 +256,7 @@ def test_deep_answer_enforces_min_output_budget(monkeypatch, tmp_path):
     monkeypatch.setattr(
         "vault_search.service.create_provider", lambda *_args: FakeProvider()
     )
-    value = service.call(
-        "answer", {"query": "상태", "conversation": [], "deep": True}
-    )
+    value = service.call("answer", {"query": "상태", "conversation": [], "deep": True})
     assert recorded and recorded[0] >= 4000
     assert value["answer"] == "답변입니다. [S1]"
 

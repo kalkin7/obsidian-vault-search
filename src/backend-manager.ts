@@ -481,7 +481,11 @@ export class BackendManager {
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
     const providerEnvironment = this.getEnvironment();
-    if (Object.keys(providerEnvironment).length === 0 && await this.tryAttachStandalone()) return;
+    if (
+      Object.keys(providerEnvironment).length === 0 &&
+      (await this.tryAttachStandalone())
+    )
+      return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
