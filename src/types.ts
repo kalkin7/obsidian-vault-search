@@ -3,6 +3,12 @@ export type DevicePreference = "auto" | "cpu" | "cuda";
 export type EnginePreference = "pytorch" | "onnx";
 export type ProviderPreference = "auto" | "cuda" | "tensorrt";
 export type LLMProviderId = "openai" | "opencode-go" | "deepseek";
+/** A model starred in the settings list; provider is stored so the footer
+ *  selector can switch provider when a cross-provider favorite is picked. */
+export type FavoriteAnswerModel = {
+  provider: LLMProviderId;
+  model: string;
+};
 export type ChunkingStrategy = "paragraph-v1" | "markdown-v2";
 export type BackendState =
   | "stopped"
@@ -47,9 +53,10 @@ export interface VaultSearchSettings {
   modelIdleTimeoutSeconds: number;
   answerProvider: LLMProviderId;
   answerModel: string;
-  /** Models starred in the settings model list; offered in the AI search
-   *  footer selector (falls back to all fetched models when empty). */
-  favoriteAnswerModels: string[];
+  /** Models starred in the settings model list, per provider. Offered in the
+   *  AI search footer selector across ALL providers (selecting one switches
+   *  the provider too). Falls back to fetched models when empty. */
+  favoriteAnswerModels: FavoriteAnswerModel[];
   answerMaxContextChars: number;
   answerMaxOutputTokens: number;
   answerTimeoutSeconds: number;

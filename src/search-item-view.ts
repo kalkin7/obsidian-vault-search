@@ -19,6 +19,8 @@ import type {
   AnswerResult,
   AnswerState,
   BackendStatus,
+  FavoriteAnswerModel,
+  LLMProviderId,
   VaultSearchSettings,
 } from "./types";
 import { VIEW_TYPE_VAULT_AI_SEARCH } from "./constants";
@@ -45,8 +47,8 @@ export interface SearchItemViewOwner {
     keepPanel?: boolean,
   ): Promise<void>;
   openSearchSettings(): void;
-  getAnswerModelOptions(): string[];
-  setAnswerModel(model: string): Promise<void>;
+  getAnswerModelOptions(): FavoriteAnswerModel[];
+  setAnswerModel(provider: LLMProviderId, model: string): Promise<void>;
   registerAiView(view: VaultSearchItemView): void;
   unregisterAiView(view: VaultSearchItemView): void;
 }
@@ -146,6 +148,7 @@ export class VaultSearchItemView extends ItemView {
     });
     const submit = inputRow.createEl("button", {
       text: "질문",
+      cls: "mod-cta",
       attr: { type: "button" },
     });
     const clear = inputRow.createEl("button", {
@@ -189,13 +192,19 @@ export class VaultSearchItemView extends ItemView {
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
     const modelBar = footer.createDiv({ cls: "vault-ai-search-model-bar" });
+    modelBar.createEl("span", {
+      text: "모델",
+      cls: "vault-ai-search-model-label",
+    });
     this.modelSelect = modelBar.createEl("select", {
       cls: "vault-ai-search-model-select",
       attr: { "aria-label": "답변 모델 (즐겨찾기)" },
     });
     const onModelChange = () => {
-      const value = this.modelSelect.value;
-      if (value) void this.owner.setAnswerModel(value);
+      const [provider, model] = this.modelSelect.value.split("::", 2);
+      if (provider && model) {
+        void this.owner.setAnswerModel(provider as LLMProviderId, model);
+      }
     };
     this.modelSelect.addEventListener("change", onModelChange);
     this.listeners.push(() =>
@@ -224,15 +233,21 @@ export class VaultSearchItemView extends ItemView {
   refreshModelSelector(): void {
     if (!this.modelSelect) return;
     const options = this.owner.getAnswerModelOptions();
+    const currentProvider = this.owner.settings.answerProvider;
     const current = this.owner.settings.answerModel;
     this.modelSelect.empty();
-    for (const model of options) {
-      this.modelSelect.createEl("option", { text: model, value: model });
+    for (const option of options) {
+      const crossProvider = option.provider !== currentProvider;
+      this.modelSelect.createEl("option", {
+        text: crossProvider
+          ? `${option.model} (${option.provider})`
+          : option.model,
+        value: `${option.provider}::${option.model}`,
+      });
     }
-    this.modelSelect.value = options.includes(current)
-      ? current
-      : (options[0] ?? "");
-    this.modelSelect.title = `${this.owner.settings.answerProvider} · ${current} (설정에서 ★로 즐겨찾기 지정)`;
+    this.modelSelect.value = `${currentProvider}::${current}`;
+    this.modelSelect.title =
+      "답변 모델 — 설정에서 ★로 지정한 즐겨찾기입니다. 다른 provider 모델을 고르면 provider도 함께 전환됩니다.";
     if (this.providerEl) {
       this.providerEl.setText(
         `${this.owner.settings.answerProvider} · ${this.owner.settings.answerModel}`,

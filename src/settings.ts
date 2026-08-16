@@ -90,7 +90,9 @@ export function cloneSettings(
     includeGlobs: [...settings.includeGlobs],
     excludeGlobs: [...settings.excludeGlobs],
     wikiFolders: [...settings.wikiFolders],
-    favoriteAnswerModels: [...(settings.favoriteAnswerModels || [])],
+    favoriteAnswerModels: (settings.favoriteAnswerModels || []).map(
+      (favorite) => ({ ...favorite }),
+    ),
   };
 }
 

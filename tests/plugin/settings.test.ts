@@ -71,13 +71,16 @@ describe("settings impact", () => {
   it("does not alias favorite models", () => {
     const copy = cloneSettings({
       ...DEFAULT_SETTINGS,
-      favoriteAnswerModels: ["gpt-5.6"],
+      favoriteAnswerModels: [{ provider: "openai", model: "gpt-5.6" }],
     });
-    copy.favoriteAnswerModels.push("o4-mini");
-    expect(DEFAULT_SETTINGS.favoriteAnswerModels).not.toContain("o4-mini");
+    copy.favoriteAnswerModels.push({
+      provider: "openai",
+      model: "o4-mini",
+    });
+    expect(DEFAULT_SETTINGS.favoriteAnswerModels).toHaveLength(0);
     const cloned = cloneSettings(copy);
     cloned.favoriteAnswerModels.pop();
-    expect(copy.favoriteAnswerModels).toContain("gpt-5.6");
+    expect(copy.favoriteAnswerModels).toHaveLength(2);
   });
 });
 

@@ -35,9 +35,42 @@ import {
   providerEnvironment,
   setProviderSecret,
 } from "./llm-secrets";
-import type { LLMProviderId } from "./types";
+import type { FavoriteAnswerModel, LLMProviderId } from "./types";
 import { normalizeProviderModels } from "./model-catalog";
 import { ICON_LIGHTNING, registerLightningIcon } from "./icons";
+
+const PROVIDER_IDS: LLMProviderId[] = ["openai", "opencode-go", "deepseek"];
+
+/** Normalize the stored favorite list. Accepts the legacy flat string[]
+ *  shape (v0.1.16), attributing each model to the current provider, plus the
+ *  { provider, model } shape saved since. */
+function normalizeFavoriteModels(
+  raw: unknown[],
+  fallbackProvider: LLMProviderId,
+): FavoriteAnswerModel[] {
+  const seen = new Set<string>();
+  const out: FavoriteAnswerModel[] = [];
+  for (const entry of raw) {
+    let provider = fallbackProvider;
+    let model = "";
+    if (typeof entry === "string") {
+      model = entry.trim();
+    } else if (entry && typeof entry === "object") {
+      const value = entry as { provider?: unknown; model?: unknown };
+      model = typeof value.model === "string" ? value.model.trim() : "";
+      if (PROVIDER_IDS.includes(value.provider as LLMProviderId)) {
+        provider = value.provider as LLMProviderId;
+      }
+    }
+    if (!model) continue;
+    const key = `${provider}::${model}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ provider, model });
+    }
+  }
+  return out;
+}
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -175,10 +208,9 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings.excludeGlobs = loaded?.excludeGlobs || [
       ...DEFAULT_SETTINGS.excludeGlobs,
     ];
-    this.settings.favoriteAnswerModels = Array.isArray(
-      loaded?.favoriteAnswerModels,
-    )
-      ? [...loaded.favoriteAnswerModels]
+    const rawFavorites = loaded?.favoriteAnswerModels;
+    this.settings.favoriteAnswerModels = Array.isArray(rawFavorites)
+      ? normalizeFavoriteModels(rawFavorites, this.settings.answerProvider)
       : [];
     if (
       !(
@@ -267,23 +299,44 @@ export default class VaultSearchPlugin extends Plugin {
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
-  /** Models the AI search footer offers: favorites only when any exist,
-   *  otherwise the full fetched list so the selector is never empty. */
-  getAnswerModelOptions(): string[] {
-    const available = this.providerModels[this.settings.answerProvider] || [];
-    const favorites = (this.settings.favoriteAnswerModels || []).filter(
-      (model) => available.includes(model),
-    );
-    const options = favorites.length ? favorites : available;
-    const current = this.settings.answerModel;
-    return options.includes(current) ? options : [current, ...options];
+  /** Models the AI search footer offers: favorites across ALL providers plus
+   *  the current selection, deduped and with the current entry first. Falls
+   *  back to the current provider's fetched list when nothing is starred, so
+   *  the selector is never empty. Selecting a cross-provider favorite also
+   *  switches the provider (setAnswerModel handles that). */
+  getAnswerModelOptions(): FavoriteAnswerModel[] {
+    const favorites = this.settings.favoriteAnswerModels || [];
+    const currentProvider = this.settings.answerProvider;
+    const options: FavoriteAnswerModel[] = [];
+    const seen = new Set<string>();
+    const push = (provider: LLMProviderId, model: string) => {
+      const key = `${provider}::${model}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        options.push({ provider, model });
+      }
+    };
+    push(currentProvider, this.settings.answerModel);
+    for (const favorite of favorites) {
+      if (favorite && favorite.model) push(favorite.provider, favorite.model);
+    }
+    if (options.length > 1) return options;
+    // Nothing starred yet: show the whole fetched list of the current
+    // provider so the selector is usable before favorites exist.
+    for (const model of this.providerModels[currentProvider] || []) {
+      push(currentProvider, model);
+    }
+    return options;
   }
 
-  /** Change the answer model from the AI search view footer (hot — no
-   *  restart; the backend picks it up on the next answer request). */
-  async setAnswerModel(model: string): Promise<void> {
+  /** Change the answer provider/model from the AI search view footer (hot —
+   *  no restart; the backend picks it up on the next answer request). */
+  async setAnswerModel(provider: LLMProviderId, model: string): Promise<void> {
     const value = model.trim();
-    if (!value || value === this.settings.answerModel) return;
+    const previous = this.settings.answerModel;
+    const previousProvider = this.settings.answerProvider;
+    if (!value || (value === previous && provider === previousProvider)) return;
+    this.settings.answerProvider = provider;
     this.settings.answerModel = value;
     await this.saveSettings();
     if (this.backend.status.state !== "stopped") {
@@ -292,7 +345,11 @@ export default class VaultSearchPlugin extends Plugin {
         .catch(() => undefined);
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
-    new Notice(`답변 모델을 ${value}(으)로 변경했습니다.`);
+    new Notice(
+      provider === previousProvider
+        ? `답변 모델을 ${value}(으)로 변경했습니다.`
+        : `답변 provider를 ${provider}로 전환하고 모델을 ${value}(으)로 변경했습니다.`,
+    );
   }
 
   resetDraftSettings(): void {

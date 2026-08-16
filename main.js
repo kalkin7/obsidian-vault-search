@@ -4109,7 +4109,9 @@ function cloneSettings(settings) {
     includeGlobs: [...settings.includeGlobs],
     excludeGlobs: [...settings.excludeGlobs],
     wikiFolders: [...settings.wikiFolders],
-    favoriteAnswerModels: [...settings.favoriteAnswerModels || []]
+    favoriteAnswerModels: (settings.favoriteAnswerModels || []).map(
+      (favorite) => ({ ...favorite })
+    )
   };
 }
 function hotConfig(settings) {
@@ -4355,7 +4357,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
     const modelOptions = fetchedModels.length ? fetchedModels : [draft.answerModel];
     const favorites = Array.isArray(draft.favoriteAnswerModels) ? [...draft.favoriteAnswerModels] : [];
     const modelSetting = new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
-      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uB9CC AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4. \uAE30\uBCF8\uAC12: ${answerProvider.model}` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uAE30\uBCF8\uAC12: ${answerProvider.model}`
+      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uC740 \uBAA8\uB4E0 provider\uC5D0\uC11C \uBAA8\uC544\uC838 AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4. \uAE30\uBCF8\uAC12: ${answerProvider.model}` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uAE30\uBCF8\uAC12: ${answerProvider.model}`
     ).setClass("vault-search-model-setting");
     const modelList = modelSetting.controlEl.createDiv({
       cls: "vault-search-model-list"
@@ -4381,7 +4383,9 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
             text: "(\uD604\uC7AC \uC124\uC815)"
           });
         }
-        const starred = favorites.includes(model);
+        const starred = favorites.some(
+          (favorite) => favorite.provider === draft.answerProvider && favorite.model === model
+        );
         const star = row.createEl("button", {
           cls: "vault-search-model-star",
           text: starred ? "\u2605" : "\u2606",
@@ -4393,10 +4397,14 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         });
         star.toggleClass("is-favorite", starred);
         star.addEventListener("click", () => {
-          const index = favorites.indexOf(model);
+          const index = favorites.findIndex(
+            (favorite) => favorite.provider === draft.answerProvider && favorite.model === model
+          );
           if (index >= 0) favorites.splice(index, 1);
-          else favorites.push(model);
-          draft.favoriteAnswerModels = [...favorites];
+          else favorites.push({ provider: draft.answerProvider, model });
+          draft.favoriteAnswerModels = favorites.map((favorite) => ({
+            ...favorite
+          }));
           renderModelList();
         });
       }
@@ -5327,7 +5335,7 @@ var AnswerSession = class {
 // src/icons.ts
 var import_obsidian5 = require("obsidian");
 var ICON_LIGHTNING = "vault-search-lightning";
-var LIGHTNING_BOLT = '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+var LIGHTNING_BOLT = '<polygon points="54.2 8.3 12.5 58.3 50 58.3 45.8 91.7 87.5 41.7 50 41.7 54.2 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
 function registerLightningIcon() {
   (0, import_obsidian5.addIcon)(ICON_LIGHTNING, LIGHTNING_BOLT);
 }
@@ -5419,6 +5427,7 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     });
     const submit = inputRow.createEl("button", {
       text: "\uC9C8\uBB38",
+      cls: "mod-cta",
       attr: { type: "button" }
     });
     const clear = inputRow.createEl("button", {
@@ -5461,13 +5470,19 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
     const modelBar = footer.createDiv({ cls: "vault-ai-search-model-bar" });
+    modelBar.createEl("span", {
+      text: "\uBAA8\uB378",
+      cls: "vault-ai-search-model-label"
+    });
     this.modelSelect = modelBar.createEl("select", {
       cls: "vault-ai-search-model-select",
       attr: { "aria-label": "\uB2F5\uBCC0 \uBAA8\uB378 (\uC990\uACA8\uCC3E\uAE30)" }
     });
     const onModelChange = () => {
-      const value = this.modelSelect.value;
-      if (value) void this.owner.setAnswerModel(value);
+      const [provider, model] = this.modelSelect.value.split("::", 2);
+      if (provider && model) {
+        void this.owner.setAnswerModel(provider, model);
+      }
     };
     this.modelSelect.addEventListener("change", onModelChange);
     this.listeners.push(
@@ -5493,13 +5508,18 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
   refreshModelSelector() {
     if (!this.modelSelect) return;
     const options = this.owner.getAnswerModelOptions();
+    const currentProvider = this.owner.settings.answerProvider;
     const current = this.owner.settings.answerModel;
     this.modelSelect.empty();
-    for (const model of options) {
-      this.modelSelect.createEl("option", { text: model, value: model });
+    for (const option of options) {
+      const crossProvider = option.provider !== currentProvider;
+      this.modelSelect.createEl("option", {
+        text: crossProvider ? `${option.model} (${option.provider})` : option.model,
+        value: `${option.provider}::${option.model}`
+      });
     }
-    this.modelSelect.value = options.includes(current) ? current : options[0] ?? "";
-    this.modelSelect.title = `${this.owner.settings.answerProvider} \xB7 ${current} (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC990\uACA8\uCC3E\uAE30 \uC9C0\uC815)`;
+    this.modelSelect.value = `${currentProvider}::${current}`;
+    this.modelSelect.title = "\uB2F5\uBCC0 \uBAA8\uB378 \u2014 \uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815\uD55C \uC990\uACA8\uCC3E\uAE30\uC785\uB2C8\uB2E4. \uB2E4\uB978 provider \uBAA8\uB378\uC744 \uACE0\uB974\uBA74 provider\uB3C4 \uD568\uAED8 \uC804\uD658\uB429\uB2C8\uB2E4.";
     if (this.providerEl) {
       this.providerEl.setText(
         `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}`
@@ -5617,6 +5637,31 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
 };
 
 // src/main.ts
+var PROVIDER_IDS = ["openai", "opencode-go", "deepseek"];
+function normalizeFavoriteModels(raw, fallbackProvider) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const entry of raw) {
+    let provider = fallbackProvider;
+    let model = "";
+    if (typeof entry === "string") {
+      model = entry.trim();
+    } else if (entry && typeof entry === "object") {
+      const value = entry;
+      model = typeof value.model === "string" ? value.model.trim() : "";
+      if (PROVIDER_IDS.includes(value.provider)) {
+        provider = value.provider;
+      }
+    }
+    if (!model) continue;
+    const key = `${provider}::${model}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      out.push({ provider, model });
+    }
+  }
+  return out;
+}
 var VaultSearchPlugin = class extends import_obsidian7.Plugin {
   draftSettings;
   backend;
@@ -5740,9 +5785,8 @@ var VaultSearchPlugin = class extends import_obsidian7.Plugin {
     this.settings.excludeGlobs = loaded?.excludeGlobs || [
       ...DEFAULT_SETTINGS.excludeGlobs
     ];
-    this.settings.favoriteAnswerModels = Array.isArray(
-      loaded?.favoriteAnswerModels
-    ) ? [...loaded.favoriteAnswerModels] : [];
+    const rawFavorites = loaded?.favoriteAnswerModels;
+    this.settings.favoriteAnswerModels = Array.isArray(rawFavorites) ? normalizeFavoriteModels(rawFavorites, this.settings.answerProvider) : [];
     if (!(this.settings.answerProvider in { openai: true, "opencode-go": true, deepseek: true }))
       this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
     this.settings.answerModel = String(
@@ -5813,29 +5857,50 @@ var VaultSearchPlugin = class extends import_obsidian7.Plugin {
     this.providerModels[provider] = models;
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
-  /** Models the AI search footer offers: favorites only when any exist,
-   *  otherwise the full fetched list so the selector is never empty. */
+  /** Models the AI search footer offers: favorites across ALL providers plus
+   *  the current selection, deduped and with the current entry first. Falls
+   *  back to the current provider's fetched list when nothing is starred, so
+   *  the selector is never empty. Selecting a cross-provider favorite also
+   *  switches the provider (setAnswerModel handles that). */
   getAnswerModelOptions() {
-    const available = this.providerModels[this.settings.answerProvider] || [];
-    const favorites = (this.settings.favoriteAnswerModels || []).filter(
-      (model) => available.includes(model)
-    );
-    const options = favorites.length ? favorites : available;
-    const current = this.settings.answerModel;
-    return options.includes(current) ? options : [current, ...options];
+    const favorites = this.settings.favoriteAnswerModels || [];
+    const currentProvider = this.settings.answerProvider;
+    const options = [];
+    const seen = /* @__PURE__ */ new Set();
+    const push = (provider, model) => {
+      const key = `${provider}::${model}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        options.push({ provider, model });
+      }
+    };
+    push(currentProvider, this.settings.answerModel);
+    for (const favorite of favorites) {
+      if (favorite && favorite.model) push(favorite.provider, favorite.model);
+    }
+    if (options.length > 1) return options;
+    for (const model of this.providerModels[currentProvider] || []) {
+      push(currentProvider, model);
+    }
+    return options;
   }
-  /** Change the answer model from the AI search view footer (hot — no
-   *  restart; the backend picks it up on the next answer request). */
-  async setAnswerModel(model) {
+  /** Change the answer provider/model from the AI search view footer (hot —
+   *  no restart; the backend picks it up on the next answer request). */
+  async setAnswerModel(provider, model) {
     const value = model.trim();
-    if (!value || value === this.settings.answerModel) return;
+    const previous = this.settings.answerModel;
+    const previousProvider = this.settings.answerProvider;
+    if (!value || value === previous && provider === previousProvider) return;
+    this.settings.answerProvider = provider;
     this.settings.answerModel = value;
     await this.saveSettings();
     if (this.backend.status.state !== "stopped") {
       await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
-    new import_obsidian7.Notice(`\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`);
+    new import_obsidian7.Notice(
+      provider === previousProvider ? `\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.` : `\uB2F5\uBCC0 provider\uB97C ${provider}\uB85C \uC804\uD658\uD558\uACE0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`
+    );
   }
   resetDraftSettings() {
     this.draftSettings = cloneSettings(this.settings);

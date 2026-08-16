@@ -241,7 +241,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .setName("답변 모델")
       .setDesc(
         fetchedModels.length
-          ? `${fetchedModels.length}개 모델을 확인했습니다. 모델을 클릭해 선택하고, ★로 즐겨찾기를 지정하세요. 즐겨찾기 모델만 AI Vault Search 패널의 모델 선택에 표시됩니다. 기본값: ${answerProvider.model}`
+          ? `${fetchedModels.length}개 모델을 확인했습니다. 모델을 클릭해 선택하고, ★로 즐겨찾기를 지정하세요. 즐겨찾기 모델은 모든 provider에서 모아져 AI Vault Search 패널의 모델 선택에 표시됩니다. 기본값: ${answerProvider.model}`
           : `먼저 모델 최신화를 눌러 선택지를 가져오세요. 기본값: ${answerProvider.model}`,
       )
       .setClass("vault-search-model-setting");
@@ -269,7 +269,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             text: "(현재 설정)",
           });
         }
-        const starred = favorites.includes(model);
+        const starred = favorites.some(
+          (favorite) =>
+            favorite.provider === draft.answerProvider &&
+            favorite.model === model,
+        );
         const star = row.createEl("button", {
           cls: "vault-search-model-star",
           text: starred ? "★" : "☆",
@@ -281,10 +285,16 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         });
         star.toggleClass("is-favorite", starred);
         star.addEventListener("click", () => {
-          const index = favorites.indexOf(model);
+          const index = favorites.findIndex(
+            (favorite) =>
+              favorite.provider === draft.answerProvider &&
+              favorite.model === model,
+          );
           if (index >= 0) favorites.splice(index, 1);
-          else favorites.push(model);
-          draft.favoriteAnswerModels = [...favorites];
+          else favorites.push({ provider: draft.answerProvider, model });
+          draft.favoriteAnswerModels = favorites.map((favorite) => ({
+            ...favorite,
+          }));
           renderModelList();
         });
       }
