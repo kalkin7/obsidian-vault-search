@@ -3182,7 +3182,9 @@ function getProviderSecret(app, provider) {
 function setProviderSecret(app, provider, secret) {
   const secretStorage = storage(app);
   if (!secretStorage) {
-    throw new Error("\uC774 \uBC84\uC804\uC758 Obsidian\uC740 \uBCF4\uC548 \uD0A4 \uC800\uC7A5\uC18C\uB97C \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. Obsidian 1.11.4 \uC774\uC0C1\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.");
+    throw new Error(
+      "\uC774 \uBC84\uC804\uC758 Obsidian\uC740 \uBCF4\uC548 \uD0A4 \uC800\uC7A5\uC18C\uB97C \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. Obsidian 1.11.4 \uC774\uC0C1\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
+    );
   }
   secretStorage.setSecret(LLM_SECRET_IDS[provider], secret.trim());
 }
@@ -3190,7 +3192,9 @@ function providerEnvironment(app) {
   const environment = {};
   const secretStorage = storage(app);
   if (!secretStorage) return environment;
-  for (const provider of Object.keys(LLM_PROVIDER_DEFAULTS)) {
+  for (const provider of Object.keys(
+    LLM_PROVIDER_DEFAULTS
+  )) {
     const stored = secretStorage.getSecret(LLM_SECRET_IDS[provider]);
     if (stored !== null) {
       environment[LLM_PROVIDER_DEFAULTS[provider].env] = stored.trim();
@@ -3603,7 +3607,8 @@ var BackendManager = class {
     this.setStatus({ state: "starting" });
     await (0, import_promises2.mkdir)(this.dataDir, { recursive: true });
     const providerEnvironment2 = this.getEnvironment();
-    if (Object.keys(providerEnvironment2).length === 0 && await this.tryAttachStandalone()) return;
+    if (Object.keys(providerEnvironment2).length === 0 && await this.tryAttachStandalone())
+      return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -4353,8 +4358,8 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
     const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
     let apiKeyInput = null;
-    new import_obsidian3.Setting(containerEl).setName("API \uD0A4").setDesc(
-      savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428" : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4"
+    new import_obsidian3.Setting(containerEl).setName(`API \uD0A4 (${answerProvider.name})`).setDesc(
+      savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428. \uD14C\uC2A4\uD2B8\uB85C \uC720\uD6A8\uC131\uC744 \uD655\uC778\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4." : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4"
     ).addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder(
@@ -4363,6 +4368,29 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
       apiKeyInput = text.inputEl;
       return text;
     }).addButton(
+      (button) => button.setButtonText("\uD14C\uC2A4\uD2B8").onClick(async () => {
+        const key = apiKeyInput?.value.trim() || savedApiKey || "";
+        if (!key) {
+          new import_obsidian3.Notice("\uC800\uC7A5\uB41C \uD0A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+          return;
+        }
+        button.setDisabled(true);
+        try {
+          const valid = await validateProviderApiKey(
+            draft.answerProvider,
+            key
+          );
+          new import_obsidian3.Notice(
+            valid ? `${answerProvider.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.` : `${answerProvider.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`,
+            8e3
+          );
+        } catch (error) {
+          this.showError(error);
+        } finally {
+          button.setDisabled(false);
+        }
+      })
+    ).addButton(
       (button) => button.setButtonText("\uC800\uC7A5").setCta().onClick(async () => {
         const value = apiKeyInput?.value.trim() || "";
         if (!value) {

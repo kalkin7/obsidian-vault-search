@@ -4,6 +4,7 @@ import { LLM_PROVIDER_DEFAULTS, MODEL_PROFILES } from "./constants";
 import { defaultLoadPolicy, settingsImpact } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
+import { validateProviderApiKey } from "./llm-secrets";
 import type { BackendStatus, LLMProviderId } from "./types";
 import { chooseProviderModel } from "./model-catalog";
 
@@ -186,10 +187,10 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
     let apiKeyInput: HTMLInputElement | null = null;
     new Setting(containerEl)
-      .setName("API 키")
+      .setName(`API 키 (${answerProvider.name})`)
       .setDesc(
         savedApiKey
-          ? "Obsidian 보안 저장소에 저장됨"
+          ? "Obsidian 보안 저장소에 저장됨. 테스트로 유효성을 확인할 수 있습니다."
           : "Obsidian 보안 저장소에 저장합니다",
       )
       .addText((text) => {
@@ -202,6 +203,32 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         apiKeyInput = text.inputEl;
         return text;
       })
+      .addButton((button) =>
+        button.setButtonText("테스트").onClick(async () => {
+          const key = (apiKeyInput?.value.trim() || savedApiKey) || "";
+          if (!key) {
+            new Notice("저장된 키가 없습니다.");
+            return;
+          }
+          button.setDisabled(true);
+          try {
+            const valid = await validateProviderApiKey(
+              draft.answerProvider,
+              key,
+            );
+            new Notice(
+              valid
+                ? `${answerProvider.name} 키가 유효합니다.`
+                : `${answerProvider.name}가 이 키를 거부했습니다. 키를 다시 확인해 주세요.`,
+              8000,
+            );
+          } catch (error) {
+            this.showError(error);
+          } finally {
+            button.setDisabled(false);
+          }
+        }),
+      )
       .addButton((button) =>
         button
           .setButtonText("저장")
