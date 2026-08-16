@@ -46,7 +46,7 @@ const INPUT_MAX_HEIGHT = 200;
  *  list with nested bullets and citations, so list rendering can be checked
  *  deterministically without the model. */
 const SAMPLE_ANSWER = [
-  "5. 현재 운영 이슈",
+  "## 5. 현재 운영 이슈",
   "",
   "2026년 7월 기준 설치 이후의 주된 과제는 다음과 같습니다. [S1]",
   "",

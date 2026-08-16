@@ -6016,7 +6016,7 @@ async function pruneHistory(vault, folder, maxEntries) {
 var ANSWER_TRANSPORT_MARGIN_MS = 2e3;
 var INPUT_MAX_HEIGHT = 200;
 var SAMPLE_ANSWER = [
-  "5. \uD604\uC7AC \uC6B4\uC601 \uC774\uC288",
+  "## 5. \uD604\uC7AC \uC6B4\uC601 \uC774\uC288",
   "",
   "2026\uB144 7\uC6D4 \uAE30\uC900 \uC124\uCE58 \uC774\uD6C4\uC758 \uC8FC\uB41C \uACFC\uC81C\uB294 \uB2E4\uC74C\uACFC \uAC19\uC2B5\uB2C8\uB2E4. [S1]",
   "",
