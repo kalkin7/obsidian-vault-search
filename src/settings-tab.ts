@@ -417,7 +417,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("히스토리 폴더")
       .setDesc(
-        "대화가 마크다운 노트로 저장되는 볼트 내 경로입니다. 노트는 언제든 직접 읽고 편집할 수 있습니다.",
+        "대화가 마크다운 노트로 저장되는 볼트 내 경로입니다. 노트는 언제든 직접 읽고 편집할 수 있습니다. 참고: 히스토리 노트도 검색 인덱스에 포함될 수 있으므로 제외하려면 제외 목록에 이 폴더를 추가하세요.",
       )
       .addText((text) =>
         text

@@ -30,6 +30,7 @@ import { VIEW_TYPE_VAULT_AI_SEARCH } from "./constants";
 import { ICON_HISTORY, ICON_LIGHTNING } from "./icons";
 import {
   deleteHistory,
+  historyTitle,
   listHistory,
   loadHistory,
   saveHistory,
@@ -41,6 +42,22 @@ import {
 const ANSWER_TRANSPORT_MARGIN_MS = 2_000;
 /** Textarea auto-grow cap; past this the box scrolls instead. */
 const INPUT_MAX_HEIGHT = 200;
+
+/** Merge citations into a session-wide map: the last definition of an id
+ *  wins, first-seen order preserved. Answers reuse [S#] ids across turns, so
+ *  history saves one merged list per session (fresh saves previously stored
+ *  no citations at all). */
+function mergeCitations(
+  current: Citation[] | null,
+  next: Citation[],
+): Citation[] {
+  if (!next.length) return current ?? [];
+  if (!current?.length) return [...next];
+  const merged = new Map<string, Citation>();
+  for (const citation of current) merged.set(citation.id, citation);
+  for (const citation of next) merged.set(citation.id, citation);
+  return [...merged.values()];
+}
 
 /** Fixed sample answer for the "렌더링 샘플 미리보기" command — a numbered
  *  list with nested bullets and citations, so list rendering can be checked
@@ -520,6 +537,12 @@ export class VaultSearchItemView extends ItemView {
     state: Extract<AnswerState, { kind: "unavailable" }>,
   ): void {
     this.clearPending();
+    // The failed question never got an answer — drop it from the saved
+    // transcript so the backend contract (alternating user/assistant turns)
+    // holds on restore + continue.
+    if (this.transcript.at(-1)?.role === "user") {
+      this.transcript.pop();
+    }
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant",
     });
@@ -546,6 +569,9 @@ export class VaultSearchItemView extends ItemView {
     this.statusEl?.removeClass("vault-search-error");
     this.clearPending();
     this.transcript.push({ role: "assistant", content: result.answer });
+    // Answers reuse [S#] ids across turns; keep one merged session map so
+    // history saves real citations (fresh saves previously stored none).
+    this.lastCitations = mergeCitations(this.lastCitations, result.citations);
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant",
     });
@@ -570,7 +596,9 @@ export class VaultSearchItemView extends ItemView {
       this.renderMessageEvidence(block, result.evidence);
     }
     if (this.owner.settings.historyAutosave) {
-      void this.saveCurrentSession();
+      void this.saveCurrentSession().catch((error) => {
+        new Notice(`히스토리 저장 실패: ${String(error)}`, 8000);
+      });
     }
     this.scrollToBottom();
   }
@@ -607,9 +635,15 @@ export class VaultSearchItemView extends ItemView {
       attr: { type: "button" },
     });
     saveNow.addEventListener("click", () => {
-      void this.saveCurrentSession(true);
-      this.hideHistoryPopover();
-      new Notice("히스토리에 저장했습니다.");
+      void (async () => {
+        try {
+          const saved = await this.saveCurrentSession(true);
+          this.hideHistoryPopover();
+          if (saved) new Notice("히스토리에 저장했습니다.");
+        } catch (error) {
+          new Notice(`히스토리 저장 실패: ${String(error)}`, 8000);
+        }
+      })();
     });
     const metas = await listHistory(
       this.app.vault,
@@ -672,11 +706,16 @@ export class VaultSearchItemView extends ItemView {
     this.clearPending();
     this.answerEl.empty();
     this.pendingEl = null;
-    this.transcript = session.messages.map((message) => ({ ...message }));
+    // Never restore an unanswered trailing question (backend contract).
+    const messages =
+      session.messages.at(-1)?.role === "user"
+        ? session.messages.slice(0, -1)
+        : session.messages;
+    this.transcript = messages.map((message) => ({ ...message }));
     this.sessionCreated = session.created;
     this.sessionTitle = session.title;
     this.lastCitations = session.citations;
-    for (const message of session.messages) {
+    for (const message of messages) {
       if (message.role === "user") {
         this.appendUserMessage(message.content);
       } else {
@@ -695,7 +734,7 @@ export class VaultSearchItemView extends ItemView {
         );
       }
     }
-    this.session.restore(session.messages);
+    this.session.restore(messages);
     this.lastQuery = "";
     this.hideHistoryPopover();
     this.scrollToBottom();
@@ -707,18 +746,24 @@ export class VaultSearchItemView extends ItemView {
   }
 
   /** Snapshot the current panel conversation and write it to the history
-   *  folder. `manual` shows a notice when there is nothing to save yet. */
-  private async saveCurrentSession(manual = false): Promise<void> {
-    if (this.transcript.length === 0) {
+   *  folder. `manual` shows a notice when there is nothing to save yet.
+   *  Returns whether a note was actually written. */
+  private async saveCurrentSession(manual = false): Promise<boolean> {
+    // Never persist an unanswered trailing question (backend contract).
+    const messages =
+      this.transcript.at(-1)?.role === "user"
+        ? this.transcript.slice(0, -1)
+        : this.transcript;
+    if (messages.length === 0) {
       if (manual) new Notice("저장할 대화가 없습니다.");
-      return;
+      return false;
     }
     if (!this.sessionCreated) {
       this.sessionCreated = new Date().toISOString();
     }
     if (!this.sessionTitle) {
-      const first = this.transcript.find((message) => message.role === "user");
-      this.sessionTitle = first ? first.content : "대화";
+      const first = messages.find((message) => message.role === "user");
+      this.sessionTitle = first ? historyTitle(first.content) : "대화";
     }
     const settings = this.owner.settings;
     const session: HistorySession = {
@@ -727,7 +772,7 @@ export class VaultSearchItemView extends ItemView {
       provider: settings.answerProvider,
       model: settings.answerModel,
       reasoningEffort: settings.answerReasoningEffort,
-      messages: this.transcript,
+      messages,
       citations: this.lastCitations ?? [],
     };
     await saveHistory(
@@ -736,6 +781,7 @@ export class VaultSearchItemView extends ItemView {
       session,
       settings.historyMaxEntries,
     );
+    return true;
   }
 
   /** Dev/diagnostic: render a fixed sample answer (mixed numbered list with
@@ -743,6 +789,9 @@ export class VaultSearchItemView extends ItemView {
    *  checked deterministically without the model. Command:
    *  "AI Vault Search: 목록 렌더링 샘플 미리보기". */
   renderSample(): void {
+    // Invalidate any in-flight answer and clear the session context so the
+    // sample never mixes with a live conversation.
+    this.session.clear();
     this.clearPending();
     this.answerEl.empty();
     this.pendingEl = null;

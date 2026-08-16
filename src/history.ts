@@ -5,6 +5,11 @@ import { toNoteMarkdown } from "./answer-renderer";
 /** Default folder (relative to vault root) for AI search history notes. */
 export const DEFAULT_HISTORY_FOLDER = "AI Vault Search/history";
 
+/** Frontmatter schema marker — only notes carrying this value are treated as
+ *  history (list / load / prune). Unmarked notes in the folder are never
+ *  deleted or relisted, even when the folder is misconfigured. */
+export const HISTORY_SCHEMA = 1;
+
 export interface HistoryMessage {
   role: "user" | "assistant";
   content: string;
@@ -47,14 +52,28 @@ export function historyTitle(query: string): string {
   return (safe || "대화").slice(0, 60);
 }
 
-/** Normalize a user-configured folder into a vault-relative path. */
+/** Normalize a user-configured folder into a vault-relative path. Root-like
+ *  inputs (`""`, `.`, `..`, anything escaping the vault) fall back to the
+ *  default so a misconfigured folder can never point pruning at the whole
+ *  vault. */
 export function normalizeHistoryFolder(folder: string): string {
   const trimmed = (folder || DEFAULT_HISTORY_FOLDER).trim();
   const cleaned = trimmed.replace(/^[/\\]+|[/\\]+$/g, "").replace(/\\/g, "/");
+  if (
+    cleaned === "" ||
+    cleaned === "." ||
+    cleaned === ".." ||
+    cleaned.startsWith("../") ||
+    cleaned.includes("/../")
+  ) {
+    return DEFAULT_HISTORY_FOLDER;
+  }
   return normalizePath(cleaned || DEFAULT_HISTORY_FOLDER);
 }
 
-/** `제목@YYYY-MM-DD_HH-MM-SS.md` — Copilot-style conversation file name. */
+/** `제목@YYYY-MM-DD_HH-MM-SS-mmm.md` — Copilot-style conversation file
+ *  name; milliseconds make same-second sessions distinct while the same
+ *  session (same created timestamp) always upserts the same file. */
 export function historyFileName(query: string, created: string): string {
   const date = new Date(created);
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -62,7 +81,7 @@ export function historyFileName(query: string, created: string): string {
     date.getDate(),
   )}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(
     date.getSeconds(),
-  )}`;
+  )}-${String(date.getMilliseconds()).padStart(3, "0")}`;
   return `${historyTitle(query)}@${stamp}.md`;
 }
 
@@ -117,6 +136,7 @@ export function buildHistoryNote(session: HistorySession): string {
     .join("\n");
   const frontmatter = [
     "---",
+    `ai_vault_search_history: ${HISTORY_SCHEMA}`,
     `title: ${yamlQuote(session.title)}`,
     `provider: ${yamlQuote(session.provider)}`,
     `model: ${yamlQuote(session.model)}`,
@@ -139,11 +159,13 @@ export function buildHistoryNote(session: HistorySession): string {
   return `${frontmatter}\n${body}\n`;
 }
 
-/** Parse a history note back into a session. Returns null when the file is
- *  not one of ours (no frontmatter or missing fields). */
+/** Parse a history note back into a session. Returns null unless the file
+ *  carries the history schema marker — unmarked notes in the folder are
+ *  never treated as history (so pruning can never touch them). */
 export function parseHistoryNote(text: string): HistorySession | null {
   const match = /^---\n([\s\S]*?)\n---\n?/.exec(text);
   if (!match) return null;
+  if (!/^ai_vault_search_history:\s*1\s*$/m.test(match[1])) return null;
   const session: HistorySession = {
     title: "",
     created: "",
@@ -323,12 +345,14 @@ export async function loadHistory(
   }
 }
 
+/** Move a history note to the vault trash (recoverable) instead of a
+ *  permanent delete. */
 export async function deleteHistory(
   vault: Vault,
   filePath: string,
 ): Promise<void> {
   const file = vault.getFileByPath(filePath);
-  if (file) await vault.delete(file);
+  if (file) await vault.trash(file, false);
 }
 
 /** Delete the oldest notes so at most maxEntries remain (0 = keep all). */

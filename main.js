@@ -3079,6 +3079,7 @@ var DEFAULT_SETTINGS = {
   historyFolder: "AI Vault Search/history",
   historyAutosave: true,
   historyMaxEntries: 0,
+  // Persisted fetched model lists (see VaultSearchSettings.fetchedProviderModels).
   fetchedProviderModels: {}
 };
 var LLM_PROVIDER_DEFAULTS = {
@@ -4616,7 +4617,7 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
     containerEl.createEl("h3", { text: "AI Vault \uD788\uC2A4\uD1A0\uB9AC" });
     new import_obsidian3.Setting(containerEl).setName("\uD788\uC2A4\uD1A0\uB9AC \uD3F4\uB354").setDesc(
-      "\uB300\uD654\uAC00 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC800\uC7A5\uB418\uB294 \uBCFC\uD2B8 \uB0B4 \uACBD\uB85C\uC785\uB2C8\uB2E4. \uB178\uD2B8\uB294 \uC5B8\uC81C\uB4E0 \uC9C1\uC811 \uC77D\uACE0 \uD3B8\uC9D1\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
+      "\uB300\uD654\uAC00 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC800\uC7A5\uB418\uB294 \uBCFC\uD2B8 \uB0B4 \uACBD\uB85C\uC785\uB2C8\uB2E4. \uB178\uD2B8\uB294 \uC5B8\uC81C\uB4E0 \uC9C1\uC811 \uC77D\uACE0 \uD3B8\uC9D1\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uCC38\uACE0: \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8\uB3C4 \uAC80\uC0C9 \uC778\uB371\uC2A4\uC5D0 \uD3EC\uD568\uB420 \uC218 \uC788\uC73C\uBBC0\uB85C \uC81C\uC678\uD558\uB824\uBA74 \uC81C\uC678 \uBAA9\uB85D\uC5D0 \uC774 \uD3F4\uB354\uB97C \uCD94\uAC00\uD558\uC138\uC694."
     ).addText(
       (text) => text.setPlaceholder("AI Vault Search/history").setValue(draft.historyFolder).onChange((value) => {
         draft.historyFolder = value.trim() || "AI Vault Search/history";
@@ -5705,8 +5706,10 @@ var AnswerSession = class {
     return this.history.map((message) => ({ ...message }));
   }
   /** Replace the conversation with a previously saved transcript (loaded from
-   *  history). Follow-up questions keep this as their context. */
+   *  history). Follow-up questions keep this as their context. Invalidates any
+   *  in-flight answer so it cannot append into the restored conversation. */
   restore(messages) {
+    this.generation++;
     this.history = messages.map((message) => ({ ...message }));
     if (!this.disposed) this.stateChanged({ kind: "idle" });
   }
@@ -5768,6 +5771,7 @@ function registerLightningIcon() {
 // src/history.ts
 var import_obsidian7 = require("obsidian");
 var DEFAULT_HISTORY_FOLDER = "AI Vault Search/history";
+var HISTORY_SCHEMA = 1;
 function historyTitle(query) {
   const words = query.trim().split(/\s+/).filter(Boolean);
   const first = words[0] ?? "\uB300\uD654";
@@ -5779,6 +5783,9 @@ function historyTitle(query) {
 function normalizeHistoryFolder(folder) {
   const trimmed = (folder || DEFAULT_HISTORY_FOLDER).trim();
   const cleaned = trimmed.replace(/^[/\\]+|[/\\]+$/g, "").replace(/\\/g, "/");
+  if (cleaned === "" || cleaned === "." || cleaned === ".." || cleaned.startsWith("../") || cleaned.includes("/../")) {
+    return DEFAULT_HISTORY_FOLDER;
+  }
   return (0, import_obsidian7.normalizePath)(cleaned || DEFAULT_HISTORY_FOLDER);
 }
 function historyFileName(query, created) {
@@ -5788,7 +5795,7 @@ function historyFileName(query, created) {
     date.getDate()
   )}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(
     date.getSeconds()
-  )}`;
+  )}-${String(date.getMilliseconds()).padStart(3, "0")}`;
   return `${historyTitle(query)}@${stamp}.md`;
 }
 function yamlQuote(value) {
@@ -5823,6 +5830,7 @@ function buildHistoryNote(session) {
   ).join("\n");
   const frontmatter = [
     "---",
+    `ai_vault_search_history: ${HISTORY_SCHEMA}`,
     `title: ${yamlQuote(session.title)}`,
     `provider: ${yamlQuote(session.provider)}`,
     `model: ${yamlQuote(session.model)}`,
@@ -5847,6 +5855,7 @@ ${body}
 function parseHistoryNote(text) {
   const match = /^---\n([\s\S]*?)\n---\n?/.exec(text);
   if (!match) return null;
+  if (!/^ai_vault_search_history:\s*1\s*$/m.test(match[1])) return null;
   const session = {
     title: "",
     created: "",
@@ -6001,7 +6010,7 @@ async function loadHistory(vault, filePath) {
 }
 async function deleteHistory(vault, filePath) {
   const file = vault.getFileByPath(filePath);
-  if (file) await vault.delete(file);
+  if (file) await vault.trash(file, false);
 }
 async function pruneHistory(vault, folder, maxEntries) {
   if (!maxEntries || maxEntries < 1) return;
@@ -6015,6 +6024,14 @@ async function pruneHistory(vault, folder, maxEntries) {
 // src/search-item-view.ts
 var ANSWER_TRANSPORT_MARGIN_MS = 2e3;
 var INPUT_MAX_HEIGHT = 200;
+function mergeCitations(current, next) {
+  if (!next.length) return current ?? [];
+  if (!current?.length) return [...next];
+  const merged = /* @__PURE__ */ new Map();
+  for (const citation of current) merged.set(citation.id, citation);
+  for (const citation of next) merged.set(citation.id, citation);
+  return [...merged.values()];
+}
 var SAMPLE_ANSWER = [
   "## 5. \uD604\uC7AC \uC6B4\uC601 \uC774\uC288",
   "",
@@ -6407,6 +6424,9 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
   }
   renderUnavailable(state) {
     this.clearPending();
+    if (this.transcript.at(-1)?.role === "user") {
+      this.transcript.pop();
+    }
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant"
     });
@@ -6429,6 +6449,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     this.statusEl?.removeClass("vault-search-error");
     this.clearPending();
     this.transcript.push({ role: "assistant", content: result.answer });
+    this.lastCitations = mergeCitations(this.lastCitations, result.citations);
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant"
     });
@@ -6450,7 +6471,9 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       this.renderMessageEvidence(block, result.evidence);
     }
     if (this.owner.settings.historyAutosave) {
-      void this.saveCurrentSession();
+      void this.saveCurrentSession().catch((error) => {
+        new import_obsidian8.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
+      });
     }
     this.scrollToBottom();
   }
@@ -6483,9 +6506,15 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       attr: { type: "button" }
     });
     saveNow.addEventListener("click", () => {
-      void this.saveCurrentSession(true);
-      this.hideHistoryPopover();
-      new import_obsidian8.Notice("\uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.");
+      void (async () => {
+        try {
+          const saved = await this.saveCurrentSession(true);
+          this.hideHistoryPopover();
+          if (saved) new import_obsidian8.Notice("\uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.");
+        } catch (error) {
+          new import_obsidian8.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
+        }
+      })();
     });
     const metas = await listHistory(
       this.app.vault,
@@ -6543,11 +6572,12 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     this.clearPending();
     this.answerEl.empty();
     this.pendingEl = null;
-    this.transcript = session.messages.map((message) => ({ ...message }));
+    const messages = session.messages.at(-1)?.role === "user" ? session.messages.slice(0, -1) : session.messages;
+    this.transcript = messages.map((message) => ({ ...message }));
     this.sessionCreated = session.created;
     this.sessionTitle = session.title;
     this.lastCitations = session.citations;
-    for (const message of session.messages) {
+    for (const message of messages) {
       if (message.role === "user") {
         this.appendUserMessage(message.content);
       } else {
@@ -6567,7 +6597,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
         );
       }
     }
-    this.session.restore(session.messages);
+    this.session.restore(messages);
     this.lastQuery = "";
     this.hideHistoryPopover();
     this.scrollToBottom();
@@ -6577,18 +6607,20 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     await this.renderHistoryList();
   }
   /** Snapshot the current panel conversation and write it to the history
-   *  folder. `manual` shows a notice when there is nothing to save yet. */
+   *  folder. `manual` shows a notice when there is nothing to save yet.
+   *  Returns whether a note was actually written. */
   async saveCurrentSession(manual = false) {
-    if (this.transcript.length === 0) {
+    const messages = this.transcript.at(-1)?.role === "user" ? this.transcript.slice(0, -1) : this.transcript;
+    if (messages.length === 0) {
       if (manual) new import_obsidian8.Notice("\uC800\uC7A5\uD560 \uB300\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
-      return;
+      return false;
     }
     if (!this.sessionCreated) {
       this.sessionCreated = (/* @__PURE__ */ new Date()).toISOString();
     }
     if (!this.sessionTitle) {
-      const first = this.transcript.find((message) => message.role === "user");
-      this.sessionTitle = first ? first.content : "\uB300\uD654";
+      const first = messages.find((message) => message.role === "user");
+      this.sessionTitle = first ? historyTitle(first.content) : "\uB300\uD654";
     }
     const settings = this.owner.settings;
     const session = {
@@ -6597,7 +6629,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       provider: settings.answerProvider,
       model: settings.answerModel,
       reasoningEffort: settings.answerReasoningEffort,
-      messages: this.transcript,
+      messages,
       citations: this.lastCitations ?? []
     };
     await saveHistory(
@@ -6606,12 +6638,14 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       session,
       settings.historyMaxEntries
     );
+    return true;
   }
   /** Dev/diagnostic: render a fixed sample answer (mixed numbered list with
    *  nested bullets and citations) so the panel's list rendering can be
    *  checked deterministically without the model. Command:
    *  "AI Vault Search: 목록 렌더링 샘플 미리보기". */
   renderSample() {
+    this.session.clear();
     this.clearPending();
     this.answerEl.empty();
     this.pendingEl = null;
@@ -6708,6 +6742,12 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   runtimeChangePromise = null;
   /** Debounce handle for auto-applying settings-tab edits. */
   draftApplyTimer = null;
+  /** Backing state of the stable draft proxy (identity never changes, so
+   *  controls bound to the proxy keep working after an auto-apply). */
+  draftTarget;
+  /** Set when a draft edit lands while an apply is in flight — a follow-up
+   *  apply is then scheduled so the edit is never dropped. */
+  draftDirty = false;
   providerModels = {};
   runtimeSummary = "\uB7F0\uD0C0\uC784: \uD655\uC778 \uC804";
   runtimeWarning = null;
@@ -6741,7 +6781,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
-    this.draftSettings = this.makeDraftProxy(this.settings);
+    this.initDraft(this.settings);
     this.queue = new VaultEventQueue(
       () => this.settings.syncDebounceMs,
       async (changed, deleted) => {
@@ -6868,7 +6908,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     if (loaded?.loadPolicy === void 0) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
-    this.draftSettings = this.makeDraftProxy(this.settings);
+    this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === void 0) {
       await this.saveSettings();
     }
@@ -6925,12 +6965,10 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
    *  Persists to data.json so restarts keep the list and its stars. */
   setProviderModels(provider, models) {
     this.providerModels[provider] = models;
-    const fetched = {
+    this.settings.fetchedProviderModels = {
       ...this.settings.fetchedProviderModels,
       [provider]: models
     };
-    this.settings.fetchedProviderModels = fetched;
-    this.draftSettings.fetchedProviderModels = fetched;
     void this.saveSettings().catch(() => void 0);
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
@@ -7052,18 +7090,27 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
-  /** Wrap a settings snapshot so any later change schedules a debounced
-   *  auto-apply — the settings tab has no save button; edits persist on
-   *  their own (~0.7 s after the last keystroke). */
-  makeDraftProxy(settings) {
-    const proxy = new Proxy(cloneSettings(settings), {
+  /** Create the single stable draft proxy the settings tab edits. Any later
+   *  change schedules a debounced auto-apply — the settings tab has no save
+   *  button; edits persist on their own (~0.7 s after the last keystroke). */
+  initDraft(settings) {
+    this.draftTarget = cloneSettings(settings);
+    this.draftSettings = new Proxy(this.draftTarget, {
       set: (target, property, value) => {
         const applied = Reflect.set(target, property, value);
-        if (applied) this.scheduleDraftApply();
+        if (applied) {
+          this.draftDirty = true;
+          this.scheduleDraftApply();
+        }
         return applied;
       }
     });
-    return proxy;
+  }
+  /** Replace the draft's contents with the given settings WITHOUT scheduling
+   *  an auto-apply (used after a successful apply). The proxy identity stays
+   *  the same, so settings controls bound to it keep receiving edits. */
+  syncDraftTo(settings) {
+    Object.assign(this.draftTarget, cloneSettings(settings));
   }
   /** Debounced auto-apply for draft edits (batches text-field keystrokes). */
   scheduleDraftApply() {
@@ -7076,7 +7123,11 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }, 700);
   }
   async applyDraftSettings() {
-    if (this.runtimeChangePromise) return this.runtimeChangePromise;
+    if (this.runtimeChangePromise) {
+      return this.runtimeChangePromise.then(
+        () => this.draftDirty ? this.applyDraftSettings() : void 0
+      );
+    }
     this.runtimeChangePromise = this.applyDraftSettingsInternal();
     try {
       await this.runtimeChangePromise;
@@ -7085,6 +7136,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }
   }
   async applyDraftSettingsInternal() {
+    this.draftDirty = false;
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
     const impact = settingsImpact(previous, next);
@@ -7115,7 +7167,11 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
             await this.backend.call("reconcile", { mode: "fast" }, 6e5);
         }
       }
-      this.draftSettings = this.makeDraftProxy(this.settings);
+      if (this.draftDirty) {
+        this.scheduleDraftApply();
+      } else {
+        this.syncDraftTo(this.settings);
+      }
       if (impact === "all" || impact === "vectors" || impact === "restart") {
         new import_obsidian9.Notice(
           impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4."
@@ -7124,12 +7180,12 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => void 0);
       this.settings = previous;
-      this.draftSettings = this.makeDraftProxy(next);
       await this.saveSettings();
       if (previousWasRunning) {
         await this.backend.start(false);
         await this.backend.waitUntilReady();
       }
+      if (this.draftDirty) this.scheduleDraftApply();
       throw error;
     } finally {
       for (const view of this.aiSearchViews) view.refreshModelSelector();
@@ -7194,7 +7250,6 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       return;
     }
     const previous = cloneSettings(this.settings);
-    const previousDraft = cloneSettings(this.draftSettings);
     const wasRunning = this.backend.status.state !== "stopped";
     try {
       if (wasRunning) await this.backend.stop();
@@ -7209,7 +7264,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => void 0);
       this.settings = previous;
-      this.draftSettings = this.makeDraftProxy(previousDraft);
+      this.syncDraftTo(previous);
       await this.saveSettings();
       if (wasRunning) {
         await this.backend.start(false);

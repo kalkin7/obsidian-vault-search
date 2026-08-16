@@ -24,8 +24,10 @@ export class AnswerSession {
   }
 
   /** Replace the conversation with a previously saved transcript (loaded from
-   *  history). Follow-up questions keep this as their context. */
+   *  history). Follow-up questions keep this as their context. Invalidates any
+   *  in-flight answer so it cannot append into the restored conversation. */
   restore(messages: AnswerConversationMessage[]): void {
+    this.generation++;
     this.history = messages.map((message) => ({ ...message }));
     if (!this.disposed) this.stateChanged({ kind: "idle" });
   }

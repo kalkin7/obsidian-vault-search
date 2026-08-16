@@ -88,6 +88,12 @@ export default class VaultSearchPlugin extends Plugin {
   private runtimeChangePromise: Promise<void> | null = null;
   /** Debounce handle for auto-applying settings-tab edits. */
   private draftApplyTimer: number | null = null;
+  /** Backing state of the stable draft proxy (identity never changes, so
+   *  controls bound to the proxy keep working after an auto-apply). */
+  private draftTarget!: VaultSearchSettings;
+  /** Set when a draft edit lands while an apply is in flight — a follow-up
+   *  apply is then scheduled so the edit is never dropped. */
+  private draftDirty = false;
   private readonly providerModels: Partial<Record<LLMProviderId, string[]>> =
     {};
   runtimeSummary = "런타임: 확인 전";
@@ -123,7 +129,7 @@ export default class VaultSearchPlugin extends Plugin {
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
-    this.draftSettings = this.makeDraftProxy(this.settings);
+    this.initDraft(this.settings);
     this.queue = new VaultEventQueue(
       () => this.settings.syncDebounceMs,
       async (changed, deleted) => {
@@ -274,7 +280,7 @@ export default class VaultSearchPlugin extends Plugin {
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
-    this.draftSettings = this.makeDraftProxy(this.settings);
+    this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === undefined) {
       await this.saveSettings();
     }
@@ -349,12 +355,10 @@ export default class VaultSearchPlugin extends Plugin {
    *  Persists to data.json so restarts keep the list and its stars. */
   setProviderModels(provider: LLMProviderId, models: string[]): void {
     this.providerModels[provider] = models;
-    const fetched = {
+    this.settings.fetchedProviderModels = {
       ...this.settings.fetchedProviderModels,
       [provider]: models,
     };
-    this.settings.fetchedProviderModels = fetched;
-    this.draftSettings.fetchedProviderModels = fetched;
     void this.saveSettings().catch(() => undefined);
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
@@ -512,18 +516,28 @@ export default class VaultSearchPlugin extends Plugin {
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
-  /** Wrap a settings snapshot so any later change schedules a debounced
-   *  auto-apply — the settings tab has no save button; edits persist on
-   *  their own (~0.7 s after the last keystroke). */
-  private makeDraftProxy(settings: VaultSearchSettings): VaultSearchSettings {
-    const proxy = new Proxy(cloneSettings(settings), {
+  /** Create the single stable draft proxy the settings tab edits. Any later
+   *  change schedules a debounced auto-apply — the settings tab has no save
+   *  button; edits persist on their own (~0.7 s after the last keystroke). */
+  private initDraft(settings: VaultSearchSettings): void {
+    this.draftTarget = cloneSettings(settings);
+    this.draftSettings = new Proxy(this.draftTarget, {
       set: (target, property, value) => {
         const applied = Reflect.set(target, property, value);
-        if (applied) this.scheduleDraftApply();
+        if (applied) {
+          this.draftDirty = true;
+          this.scheduleDraftApply();
+        }
         return applied;
       },
     });
-    return proxy;
+  }
+
+  /** Replace the draft's contents with the given settings WITHOUT scheduling
+   *  an auto-apply (used after a successful apply). The proxy identity stays
+   *  the same, so settings controls bound to it keep receiving edits. */
+  private syncDraftTo(settings: VaultSearchSettings): void {
+    Object.assign(this.draftTarget, cloneSettings(settings));
   }
 
   /** Debounced auto-apply for draft edits (batches text-field keystrokes). */
@@ -538,7 +552,13 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async applyDraftSettings(): Promise<void> {
-    if (this.runtimeChangePromise) return this.runtimeChangePromise;
+    if (this.runtimeChangePromise) {
+      // An apply/rebuild is in flight; queue a follow-up so edits made in the
+      // meantime are applied too, never dropped.
+      return this.runtimeChangePromise.then(() =>
+        this.draftDirty ? this.applyDraftSettings() : undefined,
+      );
+    }
     this.runtimeChangePromise = this.applyDraftSettingsInternal();
     try {
       await this.runtimeChangePromise;
@@ -548,6 +568,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   private async applyDraftSettingsInternal(): Promise<void> {
+    this.draftDirty = false;
     const previous = cloneSettings(this.settings);
     const next = cloneSettings(this.draftSettings);
     const impact = settingsImpact(previous, next);
@@ -586,7 +607,12 @@ export default class VaultSearchPlugin extends Plugin {
             await this.backend.call("reconcile", { mode: "fast" }, 600_000);
         }
       }
-      this.draftSettings = this.makeDraftProxy(this.settings);
+      if (this.draftDirty) {
+        // Edits landed while the apply was running — apply them next.
+        this.scheduleDraftApply();
+      } else {
+        this.syncDraftTo(this.settings);
+      }
       if (impact === "all" || impact === "vectors" || impact === "restart") {
         new Notice(
           impact === "all"
@@ -599,15 +625,15 @@ export default class VaultSearchPlugin extends Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => undefined);
       this.settings = previous;
-      // Keep the user's attempted draft so a failed apply does not silently
-      // revert their device/provider choice in the UI — otherwise the change
-      // appears to "reset to auto" after a restart. The next edit retries.
-      this.draftSettings = this.makeDraftProxy(next);
+      // The stable draft keeps the user's attempted edits, so a failed apply
+      // does not silently revert their choice in the UI. If more edits landed
+      // while it ran, retry automatically; otherwise the next edit retries.
       await this.saveSettings();
       if (previousWasRunning) {
         await this.backend.start(false);
         await this.backend.waitUntilReady();
       }
+      if (this.draftDirty) this.scheduleDraftApply();
       throw error;
     } finally {
       // No full settings-tab re-render here: auto-apply fires while the user
@@ -692,7 +718,6 @@ export default class VaultSearchPlugin extends Plugin {
       return;
     }
     const previous = cloneSettings(this.settings);
-    const previousDraft = cloneSettings(this.draftSettings);
     const wasRunning = this.backend.status.state !== "stopped";
     try {
       if (wasRunning) await this.backend.stop();
@@ -707,7 +732,7 @@ export default class VaultSearchPlugin extends Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => undefined);
       this.settings = previous;
-      this.draftSettings = this.makeDraftProxy(previousDraft);
+      this.syncDraftTo(previous);
       await this.saveSettings();
       if (wasRunning) {
         await this.backend.start(false);

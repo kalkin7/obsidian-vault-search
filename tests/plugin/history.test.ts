@@ -49,6 +49,9 @@ function fakeVault() {
     async delete(file: { path: string }) {
       files.delete(file.path);
     },
+    async trash(file: { path: string }) {
+      files.delete(file.path);
+    },
     async createFolder(path: string) {
       folders.add(normalizeHistoryFolder(path));
     },
@@ -122,14 +125,21 @@ describe("normalizeHistoryFolder", () => {
     expect(normalizeHistoryFolder("  ")).toBe("AI Vault Search/history");
     expect(normalizeHistoryFolder("a\\b")).toBe("a/b");
   });
+
+  it("rejects root-like folders so pruning can never target the whole vault", () => {
+    expect(normalizeHistoryFolder(".")).toBe("AI Vault Search/history");
+    expect(normalizeHistoryFolder("..")).toBe("AI Vault Search/history");
+    expect(normalizeHistoryFolder("../vault")).toBe("AI Vault Search/history");
+    expect(normalizeHistoryFolder("a/../..")).toBe("AI Vault Search/history");
+  });
 });
 
 describe("historyFileName", () => {
-  it("produces 제목@YYYY-MM-DD_HH-MM-SS.md", () => {
+  it("produces 제목@YYYY-MM-DD_HH-MM-SS-mmm.md", () => {
     const name = historyFileName("지상 화단 질문", "2025-01-28T14:30:45.000Z");
     // Local-time stamp; at least assert shape and extension.
     expect(name).toMatch(
-      /^지상 화단 질문@\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.md$/,
+      /^지상 화단 질문@\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-\d{3}\.md$/,
     );
   });
 });
@@ -173,6 +183,34 @@ describe("buildHistoryNote / parseHistoryNote", () => {
 });
 
 describe("vault I/O", () => {
+  it("never prunes unmarked notes in the folder", async () => {
+    const { vault } = fakeVault();
+    const folder = "h";
+    // A foreign note that happens to live inside the history folder.
+    await vault.create("h/important.md", "# 중요 노트\n\n삭제되면 안 됩니다");
+    for (let index = 0; index < 3; index++) {
+      await saveHistory(vault, folder, {
+        ...sampleSession(),
+        title: `대화 ${index}`,
+        created: `2025-01-2${index}T09:00:00.000Z`,
+      });
+    }
+    await pruneHistory(vault, folder, 2);
+    const remaining = await listHistory(vault, folder);
+    expect(remaining).toHaveLength(2);
+    // The unmarked note survives both the list and the prune.
+    expect(vault.getFileByPath("h/important.md")).not.toBeNull();
+  });
+
+  it("does not load unmarked files as history", async () => {
+    const { vault } = fakeVault();
+    await vault.create(
+      "h/foreign.md",
+      "---\ntitle: x\n---\n\n# 다른 내용",
+    );
+    expect(await loadHistory(vault, "h/foreign.md")).toBeNull();
+  });
+
   it("saves, lists (newest first), loads, and deletes", async () => {
     const { vault, folders } = fakeVault();
     const folder = "AI Vault Search/history";

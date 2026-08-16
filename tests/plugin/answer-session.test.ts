@@ -60,4 +60,26 @@ describe("AnswerSession", () => {
     await Promise.resolve();
     expect(states.at(-1)).toEqual({ kind: "idle" });
   });
+
+  it("restore invalidates an in-flight answer", async () => {
+    let resolve!: (value: AnswerResult) => void;
+    const states: AnswerState[] = [];
+    const session = new AnswerSession(
+      () =>
+        new Promise<AnswerResult>((r) => {
+          resolve = r;
+        }),
+      (state) => states.push(state),
+    );
+    session.submit("old");
+    session.restore([{ role: "user", content: "loaded" }]);
+    resolve(answer("stale"));
+    await Promise.resolve();
+    await Promise.resolve();
+    // The stale answer must not append into the restored conversation.
+    expect(session.conversation).toEqual([
+      { role: "user", content: "loaded" },
+    ]);
+    expect(states.at(-1)).toEqual({ kind: "idle" });
+  });
 });

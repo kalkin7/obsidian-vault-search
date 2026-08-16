@@ -84,6 +84,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   historyFolder: "AI Vault Search/history",
   historyAutosave: true,
   historyMaxEntries: 0,
+  // Persisted fetched model lists (see VaultSearchSettings.fetchedProviderModels).
   fetchedProviderModels: {},
 };
 
