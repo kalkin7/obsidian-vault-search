@@ -97,9 +97,13 @@ unconditionally overwritten from the stored secrets).
 - **Favorite models** — in the settings model list, ★ marks favorites; only
   starred models (from providers with a stored key) appear in the composer's
   model selector, and selecting one switches the provider too. Model and
-  favorite changes persist immediately (hot) — no "설정 적용" needed. The
+  favorite changes persist immediately. The
   fetched model lists are also persisted, so the list and its stars survive
   restarts (refresh with **모델 최신화**).
+- **Auto-save settings** — the settings tab has no save button: every change
+  is applied automatically ~0.7 s after the last edit (heavy changes such as
+  engine/chunking restart or rebuild the service). The 서비스 제어 row keeps
+  only 시작/중지.
 - **Conversation UI** — the panel keeps a chat history (question bubbles +
   per-answer blocks with markdown, tables, citation pills, and a hover copy
   button) for the session only; the input is cleared when the panel reopens.

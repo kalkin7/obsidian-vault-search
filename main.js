@@ -4340,9 +4340,8 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
       ].filter(Boolean).join("\n")
     );
     if (status.error) statusEl.addClass("vault-search-error");
-    const impact = settingsImpact(this.owner.settings, draft);
-    new import_obsidian3.Setting(containerEl).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4 \uBC0F \uC124\uC815 \uC801\uC6A9").setDesc(
-      `\uBAA8\uB378\uC740 \uC774 \uBCFC\uD2B8\uC5D0\uC11C\uB9CC \uC0C1\uC8FC\uD569\uB2C8\uB2E4. \uB300\uAE30 \uC911\uC778 \uC124\uC815 \uC601\uD5A5: ${impact}`
+    new import_obsidian3.Setting(containerEl).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4").setDesc(
+      "\uC124\uC815 \uBCC0\uACBD\uC740 \uC785\uB825 \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC800\uC7A5\xB7\uC801\uC6A9\uB429\uB2C8\uB2E4 (\uC57D 1\uCD08). \uBAA8\uB378\uC740 \uC774 \uBCFC\uD2B8\uC5D0\uC11C\uB9CC \uC0C1\uC8FC\uD569\uB2C8\uB2E4."
     ).addButton(
       (button) => button.setButtonText("\uC2DC\uC791").onClick(async () => {
         try {
@@ -4359,16 +4358,6 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
           this.showError(error);
         }
       })
-    ).addButton(
-      (button) => button.setButtonText("\uC124\uC815 \uC801\uC6A9").setCta().onClick(async () => {
-        try {
-          await this.owner.applyDraftSettings();
-        } catch (error) {
-          this.showError(error);
-        }
-      })
-    ).addButton(
-      (button) => button.setButtonText("\uBCC0\uACBD \uCDE8\uC18C").onClick(() => this.owner.resetDraftSettings())
     );
     new import_obsidian3.Setting(containerEl).setName("\uC2DC\uC791 \uC815\uCC45").setDesc(
       "\uAE30\uBCF8\uAC12\uC740 \uC5D4\uC9C4\uC5D0 \uB530\uB77C \uC790\uB3D9 \uC870\uC815\uB429\uB2C8\uB2E4: ONNX\uB294 \uCCAB \uAC80\uC0C9 \uC2DC \uB85C\uB4DC, PyTorch\uB294 \uBCFC\uD2B8 \uC5F4 \uB54C \uB85C\uB4DC. \uC5EC\uAE30\uC11C \uC9C1\uC811 \uC120\uD0DD\uD558\uBA74 \uADF8 \uAC12\uC774 \uC720\uC9C0\uB429\uB2C8\uB2E4."
@@ -6608,6 +6597,8 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   searchModal = null;
   aiSearchViews = /* @__PURE__ */ new Set();
   runtimeChangePromise = null;
+  /** Debounce handle for auto-applying settings-tab edits. */
+  draftApplyTimer = null;
   providerModels = {};
   runtimeSummary = "\uB7F0\uD0C0\uC784: \uD655\uC778 \uC804";
   runtimeWarning = null;
@@ -6641,7 +6632,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
-    this.draftSettings = cloneSettings(this.settings);
+    this.draftSettings = this.makeDraftProxy(this.settings);
     this.queue = new VaultEventQueue(
       () => this.settings.syncDebounceMs,
       async (changed, deleted) => {
@@ -6709,6 +6700,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     });
   }
   onunload() {
+    if (this.draftApplyTimer !== null) clearTimeout(this.draftApplyTimer);
     this.queue?.clear();
     if (this.backend) void this.backend.stop(true);
   }
@@ -6767,7 +6759,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     if (loaded?.loadPolicy === void 0) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
-    this.draftSettings = cloneSettings(this.settings);
+    this.draftSettings = this.makeDraftProxy(this.settings);
     if (migrated || loaded?.loadPolicy === void 0) {
       await this.saveSettings();
     }
@@ -6951,9 +6943,28 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
-  resetDraftSettings() {
-    this.draftSettings = cloneSettings(this.settings);
-    this.settingTab?.display();
+  /** Wrap a settings snapshot so any later change schedules a debounced
+   *  auto-apply — the settings tab has no save button; edits persist on
+   *  their own (~0.7 s after the last keystroke). */
+  makeDraftProxy(settings) {
+    const proxy = new Proxy(cloneSettings(settings), {
+      set: (target, property, value) => {
+        const applied = Reflect.set(target, property, value);
+        if (applied) this.scheduleDraftApply();
+        return applied;
+      }
+    });
+    return proxy;
+  }
+  /** Debounced auto-apply for draft edits (batches text-field keystrokes). */
+  scheduleDraftApply() {
+    if (this.draftApplyTimer !== null) clearTimeout(this.draftApplyTimer);
+    this.draftApplyTimer = window.setTimeout(() => {
+      this.draftApplyTimer = null;
+      void this.applyDraftSettings().catch((error) => {
+        new import_obsidian9.Notice(`\uC124\uC815 \uC801\uC6A9 \uC2E4\uD328: ${this.errorMessage(error)}`, 8e3);
+      });
+    }, 700);
   }
   async applyDraftSettings() {
     if (this.runtimeChangePromise) return this.runtimeChangePromise;
@@ -6995,14 +7006,16 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
             await this.backend.call("reconcile", { mode: "fast" }, 6e5);
         }
       }
-      this.draftSettings = cloneSettings(this.settings);
-      new import_obsidian9.Notice(
-        impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "Vault Search \uC124\uC815\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4."
-      );
+      this.draftSettings = this.makeDraftProxy(this.settings);
+      if (impact === "all" || impact === "vectors" || impact === "restart") {
+        new import_obsidian9.Notice(
+          impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4."
+        );
+      }
     } catch (error) {
       await this.backend.stop().catch(() => void 0);
       this.settings = previous;
-      this.draftSettings = next;
+      this.draftSettings = this.makeDraftProxy(next);
       await this.saveSettings();
       if (previousWasRunning) {
         await this.backend.start(false);
@@ -7088,7 +7101,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => void 0);
       this.settings = previous;
-      this.draftSettings = previousDraft;
+      this.draftSettings = this.makeDraftProxy(previousDraft);
       await this.saveSettings();
       if (wasRunning) {
         await this.backend.start(false);

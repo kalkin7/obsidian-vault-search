@@ -1,7 +1,7 @@
 import { Notice, PluginSettingTab, Setting } from "obsidian";
 import type VaultSearchPlugin from "./main";
 import { LLM_PROVIDER_DEFAULTS, MODEL_PROFILES } from "./constants";
-import { defaultLoadPolicy, settingsImpact } from "./settings";
+import { defaultLoadPolicy } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
 import { validateProviderApiKey } from "./llm-secrets";
@@ -56,11 +56,10 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     );
     if (status.error) statusEl.addClass("vault-search-error");
 
-    const impact = settingsImpact(this.owner.settings, draft);
     new Setting(containerEl)
-      .setName("서비스 제어 및 설정 적용")
+      .setName("서비스 제어")
       .setDesc(
-        `모델은 이 볼트에서만 상주합니다. 대기 중인 설정 영향: ${impact}`,
+        "설정 변경은 입력 후 자동으로 저장·적용됩니다 (약 1초). 모델은 이 볼트에서만 상주합니다.",
       )
       .addButton((button) =>
         button.setButtonText("시작").onClick(async () => {
@@ -79,23 +78,6 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             this.showError(error);
           }
         }),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("설정 적용")
-          .setCta()
-          .onClick(async () => {
-            try {
-              await this.owner.applyDraftSettings();
-            } catch (error) {
-              this.showError(error);
-            }
-          }),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("변경 취소")
-          .onClick(() => this.owner.resetDraftSettings()),
       );
 
     new Setting(containerEl)

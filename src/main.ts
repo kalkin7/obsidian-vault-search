@@ -86,6 +86,8 @@ export default class VaultSearchPlugin extends Plugin {
   private searchModal: VaultSearchModal | null = null;
   private readonly aiSearchViews = new Set<VaultSearchItemView>();
   private runtimeChangePromise: Promise<void> | null = null;
+  /** Debounce handle for auto-applying settings-tab edits. */
+  private draftApplyTimer: number | null = null;
   private readonly providerModels: Partial<Record<LLMProviderId, string[]>> =
     {};
   runtimeSummary = "런타임: 확인 전";
@@ -121,7 +123,7 @@ export default class VaultSearchPlugin extends Plugin {
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
-    this.draftSettings = cloneSettings(this.settings);
+    this.draftSettings = this.makeDraftProxy(this.settings);
     this.queue = new VaultEventQueue(
       () => this.settings.syncDebounceMs,
       async (changed, deleted) => {
@@ -195,6 +197,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   onunload(): void {
+    if (this.draftApplyTimer !== null) clearTimeout(this.draftApplyTimer);
     this.queue?.clear();
     // Plugin unload must not kill a standalone daemon started by the CLI; it
     // only detaches from it (heartbeat stops, process survives).
@@ -271,7 +274,7 @@ export default class VaultSearchPlugin extends Plugin {
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
-    this.draftSettings = cloneSettings(this.settings);
+    this.draftSettings = this.makeDraftProxy(this.settings);
     if (migrated || loaded?.loadPolicy === undefined) {
       await this.saveSettings();
     }
@@ -509,9 +512,29 @@ export default class VaultSearchPlugin extends Plugin {
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
-  resetDraftSettings(): void {
-    this.draftSettings = cloneSettings(this.settings);
-    this.settingTab?.display();
+  /** Wrap a settings snapshot so any later change schedules a debounced
+   *  auto-apply — the settings tab has no save button; edits persist on
+   *  their own (~0.7 s after the last keystroke). */
+  private makeDraftProxy(settings: VaultSearchSettings): VaultSearchSettings {
+    const proxy = new Proxy(cloneSettings(settings), {
+      set: (target, property, value) => {
+        const applied = Reflect.set(target, property, value);
+        if (applied) this.scheduleDraftApply();
+        return applied;
+      },
+    });
+    return proxy;
+  }
+
+  /** Debounced auto-apply for draft edits (batches text-field keystrokes). */
+  scheduleDraftApply(): void {
+    if (this.draftApplyTimer !== null) clearTimeout(this.draftApplyTimer);
+    this.draftApplyTimer = window.setTimeout(() => {
+      this.draftApplyTimer = null;
+      void this.applyDraftSettings().catch((error) => {
+        new Notice(`설정 적용 실패: ${this.errorMessage(error)}`, 8000);
+      });
+    }, 700);
   }
 
   async applyDraftSettings(): Promise<void> {
@@ -563,22 +586,23 @@ export default class VaultSearchPlugin extends Plugin {
             await this.backend.call("reconcile", { mode: "fast" }, 600_000);
         }
       }
-      this.draftSettings = cloneSettings(this.settings);
-      new Notice(
-        impact === "all"
-          ? "설정을 적용하고 전체 인덱스를 재구축했습니다."
-          : impact === "vectors"
-            ? "설정을 적용하고 벡터 인덱스를 재구축했습니다."
-            : "Vault Search 설정을 적용했습니다.",
-      );
+      this.draftSettings = this.makeDraftProxy(this.settings);
+      if (impact === "all" || impact === "vectors" || impact === "restart") {
+        new Notice(
+          impact === "all"
+            ? "설정을 적용하고 전체 인덱스를 재구축했습니다."
+            : impact === "vectors"
+              ? "설정을 적용하고 벡터 인덱스를 재구축했습니다."
+              : "설정을 적용하고 서비스를 재시작했습니다.",
+        );
+      }
     } catch (error) {
       await this.backend.stop().catch(() => undefined);
       this.settings = previous;
       // Keep the user's attempted draft so a failed apply does not silently
       // revert their device/provider choice in the UI — otherwise the change
-      // appears to "reset to auto" after a restart. They can retry 적용 or
-      // revert with 변경 취소.
-      this.draftSettings = next;
+      // appears to "reset to auto" after a restart. The next edit retries.
+      this.draftSettings = this.makeDraftProxy(next);
       await this.saveSettings();
       if (previousWasRunning) {
         await this.backend.start(false);
@@ -680,7 +704,7 @@ export default class VaultSearchPlugin extends Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => undefined);
       this.settings = previous;
-      this.draftSettings = previousDraft;
+      this.draftSettings = this.makeDraftProxy(previousDraft);
       await this.saveSettings();
       if (wasRunning) {
         await this.backend.start(false);
