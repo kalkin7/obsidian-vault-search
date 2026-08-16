@@ -441,7 +441,6 @@
  margin: 0;
  font-size: var(--font-ui-medium);
 }
-.vault-ai-search-lightning-button,
 .vault-ai-search-history-button {
  display: inline-flex;
  width: 24px;
@@ -451,9 +450,6 @@
  border: 0;
  background: transparent;
  box-shadow: none;
-}
-.vault-ai-search-history-button {
- margin-left: 0;
 }
 .vault-ai-search-history-button:hover svg {
  color: var(--text-accent);
@@ -747,8 +743,4 @@
 }
 .vault-ai-search-effort-select {
  max-width: 96px;
-}
-.vault-ai-search-lightning-button svg {
- width: 100%;
- height: 100%;
 }

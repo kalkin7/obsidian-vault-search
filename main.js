@@ -6032,12 +6032,6 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     const header = this.contentEl.createDiv({ cls: "vault-ai-search-header" });
     header.createEl("h2", { text: "AI Vault Search" });
     this.providerEl = header.createDiv({ cls: "vault-ai-search-provider" });
-    const headerButton = header.createEl("button", {
-      cls: "vault-ai-search-lightning-button",
-      attr: { type: "button", "aria-label": "AI Vault Search \uC9C8\uBB38 \uC785\uB825" }
-    });
-    (0, import_obsidian8.setIcon)(headerButton, ICON_LIGHTNING);
-    headerButton.addEventListener("click", () => this.inputEl?.focus());
     this.historyButton = header.createEl("button", {
       cls: "vault-ai-search-history-button",
       attr: { type: "button", "aria-label": "AI Vault Search \uD788\uC2A4\uD1A0\uB9AC" }
