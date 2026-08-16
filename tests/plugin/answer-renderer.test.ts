@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AnswerRenderer } from "../../src/answer-renderer";
+import { AnswerRenderer, toNoteMarkdown } from "../../src/answer-renderer";
 import type { Citation } from "../../src/types";
 
 interface FakeEl {
@@ -131,6 +131,26 @@ describe("AnswerRenderer", () => {
     const headings = find(container, (node) => node.tag === "h6");
     expect(headings).toHaveLength(1);
     expect(headings[0].children[0].textContent).toBe("지상 설치와 용도변경");
+  });
+
+  it("turns [S#] citations into note-ready wikilinks and appends a 근거 list", () => {
+    const citation: Citation = {
+      id: "S1",
+      file_path: "5_Wiki/issues/apt/지상_전기차충전소_설치_행위허가.md",
+      start_line: 42,
+      heading_path: ["행위허가"],
+      rank: 1,
+      score: 0.8,
+    };
+    const note = toNoteMarkdown("공사가 진행되었습니다. [S1] [S99]", [citation]);
+    expect(note).toContain(
+      "[[5_Wiki/issues/apt/지상_전기차충전소_설치_행위허가|행위허가]]",
+    );
+    expect(note).toContain("[S99]"); // unknown marker kept as-is
+    expect(note).toContain("## 근거");
+    expect(note).toContain(
+      "- [[5_Wiki/issues/apt/지상_전기차충전소_설치_행위허가]]",
+    );
   });
 
   it("copy button calls back with the raw answer", () => {

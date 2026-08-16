@@ -5541,6 +5541,30 @@ var AnswerRenderer = class {
     return counts;
   }
 };
+function toNoteMarkdown(answer, citations) {
+  const byId = new Map(citations.map((citation) => [citation.id, citation]));
+  const wikilink = (citation) => {
+    const path5 = citation.file_path.replace(/\.md$/i, "");
+    const rawLabel = citation.heading_path.length > 0 ? citation.heading_path[0] : path5.split("/").pop() ?? path5;
+    return `[[${path5}|${rawLabel.replace(/\|/g, "\xB7")}]]`;
+  };
+  const text = answer.replace(/\[S(\d+)\]/g, (match, id) => {
+    const citation = byId.get(`S${id}`);
+    return citation ? wikilink(citation) : match;
+  });
+  const seen = /* @__PURE__ */ new Set();
+  const sources = [];
+  for (const citation of citations) {
+    if (seen.has(citation.file_path)) continue;
+    seen.add(citation.file_path);
+    sources.push(`- [[${citation.file_path.replace(/\.md$/i, "")}]]`);
+  }
+  if (sources.length === 0) return text;
+  return `${text}
+
+## \uADFC\uAC70
+${sources.join("\n")}`;
+}
 
 // src/answer-session.ts
 var AnswerSession = class {
@@ -5982,7 +6006,7 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
     renderer.render(
       result.answer,
       result.citations,
-      (text) => this.copyAnswer(text)
+      (text) => this.copyAnswer(toNoteMarkdown(text, result.citations))
     );
     if (result.evidence.length) {
       this.renderMessageEvidence(block, result.evidence);

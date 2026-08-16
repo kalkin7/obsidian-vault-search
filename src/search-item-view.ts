@@ -7,7 +7,7 @@ import {
   type WorkspaceLeaf,
 } from "obsidian";
 import { BackendCallError } from "./backend-manager";
-import { AnswerRenderer } from "./answer-renderer";
+import { AnswerRenderer, toNoteMarkdown } from "./answer-renderer";
 import {
   AnswerSession,
   type AnswerConversationMessage,
@@ -486,8 +486,11 @@ export class VaultSearchItemView extends ItemView {
     const renderer = new AnswerRenderer(body, {
       openCitation: (location) => this.owner.openSearchResult(location, true),
     });
+    // Copy a note-ready version: [S#] citations become working wikilinks to
+    // the vault files and a 근거 list is appended, so pasting the answer into
+    // a note keeps every reference live.
     renderer.render(result.answer, result.citations, (text) =>
-      this.copyAnswer(text),
+      this.copyAnswer(toNoteMarkdown(text, result.citations)),
     );
     if (result.evidence.length) {
       this.renderMessageEvidence(block, result.evidence);
