@@ -5459,24 +5459,7 @@ var AnswerRenderer = class {
       const bullet = BULLET_RE.exec(line);
       const numbered = NUMBERED_RE.exec(line);
       if (bullet || numbered) {
-        const ordered = Boolean(numbered);
-        const list = container.createEl(ordered ? "ol" : "ul", {
-          cls: "vault-answer-list"
-        });
-        while (index < lines.length) {
-          const nextBullet = BULLET_RE.exec(lines[index]);
-          const nextNumbered = NUMBERED_RE.exec(lines[index]);
-          const itemMatch = ordered ? nextNumbered : nextBullet;
-          if (!itemMatch) break;
-          const item = list.createEl("li", { cls: "vault-answer-list-item" });
-          this.renderInline(
-            item,
-            ordered ? itemMatch[2] : itemMatch[1],
-            byId,
-            counts
-          );
-          index++;
-        }
+        index = this.renderList(container, lines, index, byId, counts);
         continue;
       }
       const quote = QUOTE_RE.exec(line);
@@ -5507,6 +5490,59 @@ var AnswerRenderer = class {
         advanced = true;
       }
     }
+  }
+  /** Leading whitespace width for list nesting: tabs count as 2 spaces so a
+   *  tabbed level and a 2-space level compare equal. */
+  listIndent(line) {
+    let width = 0;
+    for (const char of line) {
+      if (char === " ") width += 1;
+      else if (char === "	") width += 2;
+      else break;
+    }
+    return width;
+  }
+  /** Render a (possibly nested, mixed) list block. Consecutive ordered items
+   *  at the same nesting level share ONE <ol>, so the browser numbers them
+   *  1, 2, 3… continuously instead of restarting at 1 per item; deeper
+   *  indents nest inside the parent item, matching how the markdown renders
+   *  in an Obsidian note. */
+  renderList(container, lines, index, byId, counts) {
+    const stack = [];
+    while (index < lines.length) {
+      const raw = lines[index];
+      const trimmed = raw.trim();
+      const bullet = BULLET_RE.exec(trimmed);
+      const numbered = NUMBERED_RE.exec(trimmed);
+      if (!bullet && !numbered) break;
+      const ordered = Boolean(numbered);
+      const content = ordered ? numbered[2] : bullet[1];
+      const indent = this.listIndent(raw);
+      while (stack.length > 0 && indent < stack[stack.length - 1].indent) {
+        stack.pop();
+      }
+      if (stack.length > 0 && indent === stack[stack.length - 1].indent && stack[stack.length - 1].ordered !== ordered) {
+        stack.pop();
+      }
+      if (stack.length > 0 && indent === stack[stack.length - 1].indent) {
+        const frame = stack[stack.length - 1];
+        const item = frame.el.createEl("li", {
+          cls: "vault-answer-list-item"
+        });
+        this.renderInline(item, content, byId, counts);
+        frame.lastItem = item;
+      } else {
+        const parent = stack.length > 0 ? stack[stack.length - 1].lastItem : container;
+        const el = parent.createEl(ordered ? "ol" : "ul", {
+          cls: "vault-answer-list"
+        });
+        const item = el.createEl("li", { cls: "vault-answer-list-item" });
+        this.renderInline(item, content, byId, counts);
+        stack.push({ el, indent, ordered, lastItem: item });
+      }
+      index++;
+    }
+    return index;
   }
   renderTable(container, lines, index, byId, counts) {
     const rows = [];

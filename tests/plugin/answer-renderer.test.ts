@@ -122,6 +122,47 @@ describe("AnswerRenderer", () => {
     expect(td).toHaveLength(4);
   });
 
+  it("renders nested bullet sublists inside one continuous numbered list", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
+    renderer.render(
+      [
+        "1. 일반 차량 불법주차",
+        "   - 지상 충전소 앞 단속을 계속하고 있습니다.",
+        "   - 전기차만 들어오도록 하는 방안이 검토됐습니다.",
+        "1. 후문 주변 주차관리",
+        "   - 후문 충전소 주변의 임시주차구역 설정을 검토 중입니다.",
+        "1. 보험",
+        "   - 사고배상책임보험 가입을 확인했습니다.",
+      ].join("\n"),
+      [],
+    );
+    const lists = find(container, (node) => node.tag === "ol");
+    // One <ol>: the browser numbers the items 1, 2, 3 continuously.
+    expect(lists).toHaveLength(1);
+    const topItems = lists[0].children.filter((node) => node.tag === "li");
+    expect(topItems).toHaveLength(3);
+    for (const item of topItems) {
+      const nested = item.children.filter((node) => node.tag === "ul");
+      expect(nested).toHaveLength(1);
+    }
+  });
+
+  it("keeps consecutive 1. items in one list so numbering continues", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
+    renderer.render("1. a\n1. b\n1. c", []);
+    const lists = find(container, (node) => node.tag === "ol");
+    expect(lists).toHaveLength(1);
+    expect(
+      lists[0].children.filter((node) => node.tag === "li"),
+    ).toHaveLength(3);
+  });
+
   it("renders 4+-hash headings (with or without a space) as h6", () => {
     const container = makeEl();
     const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
