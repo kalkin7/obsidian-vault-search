@@ -31,7 +31,9 @@ def validate_answer_params(params: dict[str, Any]) -> dict[str, Any]:
     """Validate and normalize the additive ``answer`` request contract."""
     query = params.get("query")
     if not isinstance(query, str) or not query.strip() or len(query) > 8000:
-        raise ProtocolError("query must be a non-empty string of at most 8000 characters")
+        raise ProtocolError(
+            "query must be a non-empty string of at most 8000 characters"
+        )
     top_k = _bounded_int(params.get("top_k", 8), 1, 12, "top_k")
     max_context_chars = _bounded_int(
         params.get("max_context_chars", 24000), 8000, 32000, "max_context_chars"
@@ -47,7 +49,9 @@ def validate_answer_params(params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
             raise ProtocolError("conversation roles must be user or assistant")
         if item.get("role") != ("user" if index % 2 == 0 else "assistant"):
-            raise ProtocolError("conversation must alternate user and assistant messages")
+            raise ProtocolError(
+                "conversation must alternate user and assistant messages"
+            )
         content = item.get("content")
         if not isinstance(content, str) or len(content) > 8000:
             raise ProtocolError("conversation content must be at most 8000 characters")
@@ -75,8 +79,14 @@ def _bounded_int(value: Any, minimum: int, maximum: int, name: str) -> int:
     return result
 
 
-def request(host: str, port: int, token: str, method: str,
-            params: dict[str, Any] | None = None, timeout: float = 2.0) -> dict[str, Any]:
+def request(
+    host: str,
+    port: int,
+    token: str,
+    method: str,
+    params: dict[str, Any] | None = None,
+    timeout: float = 2.0,
+) -> dict[str, Any]:
     payload = {
         "protocol_version": PROTOCOL_VERSION,
         "request_id": str(uuid.uuid4()),
@@ -85,7 +95,9 @@ def request(host: str, port: int, token: str, method: str,
         "params": params or {},
     }
     encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-    with socket.create_connection((host, port), timeout=min(timeout, 1.0)) as connection:
+    with socket.create_connection(
+        (host, port), timeout=min(timeout, 1.0)
+    ) as connection:
         connection.settimeout(timeout)
         connection.sendall(encoded)
         file = connection.makefile("rb")

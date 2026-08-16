@@ -421,7 +421,10 @@ class SearchService:
             raise ServiceError(
                 "INDEX_REBUILD_REQUIRED",
                 self.index_rebuild_reason,
-                {"problems": self.index_problems, "recommended_action": self.recommended_action},
+                {
+                    "problems": self.index_problems,
+                    "recommended_action": self.recommended_action,
+                },
             )
         if self.search_engine is None:
             raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
@@ -484,7 +487,10 @@ class SearchService:
             raise ServiceError(
                 "INDEX_REBUILD_REQUIRED",
                 self.index_rebuild_reason,
-                {"problems": self.index_problems, "recommended_action": self.recommended_action},
+                {
+                    "problems": self.index_problems,
+                    "recommended_action": self.recommended_action,
+                },
             )
         if self.search_engine is None:
             raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
@@ -608,7 +614,11 @@ class SearchService:
                 for value in params["wikiFolders"]
                 if str(value).strip()
             ]
-        if "answerProvider" in params and str(params["answerProvider"]) in {"openai", "opencode-go", "deepseek"}:
+        if "answerProvider" in params and str(params["answerProvider"]) in {
+            "openai",
+            "opencode-go",
+            "deepseek",
+        }:
             self.config.llm_provider = str(params["answerProvider"])
         if "answerModel" in params and str(params["answerModel"]).strip():
             self.config.llm_model = str(params["answerModel"]).strip()[:256]
@@ -618,12 +628,18 @@ class SearchService:
         ):
             if key in params:
                 try:  # noqa: SIM105 — ast-grep guard recognition prefers try/except
-                    setattr(self.config, attribute, max(minimum, min(maximum, int(params[key]))))
+                    setattr(
+                        self.config,
+                        attribute,
+                        max(minimum, min(maximum, int(params[key]))),
+                    )
                 except (TypeError, ValueError):
                     pass
         if "answerTimeoutSeconds" in params:
             try:  # noqa: SIM105 — ast-grep guard recognition prefers try/except
-                self.config.llm_timeout_seconds = max(5.0, min(60.0, float(params["answerTimeoutSeconds"])))
+                self.config.llm_timeout_seconds = max(
+                    5.0, min(60.0, float(params["answerTimeoutSeconds"]))
+                )
             except (TypeError, ValueError):
                 pass
         return {"applied": True, **self.status()}
