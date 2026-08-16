@@ -77,6 +77,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
   answerModel: "",
+  answerReasoningEffort: "auto",
   favoriteAnswerModels: [],
   answerMaxContextChars: 24000,
   answerMaxOutputTokens: 4000,
@@ -112,3 +113,27 @@ export const LLM_MODEL_ENDPOINTS = {
   "opencode-go": "https://opencode.ai/zen/go/v1/models",
   deepseek: "https://api.deepseek.com/models",
 } as const;
+
+/** Reasoning-effort levels each model supports. The OpenCode Go gateway
+ *  accepts the parameter broadly (deepseek/glm/kimi reason at any level;
+ *  hy3/minimax ignore it), so only models with a genuinely different set are
+ *  listed — everything else defaults to the full range. "auto" is always
+ *  offered on top. */
+const REASONING_EFFORT_LEVELS: Record<string, readonly string[]> = {
+  "gpt-5.6-luna": ["none", "low", "medium", "high"],
+  "grok-4.5": ["none", "low", "medium", "high"],
+};
+
+const DEFAULT_REASONING_LEVELS: readonly string[] = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "max",
+];
+
+/** Levels available for a model, excluding the always-present "auto". */
+export function reasoningEffortLevels(model: string): string[] {
+  const levels = REASONING_EFFORT_LEVELS[model];
+  return levels ? [...levels] : [...DEFAULT_REASONING_LEVELS];
+}

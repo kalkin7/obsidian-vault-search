@@ -107,3 +107,33 @@ def test_provider_accepts_openai_content_parts_list(monkeypatch):
         timeout_seconds=5.0,
     )
     assert response.text == "서울입니다. [S1]"
+
+
+def test_provider_sends_reasoning_effort_when_set(monkeypatch):
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout=0):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse(
+            {"choices": [{"message": {"content": "hi"}}], "model": "m"}
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = _provider()
+    provider.complete(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        max_output_tokens=10,
+        timeout_seconds=5.0,
+        reasoning_effort="high",
+    )
+    assert captured["body"]["reasoning_effort"] == "high"
+    # auto / empty: the provider default is used — no param sent.
+    provider.complete(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        max_output_tokens=10,
+        timeout_seconds=5.0,
+        reasoning_effort="auto",
+    )
+    assert "reasoning_effort" not in captured["body"]

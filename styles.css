@@ -344,11 +344,11 @@
 .vault-search-result {
  display: block;
  width: 100%;
- padding: var(--size-4-3) var(--size-4-2);
- border: 0;
- border-bottom: 1px solid var(--background-modifier-border);
- border-radius: 0;
- background: transparent;
+ margin: 0 0 6px;
+ padding: var(--size-4-2) var(--size-4-3);
+ border: 1px solid var(--background-modifier-border);
+ border-radius: var(--radius-s);
+ background: var(--background-secondary);
  color: var(--text-normal);
  text-align: left;
  box-shadow: none;
@@ -356,6 +356,7 @@
 
 .vault-search-result:hover,
 .vault-search-result:focus-visible {
+ border-color: var(--interactive-accent);
  background: var(--background-modifier-hover);
 }
 
@@ -363,9 +364,12 @@
  display: flex;
  gap: var(--size-4-2);
  align-items: center;
+ min-width: 0;
 }
 
 .vault-search-result-file {
+ flex: 1 1 auto;
+ min-width: 0;
  overflow: hidden;
  font-weight: var(--font-semibold);
  text-overflow: ellipsis;
@@ -373,6 +377,7 @@
 }
 
 .vault-search-result-badges {
+ flex: 0 0 auto;
  display: flex;
  gap: 4px;
  margin-left: auto;
@@ -389,8 +394,11 @@
 
 .vault-search-result-heading {
  margin-top: 3px;
+ overflow: hidden;
  color: var(--text-accent);
  font-size: var(--font-ui-smaller);
+ text-overflow: ellipsis;
+ white-space: nowrap;
 }
 
 .vault-search-result-snippet {
@@ -489,18 +497,29 @@
  margin-bottom: var(--size-4-2);
 }
 .vault-ai-search-answer-body {
+ position: relative;
  min-width: 0;
-}
-.vault-ai-search-answer-body .vault-answer-toolbar {
- margin-top: var(--size-4-1);
 }
 .vault-ai-search-answer-body:empty {
  display: none;
 }
+/* Copy button appears at the answer's bottom-right corner on hover
+ * (Claudian style); invisible otherwise so it never blocks text selection. */
 .vault-answer-toolbar {
+ position: absolute;
+ right: 6px;
+ bottom: 4px;
+ z-index: 2;
  display: flex;
  justify-content: flex-end;
- margin-bottom: var(--size-4-2);
+ opacity: 0;
+ pointer-events: none;
+ transition: opacity 120ms ease;
+}
+.vault-ai-search-answer-body:hover .vault-answer-toolbar,
+.vault-ai-search-answer-body:focus-within .vault-answer-toolbar {
+ opacity: 1;
+ pointer-events: auto;
 }
 .vault-answer-copy {
  flex: 0 0 auto;
@@ -647,6 +666,9 @@
 .vault-ai-search-model-select {
  max-width: 100%;
  min-width: 0;
+}
+.vault-ai-search-effort-select {
+ max-width: 96px;
 }
 .vault-ai-search-lightning-button svg {
  width: 100%;

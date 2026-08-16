@@ -3,6 +3,16 @@ export type DevicePreference = "auto" | "cpu" | "cuda";
 export type EnginePreference = "pytorch" | "onnx";
 export type ProviderPreference = "auto" | "cuda" | "tensorrt";
 export type LLMProviderId = "openai" | "opencode-go" | "deepseek";
+/** Reasoning-effort levels for reasoning models; "auto" sends nothing and
+ *  lets the provider pick its default. Not every provider accepts every
+ *  level (the backend maps per provider). */
+export type ReasoningEffort =
+  | "auto"
+  | "none"
+  | "low"
+  | "medium"
+  | "high"
+  | "max";
 /** A model starred in the settings list; provider is stored so the footer
  *  selector can switch provider when a cross-provider favorite is picked. */
 export type FavoriteAnswerModel = {
@@ -53,6 +63,7 @@ export interface VaultSearchSettings {
   modelIdleTimeoutSeconds: number;
   answerProvider: LLMProviderId;
   answerModel: string;
+  answerReasoningEffort: ReasoningEffort;
   /** Models starred in the settings model list, per provider. Offered in the
    *  AI search footer selector across ALL providers (selecting one switches
    *  the provider too). Falls back to fetched models when empty. */

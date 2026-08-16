@@ -452,6 +452,7 @@ class SearchService:
                 messages=messages,
                 max_output_tokens=self.config.llm_max_output_tokens,
                 timeout_seconds=self.config.llm_timeout_seconds,
+                reasoning_effort=self.config.reasoning_effort,
             )
         except ProviderError as exc:
             raise ServiceError(
@@ -513,6 +514,7 @@ class SearchService:
                 messages=messages,
                 max_output_tokens=max_output_tokens,
                 timeout_seconds=timeout_seconds,
+                reasoning_effort=self.config.reasoning_effort,
             )
 
         def do_search(query: str) -> list[dict[str, Any]]:
@@ -626,6 +628,13 @@ class SearchService:
             self.config.llm_provider = str(params["answerProvider"])
         if "answerModel" in params and str(params["answerModel"]).strip():
             self.config.llm_model = str(params["answerModel"]).strip()[:256]
+        if "answerReasoningEffort" in params:
+            effort = str(params["answerReasoningEffort"]).strip().lower()
+            self.config.reasoning_effort = (
+                effort
+                if effort in {"auto", "none", "low", "medium", "high", "max"}
+                else ""
+            )
         for key, attribute, minimum, maximum in (
             ("answerMaxContextChars", "llm_max_context_chars", 8000, 32000),
             ("answerMaxOutputTokens", "llm_max_output_tokens", 128, 8000),

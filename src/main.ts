@@ -12,6 +12,7 @@ import {
   DEFAULT_SETTINGS,
   LLM_MODEL_ENDPOINTS,
   LLM_PROVIDER_DEFAULTS,
+  reasoningEffortLevels,
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
@@ -224,6 +225,13 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings.answerModel = String(
       this.settings.answerModel || DEFAULT_SETTINGS.answerModel,
     );
+    if (
+      !["auto", "none", "low", "medium", "high", "max"].includes(
+        this.settings.answerReasoningEffort,
+      )
+    ) {
+      this.settings.answerReasoningEffort = "auto";
+    }
     this.settings.answerMaxContextChars = Math.max(
       8000,
       Math.min(
@@ -387,6 +395,31 @@ export default class VaultSearchPlugin extends Plugin {
           : `답변 provider를 ${provider}로 전환하고 모델을 ${value}(으)로 변경했습니다.`,
       );
     }
+  }
+
+  /** Reasoning levels the current answer model supports (with auto). */
+  getAnswerReasoningEffortOptions(): string[] {
+    return ["auto", ...reasoningEffortLevels(this.settings.answerModel)];
+  }
+
+  /** Change the reasoning effort from the panel composer (hot, persists). */
+  async setAnswerReasoningEffort(effort: string): Promise<void> {
+    const value = effort.trim();
+    const valid = ["auto", "none", "low", "medium", "high", "max"].includes(
+      value,
+    );
+    if (!valid || value === this.settings.answerReasoningEffort) return;
+    this.settings.answerReasoningEffort =
+      value as VaultSearchSettings["answerReasoningEffort"];
+    this.draftSettings.answerReasoningEffort =
+      this.settings.answerReasoningEffort;
+    await this.saveSettings();
+    if (this.backend.status.state !== "stopped") {
+      await this.backend
+        .call("apply_search_config", hotConfig(this.settings), 30_000)
+        .catch(() => undefined);
+    }
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
   /** Star/unstar a model from the settings list. Persists immediately (hot)

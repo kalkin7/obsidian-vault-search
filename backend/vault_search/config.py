@@ -43,8 +43,9 @@ class SearchConfig:
     heartbeat_timeout_seconds: float = 20.0
     llm_provider: str = "openai"
     llm_model: str = "gpt-5.6"
+    reasoning_effort: str = ""
     llm_max_context_chars: int = 24000
-    llm_max_output_tokens: int = 1200
+    llm_max_output_tokens: int = 4000
     llm_timeout_seconds: float = 45.0
 
     @property
@@ -115,6 +116,16 @@ def _as_float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+_REASONING_EFFORTS = {"auto", "none", "low", "medium", "high", "max"}
+
+
+def _as_reasoning_effort(value: Any) -> str:
+    """Normalize the answerReasoningEffort setting; unknown values disable
+    the override (the provider picks its default)."""
+    effort = str(value).strip().lower() if value is not None else ""
+    return effort if effort in _REASONING_EFFORTS else ""
 
 
 def load_config(
@@ -191,18 +202,41 @@ def load_config(
         heartbeat_timeout_seconds=max(
             5.0, _as_float(raw.get("heartbeatTimeoutSeconds"), 20.0)
         ),
-        llm_provider=str(raw.get("answerProvider", raw.get("llmProvider", "openai"))).strip().lower(),
-        llm_model=str(raw.get("answerModel", raw.get("llmModel", "gpt-5.6"))).strip()[:256],
+        llm_provider=str(raw.get("answerProvider", raw.get("llmProvider", "openai")))
+        .strip()
+        .lower(),
+        llm_model=str(raw.get("answerModel", raw.get("llmModel", "gpt-5.6"))).strip()[
+            :256
+        ],
+        reasoning_effort=_as_reasoning_effort(raw.get("answerReasoningEffort")),
         llm_max_context_chars=max(
             8000,
-            min(32000, _as_int(raw.get("answerMaxContextChars", raw.get("llmMaxContextChars")), 24000)),
+            min(
+                32000,
+                _as_int(
+                    raw.get("answerMaxContextChars", raw.get("llmMaxContextChars")),
+                    24000,
+                ),
+            ),
         ),
         llm_max_output_tokens=max(
             128,
-            min(8000, _as_int(raw.get("answerMaxOutputTokens", raw.get("llmMaxOutputTokens")), 4000)),
+            min(
+                8000,
+                _as_int(
+                    raw.get("answerMaxOutputTokens", raw.get("llmMaxOutputTokens")),
+                    4000,
+                ),
+            ),
         ),
         llm_timeout_seconds=max(
-            5.0, min(60.0, _as_float(raw.get("answerTimeoutSeconds", raw.get("llmTimeoutSeconds")), 45.0))
+            5.0,
+            min(
+                60.0,
+                _as_float(
+                    raw.get("answerTimeoutSeconds", raw.get("llmTimeoutSeconds")), 45.0
+                ),
+            ),
         ),
     )
     if cfg.llm_provider not in {"openai", "opencode-go", "deepseek"}:

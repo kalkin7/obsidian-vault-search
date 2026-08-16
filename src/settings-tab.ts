@@ -205,7 +205,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       })
       .addButton((button) =>
         button.setButtonText("테스트").onClick(async () => {
-          const key = (apiKeyInput?.value.trim() || savedApiKey) || "";
+          const key = apiKeyInput?.value.trim() || savedApiKey || "";
           if (!key) {
             new Notice("저장된 키가 없습니다.");
             return;

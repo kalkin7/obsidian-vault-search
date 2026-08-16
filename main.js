@@ -3071,6 +3071,7 @@ var DEFAULT_SETTINGS = {
   modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
   answerModel: "",
+  answerReasoningEffort: "auto",
   favoriteAnswerModels: [],
   answerMaxContextChars: 24e3,
   answerMaxOutputTokens: 4e3,
@@ -3103,6 +3104,21 @@ var LLM_MODEL_ENDPOINTS = {
   "opencode-go": "https://opencode.ai/zen/go/v1/models",
   deepseek: "https://api.deepseek.com/models"
 };
+var REASONING_EFFORT_LEVELS = {
+  "gpt-5.6-luna": ["none", "low", "medium", "high"],
+  "grok-4.5": ["none", "low", "medium", "high"]
+};
+var DEFAULT_REASONING_LEVELS = [
+  "none",
+  "low",
+  "medium",
+  "high",
+  "max"
+];
+function reasoningEffortLevels(model) {
+  const levels = REASONING_EFFORT_LEVELS[model];
+  return levels ? [...levels] : [...DEFAULT_REASONING_LEVELS];
+}
 
 // src/backend-protocol.ts
 var net = __toESM(require("net"));
@@ -4121,6 +4137,7 @@ var HOT_KEYS = [
   "wikiFolders",
   "answerProvider",
   "answerModel",
+  "answerReasoningEffort",
   "favoriteAnswerModels",
   "answerMaxContextChars",
   "answerMaxOutputTokens",
@@ -4168,6 +4185,7 @@ function hotConfig(settings) {
     wikiFolders: settings.wikiFolders,
     answerProvider: settings.answerProvider,
     answerModel: settings.answerModel,
+    answerReasoningEffort: settings.answerReasoningEffort,
     answerMaxContextChars: settings.answerMaxContextChars,
     answerMaxOutputTokens: settings.answerMaxOutputTokens,
     answerTimeoutSeconds: settings.answerTimeoutSeconds
@@ -5563,6 +5581,7 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
   providerEl;
   session;
   modelSelect;
+  effortSelect;
   pendingEl = null;
   lastQuery = "";
   getViewType() {
@@ -5632,6 +5651,22 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
       cls: "vault-ai-search-model-select",
       attr: { "aria-label": "\uB2F5\uBCC0 \uBAA8\uB378 (\uC990\uACA8\uCC3E\uAE30)" }
     });
+    composerBar.createEl("span", {
+      text: "\uCD94\uB860",
+      cls: "vault-ai-search-model-label"
+    });
+    this.effortSelect = composerBar.createEl("select", {
+      cls: "vault-ai-search-model-select vault-ai-search-effort-select",
+      attr: { "aria-label": "\uCD94\uB860 \uAC15\uB3C4 (reasoning effort)" }
+    });
+    const onEffortChange = () => {
+      const value = this.effortSelect.value;
+      if (value) void this.owner.setAnswerReasoningEffort(value);
+    };
+    this.effortSelect.addEventListener("change", onEffortChange);
+    this.listeners.push(
+      () => this.effortSelect.removeEventListener("change", onEffortChange)
+    );
     composerBar.createEl("span", {
       text: "Enter: \uC804\uC1A1 \xB7 Shift+Enter: \uC904\uBC14\uAFC8",
       cls: "vault-ai-search-composer-hint"
@@ -5750,6 +5785,19 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
       this.modelSelect.value = "";
     }
     this.modelSelect.title = "\uB2F5\uBCC0 \uBAA8\uB378 \u2014 \uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815\uD55C \uC990\uACA8\uCC3E\uAE30\uC785\uB2C8\uB2E4. (\uD604\uC7AC \uC124\uC815)\uC740 \uC990\uACA8\uCC3E\uAE30\uAC00 \uC544\uB2CC \uC9C0\uAE08 \uC120\uD0DD\uB41C \uBAA8\uB378\uC785\uB2C8\uB2E4.";
+    if (this.effortSelect) {
+      const effortOptions = this.owner.getAnswerReasoningEffortOptions();
+      const currentEffort = this.owner.settings.answerReasoningEffort;
+      this.effortSelect.empty();
+      for (const level of effortOptions) {
+        this.effortSelect.createEl("option", {
+          text: level === "auto" ? "\uC790\uB3D9" : level,
+          value: level
+        });
+      }
+      this.effortSelect.value = effortOptions.includes(currentEffort) ? currentEffort : "auto";
+      this.effortSelect.title = "\uCD94\uB860 \uAC15\uB3C4 \u2014 \uBAA8\uB378\uBCC4 \uC9C0\uC6D0 \uBC94\uC704\uC5D0 \uB9DE\uCDB0 \uD45C\uC2DC\uB429\uB2C8\uB2E4. none\uC740 \uC989\uB2F5, high/max\uB294 \uAE4A\uC740 \uCD94\uB860.";
+    }
     if (this.providerEl) {
       this.providerEl.setText(
         this.owner.settings.answerModel ? `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}` : "\uBAA8\uB378 \uBBF8\uC120\uD0DD"
@@ -6093,6 +6141,11 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
     this.settings.answerModel = String(
       this.settings.answerModel || DEFAULT_SETTINGS.answerModel
     );
+    if (!["auto", "none", "low", "medium", "high", "max"].includes(
+      this.settings.answerReasoningEffort
+    )) {
+      this.settings.answerReasoningEffort = "auto";
+    }
     this.settings.answerMaxContextChars = Math.max(
       8e3,
       Math.min(
@@ -6225,6 +6278,25 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
         provider === previousProvider ? `\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.` : `\uB2F5\uBCC0 provider\uB97C ${provider}\uB85C \uC804\uD658\uD558\uACE0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`
       );
     }
+  }
+  /** Reasoning levels the current answer model supports (with auto). */
+  getAnswerReasoningEffortOptions() {
+    return ["auto", ...reasoningEffortLevels(this.settings.answerModel)];
+  }
+  /** Change the reasoning effort from the panel composer (hot, persists). */
+  async setAnswerReasoningEffort(effort) {
+    const value = effort.trim();
+    const valid = ["auto", "none", "low", "medium", "high", "max"].includes(
+      value
+    );
+    if (!valid || value === this.settings.answerReasoningEffort) return;
+    this.settings.answerReasoningEffort = value;
+    this.draftSettings.answerReasoningEffort = this.settings.answerReasoningEffort;
+    await this.saveSettings();
+    if (this.backend.status.state !== "stopped") {
+      await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
+    }
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
   /** Star/unstar a model from the settings list. Persists immediately (hot)
    *  so favorites survive plugin updates; cross-provider favorites are all

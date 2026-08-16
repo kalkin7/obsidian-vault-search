@@ -55,6 +55,8 @@ export interface SearchItemViewOwner {
     model: string,
     options?: { notify?: boolean },
   ): Promise<void>;
+  getAnswerReasoningEffortOptions(): string[];
+  setAnswerReasoningEffort(effort: string): Promise<void>;
   toggleFavoriteModel(provider: LLMProviderId, model: string): Promise<void>;
   registerAiView(view: VaultSearchItemView): void;
   unregisterAiView(view: VaultSearchItemView): void;
@@ -68,6 +70,7 @@ export class VaultSearchItemView extends ItemView {
   private providerEl!: HTMLElement;
   private session!: AnswerSession;
   private modelSelect!: HTMLSelectElement;
+  private effortSelect!: HTMLSelectElement;
   private pendingEl: HTMLElement | null = null;
   private lastQuery = "";
 
@@ -153,6 +156,22 @@ export class VaultSearchItemView extends ItemView {
       cls: "vault-ai-search-model-select",
       attr: { "aria-label": "답변 모델 (즐겨찾기)" },
     });
+    composerBar.createEl("span", {
+      text: "추론",
+      cls: "vault-ai-search-model-label",
+    });
+    this.effortSelect = composerBar.createEl("select", {
+      cls: "vault-ai-search-model-select vault-ai-search-effort-select",
+      attr: { "aria-label": "추론 강도 (reasoning effort)" },
+    });
+    const onEffortChange = () => {
+      const value = this.effortSelect.value;
+      if (value) void this.owner.setAnswerReasoningEffort(value);
+    };
+    this.effortSelect.addEventListener("change", onEffortChange);
+    this.listeners.push(() =>
+      this.effortSelect.removeEventListener("change", onEffortChange),
+    );
     composerBar.createEl("span", {
       text: "Enter: 전송 · Shift+Enter: 줄바꿈",
       cls: "vault-ai-search-composer-hint",
@@ -279,6 +298,22 @@ export class VaultSearchItemView extends ItemView {
     }
     this.modelSelect.title =
       "답변 모델 — 설정에서 ★로 지정한 즐겨찾기입니다. (현재 설정)은 즐겨찾기가 아닌 지금 선택된 모델입니다.";
+    if (this.effortSelect) {
+      const effortOptions = this.owner.getAnswerReasoningEffortOptions();
+      const currentEffort = this.owner.settings.answerReasoningEffort;
+      this.effortSelect.empty();
+      for (const level of effortOptions) {
+        this.effortSelect.createEl("option", {
+          text: level === "auto" ? "자동" : level,
+          value: level,
+        });
+      }
+      this.effortSelect.value = effortOptions.includes(currentEffort)
+        ? currentEffort
+        : "auto";
+      this.effortSelect.title =
+        "추론 강도 — 모델별 지원 범위에 맞춰 표시됩니다. none은 즉답, high/max는 깊은 추론.";
+    }
     if (this.providerEl) {
       this.providerEl.setText(
         this.owner.settings.answerModel
