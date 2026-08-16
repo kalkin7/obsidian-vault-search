@@ -76,7 +76,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   startupReconcile: true,
   modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
-  answerModel: "gpt-5.6",
+  answerModel: "",
   favoriteAnswerModels: [],
   answerMaxContextChars: 24000,
   answerMaxOutputTokens: 1200,

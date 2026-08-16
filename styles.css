@@ -208,6 +208,13 @@
  overflow-y: auto;
 }
 
+.vault-search-model-empty {
+ padding: var(--size-4-2);
+ color: var(--text-muted);
+ font-size: var(--font-ui-small);
+ text-align: center;
+}
+
 .vault-search-model-row {
  display: flex;
  align-items: center;

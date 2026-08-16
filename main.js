@@ -3070,7 +3070,7 @@ var DEFAULT_SETTINGS = {
   startupReconcile: true,
   modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
-  answerModel: "gpt-5.6",
+  answerModel: "",
   favoriteAnswerModels: [],
   answerMaxContextChars: 24e3,
   answerMaxOutputTokens: 1200,
@@ -4309,7 +4309,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         draft.answerModel = chooseProviderModel(
           this.providerModels[draft.answerProvider] || [],
           this.providerModelSelections[draft.answerProvider],
-          LLM_PROVIDER_DEFAULTS[draft.answerProvider].model
+          ""
         );
         this.providerModelSelections[draft.answerProvider] = draft.answerModel;
         this.display();
@@ -4354,16 +4354,25 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     const fetchedModels = this.providerModels[draft.answerProvider] || [];
-    const modelOptions = fetchedModels.length ? fetchedModels : [draft.answerModel];
+    let modelOptions = fetchedModels;
+    if (!modelOptions.length && draft.answerModel) {
+      modelOptions = [draft.answerModel];
+    }
     const favorites = Array.isArray(draft.favoriteAnswerModels) ? [...draft.favoriteAnswerModels] : [];
     const modelSetting = new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
-      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uC740 \uBAA8\uB4E0 provider\uC5D0\uC11C \uBAA8\uC544\uC838 AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4. \uAE30\uBCF8\uAC12: ${answerProvider.model}` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uAE30\uBCF8\uAC12: ${answerProvider.model}`
+      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uC740 \uBAA8\uB4E0 provider\uC5D0\uC11C \uBAA8\uC544\uC838 AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4.` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uC120\uD0DD\uD558\uAE30 \uC804\uC5D0\uB294 \uBAA8\uB378\uC774 \uC9C0\uC815\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.`
     ).setClass("vault-search-model-setting");
     const modelList = modelSetting.controlEl.createDiv({
       cls: "vault-search-model-list"
     });
     const renderModelList = () => {
       modelList.empty();
+      if (!modelOptions.length) {
+        modelList.createEl("div", {
+          cls: "vault-search-model-empty",
+          text: "\uC120\uD0DD\uB41C \uBAA8\uB378\uC774 \uC5C6\uC2B5\uB2C8\uB2E4. \uC704 \uBAA9\uB85D\uC5D0\uC11C \uBAA8\uB378\uC744 \uC120\uD0DD\uD558\uC138\uC694."
+        });
+      }
       for (const model of modelOptions) {
         const row = modelList.createDiv({ cls: "vault-search-model-row" });
         row.toggleClass("is-selected", model === draft.answerModel);
@@ -4423,8 +4432,6 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
           );
           this.providerModels[draft.answerProvider] = models;
           this.owner.setProviderModels(draft.answerProvider, models);
-          if (models.length && !models.includes(draft.answerModel))
-            draft.answerModel = models[0];
           this.providerModelSelections[draft.answerProvider] = draft.answerModel;
           new import_obsidian2.Notice(
             models.length ? `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.` : draft.answerProvider === "openai" ? "OpenAI API\uAC00 \uC120\uD0DD \uAC00\uB2A5\uD55C \uCC44\uD305 \uBAA8\uB378\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
@@ -5459,6 +5466,10 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     const submitQuery = () => {
       const query = this.inputEl.value;
       if (query.trim().length < 2) return;
+      if (!this.owner.settings.answerModel) {
+        new import_obsidian6.Notice("\uB2F5\uBCC0 \uBAA8\uB378\uC744 \uBA3C\uC800 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694. (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815)");
+        return;
+      }
       this.lastQuery = query;
       this.session.submit(query);
       this.inputEl.value = "";
@@ -5518,7 +5529,9 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     if (this.statusEl) this.renderBackendStatus(status);
   }
   /** Re-populate the footer model selector from the owner's favorite list
-   *  (called on open and whenever settings/models change externally). */
+   *  (called on open and whenever settings/models change externally). No
+   *  model is presumed: with nothing chosen and no usable favorites the
+   *  selector shows a placeholder and the header says 모델 미선택. */
   refreshModelSelector() {
     if (!this.modelSelect) return;
     const options = this.owner.getAnswerModelOptions();
@@ -5526,25 +5539,34 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     const current = this.owner.settings.answerModel;
     const favorites = this.owner.settings.favoriteAnswerModels || [];
     this.modelSelect.empty();
-    for (const option of options) {
-      const crossProvider = option.provider !== currentProvider;
-      const isCurrent = option.provider === currentProvider && option.model === current;
-      const isFavorite = favorites.some(
-        (favorite) => favorite.provider === option.provider && favorite.model === option.model
-      );
-      let text = option.model;
-      if (crossProvider) text = `${option.model} (${option.provider})`;
-      else if (isCurrent && !isFavorite) text = `${option.model} (\uD604\uC7AC \uC124\uC815)`;
+    if (options.length) {
+      for (const option of options) {
+        const crossProvider = option.provider !== currentProvider;
+        const isCurrent = option.provider === currentProvider && option.model === current;
+        const isFavorite = favorites.some(
+          (favorite) => favorite.provider === option.provider && favorite.model === option.model
+        );
+        let text = option.model;
+        if (crossProvider) text = `${option.model} (${option.provider})`;
+        else if (isCurrent && !isFavorite)
+          text = `${option.model} (\uD604\uC7AC \uC124\uC815)`;
+        this.modelSelect.createEl("option", {
+          text,
+          value: `${option.provider}::${option.model}`
+        });
+      }
+      this.modelSelect.value = `${currentProvider}::${current}`;
+    } else {
       this.modelSelect.createEl("option", {
-        text,
-        value: `${option.provider}::${option.model}`
+        text: "\u2014 \uBAA8\uB378\uC744 \uC120\uD0DD\uD558\uC138\uC694 \u2014",
+        value: ""
       });
+      this.modelSelect.value = "";
     }
-    this.modelSelect.value = `${currentProvider}::${current}`;
     this.modelSelect.title = "\uB2F5\uBCC0 \uBAA8\uB378 \u2014 \uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815\uD55C \uC990\uACA8\uCC3E\uAE30\uC785\uB2C8\uB2E4. (\uD604\uC7AC \uC124\uC815)\uC740 \uC990\uACA8\uCC3E\uAE30\uAC00 \uC544\uB2CC \uC9C0\uAE08 \uC120\uD0DD\uB41C \uBAA8\uB378\uC785\uB2C8\uB2E4.";
     if (this.providerEl) {
       this.providerEl.setText(
-        `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}`
+        this.owner.settings.answerModel ? `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}` : "\uBAA8\uB378 \uBBF8\uC120\uD0DD"
       );
     }
   }
@@ -5879,13 +5901,15 @@ var VaultSearchPlugin = class extends import_obsidian7.Plugin {
     this.providerModels[provider] = models;
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
-  /** Models the AI search footer offers: favorites across ALL providers plus
-   *  the current selection, deduped and with the current entry first. Falls
-   *  back to the current provider's fetched list when nothing is starred, so
-   *  the selector is never empty. Selecting a cross-provider favorite also
-   *  switches the provider (setAnswerModel handles that). */
+  /** Models the AI search footer offers: the chosen model (if any) plus
+   *  favorites from ALL providers that have an API key configured — models of
+   *  a provider without a key are never offered, and nothing is presumed:
+   *  with no choice and no favorites the selector stays empty. Selecting a
+   *  cross-provider favorite also switches the provider. */
   getAnswerModelOptions() {
-    const favorites = this.settings.favoriteAnswerModels || [];
+    const favorites = (this.settings.favoriteAnswerModels || []).filter(
+      (favorite) => favorite?.model && this.hasProviderKey(favorite.provider)
+    );
     const currentProvider = this.settings.answerProvider;
     const options = [];
     const seen = /* @__PURE__ */ new Set();
@@ -5896,15 +5920,23 @@ var VaultSearchPlugin = class extends import_obsidian7.Plugin {
         options.push({ provider, model });
       }
     };
-    push(currentProvider, this.settings.answerModel);
-    for (const favorite of favorites) {
-      if (favorite && favorite.model) push(favorite.provider, favorite.model);
+    if (this.settings.answerModel) {
+      push(currentProvider, this.settings.answerModel);
     }
-    if (options.length > 1) return options;
-    for (const model of this.providerModels[currentProvider] || []) {
-      push(currentProvider, model);
+    for (const favorite of favorites) {
+      push(favorite.provider, favorite.model);
+    }
+    if (favorites.length) return options;
+    if (options.length) return options;
+    if (this.hasProviderKey(currentProvider)) {
+      for (const model of this.providerModels[currentProvider] || []) {
+        push(currentProvider, model);
+      }
     }
     return options;
+  }
+  hasProviderKey(provider) {
+    return Boolean(getProviderSecret(this.app, provider));
   }
   /** Change the answer provider/model (hot — no restart; the backend picks
    *  it up on the next answer request). Persists immediately so a plugin

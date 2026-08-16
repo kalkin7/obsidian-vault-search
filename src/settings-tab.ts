@@ -170,10 +170,12 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           const previousProvider = draft.answerProvider;
           this.providerModelSelections[previousProvider] = draft.answerModel;
           draft.answerProvider = value as typeof draft.answerProvider;
+          // No presumptuous default: only a previously remembered selection
+          // (or nothing) carries over when switching providers.
           draft.answerModel = chooseProviderModel(
             this.providerModels[draft.answerProvider] || [],
             this.providerModelSelections[draft.answerProvider],
-            LLM_PROVIDER_DEFAULTS[draft.answerProvider].model,
+            "",
           );
           this.providerModelSelections[draft.answerProvider] =
             draft.answerModel;
@@ -231,9 +233,10 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }),
       );
     const fetchedModels = this.providerModels[draft.answerProvider] || [];
-    const modelOptions = fetchedModels.length
-      ? fetchedModels
-      : [draft.answerModel];
+    let modelOptions = fetchedModels;
+    if (!modelOptions.length && draft.answerModel) {
+      modelOptions = [draft.answerModel];
+    }
     const favorites = Array.isArray(draft.favoriteAnswerModels)
       ? [...draft.favoriteAnswerModels]
       : [];
@@ -241,8 +244,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .setName("답변 모델")
       .setDesc(
         fetchedModels.length
-          ? `${fetchedModels.length}개 모델을 확인했습니다. 모델을 클릭해 선택하고, ★로 즐겨찾기를 지정하세요. 즐겨찾기 모델은 모든 provider에서 모아져 AI Vault Search 패널의 모델 선택에 표시됩니다. 기본값: ${answerProvider.model}`
-          : `먼저 모델 최신화를 눌러 선택지를 가져오세요. 기본값: ${answerProvider.model}`,
+          ? `${fetchedModels.length}개 모델을 확인했습니다. 모델을 클릭해 선택하고, ★로 즐겨찾기를 지정하세요. 즐겨찾기 모델은 모든 provider에서 모아져 AI Vault Search 패널의 모델 선택에 표시됩니다.`
+          : `먼저 모델 최신화를 눌러 선택지를 가져오세요. 선택하기 전에는 모델이 지정되지 않습니다.`,
       )
       .setClass("vault-search-model-setting");
     const modelList = modelSetting.controlEl.createDiv({
@@ -250,6 +253,12 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     });
     const renderModelList = () => {
       modelList.empty();
+      if (!modelOptions.length) {
+        modelList.createEl("div", {
+          cls: "vault-search-model-empty",
+          text: "선택된 모델이 없습니다. 위 목록에서 모델을 선택하세요.",
+        });
+      }
       for (const model of modelOptions) {
         const row = modelList.createDiv({ cls: "vault-search-model-row" });
         row.toggleClass("is-selected", model === draft.answerModel);
@@ -316,8 +325,6 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           );
           this.providerModels[draft.answerProvider] = models;
           this.owner.setProviderModels(draft.answerProvider, models);
-          if (models.length && !models.includes(draft.answerModel))
-            draft.answerModel = models[0];
           this.providerModelSelections[draft.answerProvider] =
             draft.answerModel;
           new Notice(

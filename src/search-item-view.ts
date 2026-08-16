@@ -1,5 +1,6 @@
 import {
   ItemView,
+  Notice,
   setIcon,
   type IconName,
   type ViewStateResult,
@@ -181,6 +182,10 @@ export class VaultSearchItemView extends ItemView {
     const submitQuery = () => {
       const query = this.inputEl.value;
       if (query.trim().length < 2) return;
+      if (!this.owner.settings.answerModel) {
+        new Notice("답변 모델을 먼저 선택해 주세요. (설정에서 ★로 지정)");
+        return;
+      }
       this.lastQuery = query;
       this.session.submit(query);
       this.inputEl.value = "";
@@ -244,7 +249,9 @@ export class VaultSearchItemView extends ItemView {
   }
 
   /** Re-populate the footer model selector from the owner's favorite list
-   *  (called on open and whenever settings/models change externally). */
+   *  (called on open and whenever settings/models change externally). No
+   *  model is presumed: with nothing chosen and no usable favorites the
+   *  selector shows a placeholder and the header says 모델 미선택. */
   refreshModelSelector(): void {
     if (!this.modelSelect) return;
     const options = this.owner.getAnswerModelOptions();
@@ -252,29 +259,40 @@ export class VaultSearchItemView extends ItemView {
     const current = this.owner.settings.answerModel;
     const favorites = this.owner.settings.favoriteAnswerModels || [];
     this.modelSelect.empty();
-    for (const option of options) {
-      const crossProvider = option.provider !== currentProvider;
-      const isCurrent =
-        option.provider === currentProvider && option.model === current;
-      const isFavorite = favorites.some(
-        (favorite) =>
-          favorite.provider === option.provider &&
-          favorite.model === option.model,
-      );
-      let text = option.model;
-      if (crossProvider) text = `${option.model} (${option.provider})`;
-      else if (isCurrent && !isFavorite) text = `${option.model} (현재 설정)`;
+    if (options.length) {
+      for (const option of options) {
+        const crossProvider = option.provider !== currentProvider;
+        const isCurrent =
+          option.provider === currentProvider && option.model === current;
+        const isFavorite = favorites.some(
+          (favorite) =>
+            favorite.provider === option.provider &&
+            favorite.model === option.model,
+        );
+        let text = option.model;
+        if (crossProvider) text = `${option.model} (${option.provider})`;
+        else if (isCurrent && !isFavorite)
+          text = `${option.model} (현재 설정)`;
+        this.modelSelect.createEl("option", {
+          text,
+          value: `${option.provider}::${option.model}`,
+        });
+      }
+      this.modelSelect.value = `${currentProvider}::${current}`;
+    } else {
       this.modelSelect.createEl("option", {
-        text,
-        value: `${option.provider}::${option.model}`,
+        text: "— 모델을 선택하세요 —",
+        value: "",
       });
+      this.modelSelect.value = "";
     }
-    this.modelSelect.value = `${currentProvider}::${current}`;
     this.modelSelect.title =
       "답변 모델 — 설정에서 ★로 지정한 즐겨찾기입니다. (현재 설정)은 즐겨찾기가 아닌 지금 선택된 모델입니다.";
     if (this.providerEl) {
       this.providerEl.setText(
-        `${this.owner.settings.answerProvider} · ${this.owner.settings.answerModel}`,
+        this.owner.settings.answerModel
+          ? `${this.owner.settings.answerProvider} · ${this.owner.settings.answerModel}`
+          : "모델 미선택",
       );
     }
   }

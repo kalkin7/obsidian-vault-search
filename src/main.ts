@@ -299,13 +299,16 @@ export default class VaultSearchPlugin extends Plugin {
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
-  /** Models the AI search footer offers: favorites across ALL providers plus
-   *  the current selection, deduped and with the current entry first. Falls
-   *  back to the current provider's fetched list when nothing is starred, so
-   *  the selector is never empty. Selecting a cross-provider favorite also
-   *  switches the provider (setAnswerModel handles that). */
+  /** Models the AI search footer offers: the chosen model (if any) plus
+   *  favorites from ALL providers that have an API key configured — models of
+   *  a provider without a key are never offered, and nothing is presumed:
+   *  with no choice and no favorites the selector stays empty. Selecting a
+   *  cross-provider favorite also switches the provider. */
   getAnswerModelOptions(): FavoriteAnswerModel[] {
-    const favorites = this.settings.favoriteAnswerModels || [];
+    const favorites = (this.settings.favoriteAnswerModels || []).filter(
+      (favorite) =>
+        favorite?.model && this.hasProviderKey(favorite.provider),
+    );
     const currentProvider = this.settings.answerProvider;
     const options: FavoriteAnswerModel[] = [];
     const seen = new Set<string>();
@@ -316,17 +319,27 @@ export default class VaultSearchPlugin extends Plugin {
         options.push({ provider, model });
       }
     };
-    push(currentProvider, this.settings.answerModel);
-    for (const favorite of favorites) {
-      if (favorite && favorite.model) push(favorite.provider, favorite.model);
+    if (this.settings.answerModel) {
+      push(currentProvider, this.settings.answerModel);
     }
-    if (options.length > 1) return options;
-    // Nothing starred yet: show the whole fetched list of the current
-    // provider so the selector is usable before favorites exist.
-    for (const model of this.providerModels[currentProvider] || []) {
-      push(currentProvider, model);
+    for (const favorite of favorites) {
+      push(favorite.provider, favorite.model);
+    }
+    if (favorites.length) return options;
+    if (options.length) return options;
+    // No choice and no favorites: fall back to the fetched list of the
+    // current provider (only when its key is present) so the selector is not
+    // permanently empty before favorites exist.
+    if (this.hasProviderKey(currentProvider)) {
+      for (const model of this.providerModels[currentProvider] || []) {
+        push(currentProvider, model);
+      }
     }
     return options;
+  }
+
+  private hasProviderKey(provider: LLMProviderId): boolean {
+    return Boolean(getProviderSecret(this.app, provider));
   }
 
   /** Change the answer provider/model (hot — no restart; the backend picks
