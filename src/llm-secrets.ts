@@ -1,6 +1,6 @@
-import type { App, SecretStorage } from "obsidian";
+import { requestUrl, type App, type SecretStorage } from "obsidian";
 import type { LLMProviderId } from "./types";
-import { LLM_PROVIDER_DEFAULTS, LLM_SECRET_IDS } from "./constants";
+import { LLM_MODEL_ENDPOINTS, LLM_PROVIDER_DEFAULTS, LLM_SECRET_IDS } from "./constants";
 
 type SecretCapableApp = App & { secretStorage?: SecretStorage };
 
@@ -49,4 +49,45 @@ export function mergeProviderEnvironment(
   for (const name of Object.keys(providerValues)) delete environment[name];
   Object.assign(environment, providerValues);
   return environment;
+}
+
+/** One-token probe against the provider's real chat endpoint. Returns false
+ *  ONLY on 401/403 — the API definitively rejected the key. Network hiccups,
+ *  timeouts, and other HTTP statuses do not block saving (they cannot prove
+ *  the key is wrong). The models endpoint does NOT validate keys, so a
+ *  successful model fetch is not proof a key works — hence this probe. */
+export async function validateProviderApiKey(
+  provider: LLMProviderId,
+  apiKey: string,
+): Promise<boolean> {
+  const defaults = LLM_PROVIDER_DEFAULTS[provider];
+  const url =
+    provider === "openai"
+      ? "https://api.openai.com/v1/responses"
+      : LLM_MODEL_ENDPOINTS[provider].replace(/\/models$/, "/chat/completions");
+  const body =
+    provider === "openai"
+      ? JSON.stringify({
+          model: defaults.model,
+          input: "hi",
+          max_output_tokens: 1,
+        })
+      : JSON.stringify({
+          model: defaults.model,
+          messages: [{ role: "user", content: "hi" }],
+          max_tokens: 1,
+        });
+  try {
+    const response = await requestUrl({
+      url,
+      method: "POST",
+      contentType: "application/json",
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body,
+      throw: false,
+    });
+    return response.status !== 401 && response.status !== 403;
+  } catch {
+    return true;
+  }
 }

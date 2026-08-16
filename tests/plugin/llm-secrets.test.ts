@@ -1,10 +1,34 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { requestUrl } from "obsidian";
 import {
   getProviderSecret,
   mergeProviderEnvironment,
   providerEnvironment,
   setProviderSecret,
+  validateProviderApiKey,
 } from "../../src/llm-secrets";
+
+vi.mock("obsidian", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("obsidian")>();
+  return { ...mod, requestUrl: vi.fn() };
+});
+
+const mockRequestUrl = requestUrl as unknown as {
+  mockResolvedValue(value: unknown): void;
+  mockRejectedValue(error: unknown): void;
+  mockClear(): void;
+  mock: { calls: unknown[][] };
+};
+
+function response(status: number): unknown {
+  return {
+    status,
+    text: "",
+    json: {},
+    headers: {},
+    arrayBuffer: new ArrayBuffer(0),
+  };
+}
 
 function fakeApp() {
   const values = new Map<string, string>();
@@ -38,5 +62,24 @@ describe("LLM secrets", () => {
       { OPENAI_API_KEY: "inherited-key", OTHER_ENV: "kept" },
       providerEnvironment(app),
     )).toEqual({ OPENAI_API_KEY: "", OTHER_ENV: "kept" });
+  });
+
+  it("rejects a key the provider answers 401 to (real chat endpoint probe)", async () => {
+    beforeEach(() => mockRequestUrl.mockClear());
+    mockRequestUrl.mockResolvedValue(response(401));
+    expect(await validateProviderApiKey("opencode-go", "bad-key")).toBe(false);
+    const call = mockRequestUrl.mock.calls[0][0] as {
+      url: string;
+      headers: Record<string, string>;
+    };
+    expect(call.url).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(call.headers.Authorization).toBe("Bearer bad-key");
+  });
+
+  it("accepts a key on success and on network errors (does not block saving)", async () => {
+    mockRequestUrl.mockResolvedValue(response(200));
+    expect(await validateProviderApiKey("deepseek", "good-key")).toBe(true);
+    mockRequestUrl.mockRejectedValue(new Error("network down"));
+    expect(await validateProviderApiKey("opencode-go", "maybe-key")).toBe(true);
   });
 });

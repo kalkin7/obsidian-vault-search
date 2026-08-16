@@ -8,6 +8,17 @@ import { mkdir, readFile, readdir, rename, rm, writeFile } from "fs/promises";
 import * as path from "path";
 import AdmZip from "adm-zip";
 import { requestUrl } from "obsidian";
+
+/** Sidecar environment names for the LLM provider keys. They must come
+ *  exclusively from Obsidian secret storage — a stale OPENAI_API_KEY /
+ *  OPENCODE_GO_API_KEY / DEEPSEEK_API_KEY inherited from the host process
+ *  would otherwise reach the sidecar and surface as a confusing "Provider
+ *  authentication failed". */
+const PROVIDER_ENV_VARS = [
+  "OPENAI_API_KEY",
+  "OPENCODE_GO_API_KEY",
+  "DEEPSEEK_API_KEY",
+] as const;
 import type {
   BackendResponse,
   BackendStatus,
@@ -507,6 +518,12 @@ export class BackendManager {
       "--watch-stdin",
     ];
     const env = mergeProviderEnvironment(process.env, providerEnvironment);
+    // Provider keys reach the sidecar ONLY via Obsidian secret storage:
+    // explicitly blank any provider var the host process happened to inherit,
+    // so a stale shell/system key cannot masquerade as the stored one.
+    for (const name of PROVIDER_ENV_VARS) {
+      if (!(name in env)) env[name] = "";
+    }
     env.PYTHONUTF8 = "1";
     env.PYTHONPATH =
       this.backendRoot +

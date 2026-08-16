@@ -414,9 +414,11 @@ export class VaultSearchItemView extends ItemView {
     const meta = block.createDiv({ cls: "vault-ai-search-thought" });
     meta.setText("답변을 사용할 수 없습니다");
     meta.addClass("vault-search-error");
-    block.createDiv({ cls: "vault-ai-search-answer-body" }).setText(
-      state.message,
-    );
+    const message =
+      state.code === "LLM_AUTH_FAILED"
+        ? "API 키가 유효하지 않습니다. 설정에서 프로바이더 API 키를 다시 확인해 주세요."
+        : state.message;
+    block.createDiv({ cls: "vault-ai-search-answer-body" }).setText(message);
     if (state.evidence?.length) {
       this.renderMessageEvidence(block, state.evidence);
     }
@@ -424,9 +426,7 @@ export class VaultSearchItemView extends ItemView {
       text: "다시 시도",
       attr: { type: "button" },
     });
-    retry.addEventListener("click", () =>
-      this.session.submit(this.lastQuery),
-    );
+    retry.addEventListener("click", () => this.session.submit(this.lastQuery));
     this.scrollToBottom();
   }
 
@@ -445,8 +445,7 @@ export class VaultSearchItemView extends ItemView {
     );
     const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
     const renderer = new AnswerRenderer(body, {
-      openCitation: (location) =>
-        this.owner.openSearchResult(location, true),
+      openCitation: (location) => this.owner.openSearchResult(location, true),
     });
     renderer.render(result.answer, result.citations, (text) =>
       this.copyAnswer(text),

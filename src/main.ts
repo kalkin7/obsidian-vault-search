@@ -11,6 +11,7 @@ import { BackendManager } from "./backend-manager";
 import {
   DEFAULT_SETTINGS,
   LLM_MODEL_ENDPOINTS,
+  LLM_PROVIDER_DEFAULTS,
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
 import { VaultSearchSettingTab } from "./settings-tab";
@@ -34,6 +35,7 @@ import {
   hasSecretStorage,
   providerEnvironment,
   setProviderSecret,
+  validateProviderApiKey,
 } from "./llm-secrets";
 import type { FavoriteAnswerModel, LLMProviderId } from "./types";
 import { normalizeProviderModels } from "./model-catalog";
@@ -275,7 +277,19 @@ export default class VaultSearchPlugin extends Plugin {
         "Obsidian 1.11.4 이상에서만 API 키를 보안 저장할 수 있습니다.",
       );
     }
-    setProviderSecret(this.app, provider, value);
+    const secret = value.trim();
+    if (!secret) throw new Error("저장할 API 키를 입력해 주세요.");
+    // Probe the real chat endpoint before saving: the models endpoint does
+    // not validate keys, so a 401/403 here is the only reliable way to catch
+    // a wrong or expired key at save time instead of at answer time.
+    const valid = await validateProviderApiKey(provider, secret);
+    if (!valid) {
+      throw new Error(
+        `${LLM_PROVIDER_DEFAULTS[provider].name}가 이 API 키를 거부했습니다. ` +
+          "키를 다시 복사하거나 provider 콘솔에서 구독/키 상태를 확인해 주세요.",
+      );
+    }
+    setProviderSecret(this.app, provider, secret);
     if (this.backend.status.state !== "stopped") await this.backend.restart();
   }
 
