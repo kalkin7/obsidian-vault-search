@@ -388,7 +388,10 @@ export default class VaultSearchPlugin extends Plugin {
     // an unsupported value (e.g. xhigh after switching to deepseek-v4-flash)
     // is never sent to the provider.
     const effort = this.settings.answerReasoningEffort;
-    if (effort !== "auto" && !reasoningEffortLevels(provider, value).includes(effort)) {
+    if (
+      effort !== "auto" &&
+      !reasoningEffortLevels(provider, value).includes(effort)
+    ) {
       this.settings.answerReasoningEffort = "auto";
       this.draftSettings.answerReasoningEffort = "auto";
     }

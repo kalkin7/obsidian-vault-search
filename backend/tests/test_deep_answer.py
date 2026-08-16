@@ -308,12 +308,8 @@ def test_deep_answer_read_respects_exclude_globs(monkeypatch, tmp_path):
             "조사 완료.",
         ]
     )
-    monkeypatch.setattr(
-        "vault_search.service.create_provider", lambda *_args: fake()
-    )
-    value = service.call(
-        "answer", {"query": "q", "conversation": [], "deep": True}
-    )
+    monkeypatch.setattr("vault_search.service.create_provider", lambda *_args: fake())
+    value = service.call("answer", {"query": "q", "conversation": [], "deep": True})
     # The excluded file must never reach the evidence list.
     assert all("config.json" not in s["file_path"] for s in value["evidence"])
     assert value["answer"] == "조사 완료."
@@ -327,9 +323,7 @@ def test_deep_answer_blocks_uncited_general_knowledge_without_sources(
         search_detailed=lambda *_a, **_k: SimpleNamespace(results=[])
     )
     fake, _ = scripted_provider(["그냥 아는 지식으로 답합니다."])
-    monkeypatch.setattr(
-        "vault_search.service.create_provider", lambda *_args: fake()
-    )
+    monkeypatch.setattr("vault_search.service.create_provider", lambda *_args: fake())
     value = service.call(
         "answer", {"query": "아무거나", "conversation": [], "deep": True}
     )

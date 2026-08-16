@@ -70,14 +70,43 @@ Paths are vault-relative POSIX-style globs. Absolute paths and traversal are rej
 
 ## AI Vault 답변
 
-The AI Vault Search panel uses the local hybrid search results as its only context.
-Choose `openai`, `opencode-go`, or `deepseek`, enter the API key in the settings
-tab, and use **모델 최신화** to fetch the provider's current model list. The key is
-stored through Obsidian's `secretStorage`, not in plugin data or the vault; it is
-only passed to the sidecar process when it starts. The panel keeps up to four
-conversation turns only while it is open and does not persist chat history.
+The AI Vault Search panel answers from the local hybrid search results. Choose
+`openai`, `opencode-go`, or `deepseek`, enter the API key in the settings tab,
+and use **모델 최신화** to fetch the provider's current model list. The key is
+stored through Obsidian's `secretStorage` (never in plugin data or the vault)
+and reaches the sidecar process only as an environment variable it sets at
+startup; a host-process key can never leak in (provider env vars are
+unconditionally overwritten from the stored secrets).
 
-The provider receives bounded source snippets, not the whole vault. Source text is
-treated as untrusted data, and citations such as `[S1]` open the corresponding
-note and line in Obsidian. Missing keys affect only answer generation; ordinary
-vault search remains available.
+- **Agentic (deep) answers** — every question runs an agent loop: the model can
+  call `search` (hybrid, top-40), `read` (a vault file — scoped to the
+  include/exclude globs, `../` and out-of-vault symlinks rejected), and `grep`
+  (bounded regex scan, pattern ≤ 200 chars) until it has enough evidence, then
+  answers with `[S#]` citations. An automatic first search seeds the loop. The
+  accumulated source budget follows `answerMaxContextChars`, and the output
+  budget has a 4,000-token floor (reasoning models spend tokens on
+  chain-of-thought). Without any sources the answer falls back to
+  "볼트에서 충분한 근거를 찾지 못했습니다." instead of general knowledge.
+- **Reasoning effort** — the composer shows a per-model **추론** selector
+  (`auto` / `none` / `low` / `medium` / `high` / `xhigh` / `max`), restricted to
+  the levels the current model supports (curated per official catalogs, with a
+  provider fallback for new models; switching models resets an unsupported
+  level to `auto`). OpenAI models receive the official nested
+  `reasoning: {effort}`; compatible providers get a top-level
+  `reasoning_effort`.
+- **Favorite models** — in the settings model list, ★ marks favorites; only
+  starred models (from providers with a stored key) appear in the composer's
+  model selector, and selecting one switches the provider too. Model and
+  favorite changes persist immediately (hot) — no "설정 적용" needed.
+- **Conversation UI** — the panel keeps a chat history (question bubbles +
+  per-answer blocks with markdown, tables, citation pills, and a hover copy
+  button) for the session.
+- **API key validation** — 저장/테스트 probe the real chat endpoint with a
+  one-token request: 401/403 is reported as an invalid key, a 2xx/3xx as
+  valid, and anything else (network/timeout/429/5xx) as "확인 불가". Saving an
+  empty value deletes the stored key.
+
+The provider receives bounded source snippets, not the whole vault. Source text
+is treated as untrusted data, and citations such as `[S1]` open the
+corresponding note and line in Obsidian. Missing keys affect only answer
+generation; ordinary vault search remains available.

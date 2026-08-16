@@ -85,6 +85,18 @@ user-authored search guidance: if the vault already instructs agents about
 conflict and leaves the file untouched (K_Notes' hand-tuned AGENTS.md is
 preserved this way). See [Agent integration](docs/agent-integration.md).
 
+## AI Vault Search panel (우측 패널)
+
+Open the panel from the left ribbon. It answers questions directly from the
+vault using the configured provider (`openai` / `opencode-go` / `deepseek`),
+with **agentic (deep) answers**: the model iteratively searches, reads, and
+greps the vault — the same strategy coding agents follow via AGENTS.md — then
+answers with `[S#]` citations. A per-model **추론** selector sits next to the
+model picker in the composer. ★-marked models in the settings list are the
+only ones offered in the model picker, and changes apply immediately. API keys
+are validated against the real endpoint when saved or tested. See
+[Settings](docs/settings.md#ai-vault-답변) for the full behavior.
+
 ## Lifecycle guarantees
 
 - dynamic loopback port and per-run authentication token
