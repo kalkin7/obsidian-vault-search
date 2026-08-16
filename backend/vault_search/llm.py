@@ -169,9 +169,23 @@ class OpenAICompatibleProvider(_BaseProvider):
             raise ProviderError("LLM_BAD_RESPONSE", "Chat completion contained no choices")
         message = choices[0].get("message")
         text = message.get("content") if isinstance(message, dict) else None
-        if not isinstance(text, str) or not text:
-            raise ProviderError("LLM_BAD_RESPONSE", "Chat completion contained no message content")
-        return ProviderResponse(text=text, provider=self.provider_id, model=str(value.get("model") or self.model))
+        if isinstance(text, list):
+            # OpenAI content-parts format: [{"type": "text", "text": "..."}]
+            text = "".join(
+                part.get("text", "")
+                for part in text
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+        if not isinstance(text, str) or not text.strip():
+            # Reasoning models (e.g. deepseek-v4-flash behind OpenCode Go)
+            # fill `reasoning_content` first; an empty `content` usually means
+            # the output budget was consumed by chain-of-thought.
+            raise ProviderError(
+                "LLM_BAD_RESPONSE",
+                "Chat completion contained no message content "
+                "(reasoning may have consumed the output token budget)",
+            )
+        return ProviderResponse(text=text.strip(), provider=self.provider_id, model=str(value.get("model") or self.model))
 
 
 def create_provider(provider_id: str, model: str) -> LLMProvider:

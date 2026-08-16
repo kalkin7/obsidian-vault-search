@@ -79,3 +79,31 @@ def test_provider_maps_cloudflare_403_to_unavailable_not_auth(monkeypatch):
         )
     assert exc.value.code == "LLM_PROVIDER_UNAVAILABLE"
     assert "bot protection" in exc.value.message
+
+
+def test_provider_accepts_openai_content_parts_list(monkeypatch):
+    def fake_urlopen(request, timeout=0):
+        return _FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": [
+                                {"type": "text", "text": "서울입니다."},
+                                {"type": "text", "text": " [S1]"},
+                            ]
+                        }
+                    }
+                ],
+                "model": "m",
+            }
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    response = _provider().complete(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        max_output_tokens=10,
+        timeout_seconds=5.0,
+    )
+    assert response.text == "서울입니다. [S1]"
