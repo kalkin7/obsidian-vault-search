@@ -329,15 +329,24 @@ export default class VaultSearchPlugin extends Plugin {
     return options;
   }
 
-  /** Change the answer provider/model from the AI search view footer (hot —
-   *  no restart; the backend picks it up on the next answer request). */
-  async setAnswerModel(provider: LLMProviderId, model: string): Promise<void> {
+  /** Change the answer provider/model (hot — no restart; the backend picks
+   *  it up on the next answer request). Persists immediately so a plugin
+   *  update/reload never loses the choice. */
+  async setAnswerModel(
+    provider: LLMProviderId,
+    model: string,
+    options?: { notify?: boolean },
+  ): Promise<void> {
     const value = model.trim();
     const previous = this.settings.answerModel;
     const previousProvider = this.settings.answerProvider;
     if (!value || (value === previous && provider === previousProvider)) return;
     this.settings.answerProvider = provider;
     this.settings.answerModel = value;
+    // Keep the settings draft in sync so a later "설정 적용" does not
+    // overwrite this hot change with a stale draft value.
+    this.draftSettings.answerProvider = provider;
+    this.draftSettings.answerModel = value;
     await this.saveSettings();
     if (this.backend.status.state !== "stopped") {
       await this.backend
@@ -345,11 +354,41 @@ export default class VaultSearchPlugin extends Plugin {
         .catch(() => undefined);
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
-    new Notice(
-      provider === previousProvider
-        ? `답변 모델을 ${value}(으)로 변경했습니다.`
-        : `답변 provider를 ${provider}로 전환하고 모델을 ${value}(으)로 변경했습니다.`,
+    if (options?.notify ?? true) {
+      new Notice(
+        provider === previousProvider
+          ? `답변 모델을 ${value}(으)로 변경했습니다.`
+          : `답변 provider를 ${provider}로 전환하고 모델을 ${value}(으)로 변경했습니다.`,
+      );
+    }
+  }
+
+  /** Star/unstar a model from the settings list. Persists immediately (hot)
+   *  so favorites survive plugin updates; cross-provider favorites are all
+   *  offered in the AI search footer selector. */
+  async toggleFavoriteModel(
+    provider: LLMProviderId,
+    model: string,
+  ): Promise<void> {
+    const favorites = (this.settings.favoriteAnswerModels || []).map(
+      (favorite) => ({ ...favorite }),
     );
+    const index = favorites.findIndex(
+      (favorite) => favorite.provider === provider && favorite.model === model,
+    );
+    if (index >= 0) favorites.splice(index, 1);
+    else favorites.push({ provider, model });
+    this.settings.favoriteAnswerModels = favorites;
+    this.draftSettings.favoriteAnswerModels = favorites.map((favorite) => ({
+      ...favorite,
+    }));
+    await this.saveSettings();
+    if (this.backend.status.state !== "stopped") {
+      await this.backend
+        .call("apply_search_config", hotConfig(this.settings), 30_000)
+        .catch(() => undefined);
+    }
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
   resetDraftSettings(): void {

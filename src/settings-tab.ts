@@ -261,6 +261,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         name.addEventListener("click", () => {
           draft.answerModel = model;
           this.providerModelSelections[draft.answerProvider] = model;
+          // Persist immediately (hot) so the choice survives plugin updates
+          // without needing "설정 적용".
+          void this.owner.setAnswerModel(draft.answerProvider, model, {
+            notify: false,
+          });
           renderModelList();
         });
         if (model === draft.answerModel && !fetchedModels.includes(model)) {
@@ -295,6 +300,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           draft.favoriteAnswerModels = favorites.map((favorite) => ({
             ...favorite,
           }));
+          // Persist immediately (hot) so stars survive plugin updates.
+          void this.owner.toggleFavoriteModel(draft.answerProvider, model);
           renderModelList();
         });
       }

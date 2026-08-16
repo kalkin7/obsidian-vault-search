@@ -28,6 +28,7 @@ describe("VaultSearchItemView", () => {
       openSearchSettings: () => undefined,
       getAnswerModelOptions: () => [],
       setAnswerModel: async () => undefined,
+      toggleFavoriteModel: async () => undefined,
       registerAiView: () => undefined,
       unregisterAiView: () => undefined,
     };

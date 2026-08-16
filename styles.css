@@ -489,16 +489,10 @@
  border-top: 1px solid var(--background-modifier-border);
  background: var(--background-secondary);
 }
-.vault-ai-search-input-row {
- display: flex;
- gap: var(--size-4-2);
- align-items: flex-end;
- min-width: 0;
-}
 .vault-ai-search-input {
  flex: 1 1 auto;
  min-width: 0;
- min-height: 64px;
+ min-height: 72px;
  max-height: 200px;
  resize: none;
  overflow-y: auto;
@@ -512,15 +506,26 @@
 .vault-ai-search-input:focus {
  border-color: var(--interactive-accent);
 }
-.vault-ai-search-input-row > button {
- flex: 0 0 auto;
- white-space: nowrap;
-}
-.vault-ai-search-model-bar {
+.vault-ai-search-composer-bar {
  display: flex;
  align-items: center;
  gap: var(--size-4-2);
  min-width: 0;
+}
+.vault-ai-search-composer-spacer {
+ flex: 1 1 auto;
+ min-width: 0;
+}
+.vault-ai-search-composer-bar > button {
+ flex: 0 0 auto;
+ white-space: nowrap;
+}
+.vault-ai-search-composer-hint {
+ color: var(--text-faint);
+ font-size: var(--font-ui-smaller);
+ white-space: nowrap;
+ overflow: hidden;
+ text-overflow: ellipsis;
 }
 .vault-ai-search-model-label {
  color: var(--text-muted);

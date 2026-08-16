@@ -48,7 +48,12 @@ export interface SearchItemViewOwner {
   ): Promise<void>;
   openSearchSettings(): void;
   getAnswerModelOptions(): FavoriteAnswerModel[];
-  setAnswerModel(provider: LLMProviderId, model: string): Promise<void>;
+  setAnswerModel(
+    provider: LLMProviderId,
+    model: string,
+    options?: { notify?: boolean },
+  ): Promise<void>;
+  toggleFavoriteModel(provider: LLMProviderId, model: string): Promise<void>;
   registerAiView(view: VaultSearchItemView): void;
   unregisterAiView(view: VaultSearchItemView): void;
 }
@@ -137,21 +142,39 @@ export class VaultSearchItemView extends ItemView {
       (state) => this.renderAnswerState(state),
     );
     const footer = this.contentEl.createDiv({ cls: "vault-ai-search-footer" });
-    const inputRow = footer.createDiv({ cls: "vault-ai-search-input-row" });
-    this.inputEl = inputRow.createEl("textarea", {
+    this.inputEl = footer.createEl("textarea", {
       cls: "vault-ai-search-input",
       attr: {
         rows: "2",
-        placeholder: "볼트에 질문하기 (Enter: 전송, Shift+Enter: 줄바꿈)",
+        placeholder: "볼트에 질문하기…",
+        title: "Enter: 전송 · Shift+Enter: 줄바꿈",
         "aria-label": "AI Vault Search query",
       },
     });
-    const submit = inputRow.createEl("button", {
+    const composerBar = footer.createDiv({
+      cls: "vault-ai-search-composer-bar",
+    });
+    composerBar.createEl("span", {
+      text: "모델",
+      cls: "vault-ai-search-model-label",
+    });
+    this.modelSelect = composerBar.createEl("select", {
+      cls: "vault-ai-search-model-select",
+      attr: { "aria-label": "답변 모델 (즐겨찾기)" },
+    });
+    composerBar.createEl("span", {
+      text: "Enter: 전송 · Shift+Enter: 줄바꿈",
+      cls: "vault-ai-search-composer-hint",
+    });
+    const spacer = composerBar.createDiv({
+      cls: "vault-ai-search-composer-spacer",
+    });
+    const submit = composerBar.createEl("button", {
       text: "질문",
       cls: "mod-cta",
       attr: { type: "button" },
     });
-    const clear = inputRow.createEl("button", {
+    const clear = composerBar.createEl("button", {
       text: "지우기",
       attr: { type: "button" },
     });
@@ -191,15 +214,7 @@ export class VaultSearchItemView extends ItemView {
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
-    const modelBar = footer.createDiv({ cls: "vault-ai-search-model-bar" });
-    modelBar.createEl("span", {
-      text: "모델",
-      cls: "vault-ai-search-model-label",
-    });
-    this.modelSelect = modelBar.createEl("select", {
-      cls: "vault-ai-search-model-select",
-      attr: { "aria-label": "답변 모델 (즐겨찾기)" },
-    });
+    void spacer;
     const onModelChange = () => {
       const [provider, model] = this.modelSelect.value.split("::", 2);
       if (provider && model) {

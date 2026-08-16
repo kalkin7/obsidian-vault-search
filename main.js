@@ -4375,6 +4375,9 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         name.addEventListener("click", () => {
           draft.answerModel = model;
           this.providerModelSelections[draft.answerProvider] = model;
+          void this.owner.setAnswerModel(draft.answerProvider, model, {
+            notify: false
+          });
           renderModelList();
         });
         if (model === draft.answerModel && !fetchedModels.includes(model)) {
@@ -4405,6 +4408,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
           draft.favoriteAnswerModels = favorites.map((favorite) => ({
             ...favorite
           }));
+          void this.owner.toggleFavoriteModel(draft.answerProvider, model);
           renderModelList();
         });
       }
@@ -5416,21 +5420,39 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
       (state) => this.renderAnswerState(state)
     );
     const footer = this.contentEl.createDiv({ cls: "vault-ai-search-footer" });
-    const inputRow = footer.createDiv({ cls: "vault-ai-search-input-row" });
-    this.inputEl = inputRow.createEl("textarea", {
+    this.inputEl = footer.createEl("textarea", {
       cls: "vault-ai-search-input",
       attr: {
         rows: "2",
-        placeholder: "\uBCFC\uD2B8\uC5D0 \uC9C8\uBB38\uD558\uAE30 (Enter: \uC804\uC1A1, Shift+Enter: \uC904\uBC14\uAFC8)",
+        placeholder: "\uBCFC\uD2B8\uC5D0 \uC9C8\uBB38\uD558\uAE30\u2026",
+        title: "Enter: \uC804\uC1A1 \xB7 Shift+Enter: \uC904\uBC14\uAFC8",
         "aria-label": "AI Vault Search query"
       }
     });
-    const submit = inputRow.createEl("button", {
+    const composerBar = footer.createDiv({
+      cls: "vault-ai-search-composer-bar"
+    });
+    composerBar.createEl("span", {
+      text: "\uBAA8\uB378",
+      cls: "vault-ai-search-model-label"
+    });
+    this.modelSelect = composerBar.createEl("select", {
+      cls: "vault-ai-search-model-select",
+      attr: { "aria-label": "\uB2F5\uBCC0 \uBAA8\uB378 (\uC990\uACA8\uCC3E\uAE30)" }
+    });
+    composerBar.createEl("span", {
+      text: "Enter: \uC804\uC1A1 \xB7 Shift+Enter: \uC904\uBC14\uAFC8",
+      cls: "vault-ai-search-composer-hint"
+    });
+    const spacer = composerBar.createDiv({
+      cls: "vault-ai-search-composer-spacer"
+    });
+    const submit = composerBar.createEl("button", {
       text: "\uC9C8\uBB38",
       cls: "mod-cta",
       attr: { type: "button" }
     });
-    const clear = inputRow.createEl("button", {
+    const clear = composerBar.createEl("button", {
       text: "\uC9C0\uC6B0\uAE30",
       attr: { type: "button" }
     });
@@ -5469,15 +5491,7 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
-    const modelBar = footer.createDiv({ cls: "vault-ai-search-model-bar" });
-    modelBar.createEl("span", {
-      text: "\uBAA8\uB378",
-      cls: "vault-ai-search-model-label"
-    });
-    this.modelSelect = modelBar.createEl("select", {
-      cls: "vault-ai-search-model-select",
-      attr: { "aria-label": "\uB2F5\uBCC0 \uBAA8\uB378 (\uC990\uACA8\uCC3E\uAE30)" }
-    });
+    void spacer;
     const onModelChange = () => {
       const [provider, model] = this.modelSelect.value.split("::", 2);
       if (provider && model) {
@@ -5884,23 +5898,50 @@ var VaultSearchPlugin = class extends import_obsidian7.Plugin {
     }
     return options;
   }
-  /** Change the answer provider/model from the AI search view footer (hot —
-   *  no restart; the backend picks it up on the next answer request). */
-  async setAnswerModel(provider, model) {
+  /** Change the answer provider/model (hot — no restart; the backend picks
+   *  it up on the next answer request). Persists immediately so a plugin
+   *  update/reload never loses the choice. */
+  async setAnswerModel(provider, model, options) {
     const value = model.trim();
     const previous = this.settings.answerModel;
     const previousProvider = this.settings.answerProvider;
     if (!value || value === previous && provider === previousProvider) return;
     this.settings.answerProvider = provider;
     this.settings.answerModel = value;
+    this.draftSettings.answerProvider = provider;
+    this.draftSettings.answerModel = value;
     await this.saveSettings();
     if (this.backend.status.state !== "stopped") {
       await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
-    new import_obsidian7.Notice(
-      provider === previousProvider ? `\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.` : `\uB2F5\uBCC0 provider\uB97C ${provider}\uB85C \uC804\uD658\uD558\uACE0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`
+    if (options?.notify ?? true) {
+      new import_obsidian7.Notice(
+        provider === previousProvider ? `\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.` : `\uB2F5\uBCC0 provider\uB97C ${provider}\uB85C \uC804\uD658\uD558\uACE0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`
+      );
+    }
+  }
+  /** Star/unstar a model from the settings list. Persists immediately (hot)
+   *  so favorites survive plugin updates; cross-provider favorites are all
+   *  offered in the AI search footer selector. */
+  async toggleFavoriteModel(provider, model) {
+    const favorites = (this.settings.favoriteAnswerModels || []).map(
+      (favorite) => ({ ...favorite })
     );
+    const index = favorites.findIndex(
+      (favorite) => favorite.provider === provider && favorite.model === model
+    );
+    if (index >= 0) favorites.splice(index, 1);
+    else favorites.push({ provider, model });
+    this.settings.favoriteAnswerModels = favorites;
+    this.draftSettings.favoriteAnswerModels = favorites.map((favorite) => ({
+      ...favorite
+    }));
+    await this.saveSettings();
+    if (this.backend.status.state !== "stopped") {
+      await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
+    }
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
   resetDraftSettings() {
     this.draftSettings = cloneSettings(this.settings);
