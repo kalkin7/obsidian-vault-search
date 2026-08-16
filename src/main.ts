@@ -610,7 +610,10 @@ export default class VaultSearchPlugin extends Plugin {
       }
       throw error;
     } finally {
-      this.settingTab?.display();
+      // No full settings-tab re-render here: auto-apply fires while the user
+      // is typing, and a re-render resets the scroll position. The status
+      // line refreshes in place via backend status events; the panel model
+      // selector is the only part that must rebuild.
       for (const view of this.aiSearchViews) view.refreshModelSelector();
     }
   }

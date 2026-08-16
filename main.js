@@ -7030,7 +7030,6 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       }
       throw error;
     } finally {
-      this.settingTab?.display();
       for (const view of this.aiSearchViews) view.refreshModelSelector();
     }
   }
