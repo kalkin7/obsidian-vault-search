@@ -83,9 +83,21 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
 };
 
 export const LLM_PROVIDER_DEFAULTS = {
-  openai: { name: "OpenAI Responses API", model: "gpt-5.6", env: "OPENAI_API_KEY" },
-  "opencode-go": { name: "OpenCode Go", model: "deepseek-v4-flash", env: "OPENCODE_GO_API_KEY" },
-  deepseek: { name: "DeepSeek", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" },
+  openai: {
+    name: "OpenAI Responses API",
+    model: "gpt-5.6",
+    env: "OPENAI_API_KEY",
+  },
+  "opencode-go": {
+    name: "OpenCode Go",
+    model: "deepseek-v4-flash",
+    env: "OPENCODE_GO_API_KEY",
+  },
+  deepseek: {
+    name: "DeepSeek",
+    model: "deepseek-v4-flash",
+    env: "DEEPSEEK_API_KEY",
+  },
 } as const;
 
 export const LLM_SECRET_IDS = {

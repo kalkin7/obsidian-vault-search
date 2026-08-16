@@ -3077,9 +3077,21 @@ var DEFAULT_SETTINGS = {
   answerTimeoutSeconds: 60
 };
 var LLM_PROVIDER_DEFAULTS = {
-  openai: { name: "OpenAI Responses API", model: "gpt-5.6", env: "OPENAI_API_KEY" },
-  "opencode-go": { name: "OpenCode Go", model: "deepseek-v4-flash", env: "OPENCODE_GO_API_KEY" },
-  deepseek: { name: "DeepSeek", model: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY" }
+  openai: {
+    name: "OpenAI Responses API",
+    model: "gpt-5.6",
+    env: "OPENAI_API_KEY"
+  },
+  "opencode-go": {
+    name: "OpenCode Go",
+    model: "deepseek-v4-flash",
+    env: "OPENCODE_GO_API_KEY"
+  },
+  deepseek: {
+    name: "DeepSeek",
+    model: "deepseek-v4-flash",
+    env: "DEEPSEEK_API_KEY"
+  }
 };
 var LLM_SECRET_IDS = {
   openai: "vault-search-openai-api-key",

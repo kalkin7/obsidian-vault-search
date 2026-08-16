@@ -109,9 +109,14 @@
  overflow-wrap: anywhere;
 }
 
+/* The control column must never shrink below its content (flex: 0 0 auto):
+ * long descriptions give .setting-item-info a large intrinsic width, and if
+ * the control can shrink, negative free space crushes it — dropdown text gets
+ * cut and buttons wrap character by character. Instead the info column
+ * absorbs all the squeeze and wraps its text. */
 .vault-search-settings-panel .setting-item-control {
  display: flex;
- flex: 0 1 auto;
+ flex: 0 0 auto;
  flex-wrap: wrap;
  align-items: center;
  justify-content: flex-end;
@@ -128,20 +133,22 @@
 }
 
 .vault-search-settings-panel .setting-item-control > input[type="text"],
-.vault-search-settings-panel .setting-item-control > input[type="password"],
-.vault-search-settings-panel .setting-item-control > select {
+.vault-search-settings-panel .setting-item-control > input[type="password"] {
  flex: 0 1 240px;
  width: min(100%, 16rem);
 }
 
+/* Dropdowns size to their longest option so option text is never cut. */
+.vault-search-settings-panel .setting-item-control > select {
+ flex: 0 0 auto;
+ width: auto;
+}
+
+/* Buttons stay on one line; they size to their text. */
 .vault-search-settings-panel .setting-item-control > button {
- flex: 0 1 auto;
- max-width: 100%;
- min-width: 0;
- height: auto;
+ flex: 0 0 auto;
  min-height: var(--input-height, 30px);
- white-space: normal;
- overflow-wrap: anywhere;
+ white-space: nowrap;
 }
 
 /* Multi-line text areas (glob lists, wiki folders) span the full card width
