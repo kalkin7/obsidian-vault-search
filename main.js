@@ -3889,6 +3889,12 @@ var BackendManager = class {
     }
     await this.waitUntilReady();
   }
+  /** Rewrite service-config.json from the current settings so a sidecar
+   *  restart keeps hot (in-memory) model/effort changes instead of reloading
+   *  a stale file. Called on every settings save. */
+  async persistServiceConfig() {
+    await this.writeServiceConfig();
+  }
   async writeServiceConfig(lazyOverride) {
     const settings = this.getSettings();
     const payload = {
@@ -5348,6 +5354,7 @@ function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
 var import_obsidian7 = require("obsidian");
 
 // src/answer-renderer.ts
+var HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"];
 var AnswerRenderer = class {
   constructor(containerEl, options) {
     this.containerEl = containerEl;
@@ -5384,14 +5391,14 @@ var AnswerRenderer = class {
         index++;
         continue;
       }
-      const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+      const heading = /^(#{1,6})[ \t]?(.+)$/.exec(line);
       if (heading) {
         const level = heading[1].length;
-        const element = container.createEl(
-          level === 1 ? "h3" : level === 2 ? "h4" : "h5",
-          { cls: "vault-answer-heading" }
-        );
-        this.renderInline(element, heading[2], byId, counts);
+        const tag = HEADING_TAGS[level - 1] ?? "h5";
+        const element = container.createEl(tag, {
+          cls: "vault-answer-heading"
+        });
+        this.renderInline(element, heading[2].trim(), byId, counts);
         index++;
         continue;
       }
@@ -5437,7 +5444,7 @@ var AnswerRenderer = class {
         continue;
       }
       const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
-      while (index < lines.length && lines[index].trim() && !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
+      while (index < lines.length && lines[index].trim() && !/^(?:#{1,6})[ \t]?|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
         lines[index]
       )) {
         if (paragraph.children.length > 0) paragraph.createEl("br");
@@ -6214,7 +6221,10 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
   async saveSettings() {
     const { pythonExecutable, ...portable } = this.settings;
     await this.saveData(portable);
-    if (this.backend) await this.backend.writeMachinePython(pythonExecutable);
+    if (this.backend) {
+      await this.backend.writeMachinePython(pythonExecutable);
+      await this.backend.persistServiceConfig();
+    }
   }
   getProviderApiKey(provider) {
     return getProviderSecret(this.app, provider);

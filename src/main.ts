@@ -269,7 +269,13 @@ export default class VaultSearchPlugin extends Plugin {
   async saveSettings(): Promise<void> {
     const { pythonExecutable, ...portable } = this.settings;
     await this.saveData(portable);
-    if (this.backend) await this.backend.writeMachinePython(pythonExecutable);
+    if (this.backend) {
+      await this.backend.writeMachinePython(pythonExecutable);
+      // Keep service-config.json in sync with hot changes (model / reasoning
+      // effort / provider switches) so a sidecar restart does not reload a
+      // stale provider/model from the last spawn.
+      await this.backend.persistServiceConfig();
+    }
   }
 
   getProviderApiKey(provider: LLMProviderId): string {

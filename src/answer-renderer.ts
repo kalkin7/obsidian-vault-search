@@ -5,6 +5,10 @@ export interface AnswerRendererOptions {
   openCitation: (location: SearchResultLocation) => Promise<void>;
 }
 
+/** Markdown heading level → rendered element; 4-6 hashes all map to h6.
+ *  index 0 = level 1. */
+const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
+
 /** Google-AI-mode-style renderer: lightweight markdown (headings, lists,
  *  bold, inline code, quotes) with clickable citation pills (source name,
  *  "+N" when the same file is cited several times). DOM-only — never assigns
@@ -56,14 +60,14 @@ export class AnswerRenderer {
         index++;
         continue;
       }
-      const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+      const heading = /^(#{1,6})[ \t]?(.+)$/.exec(line);
       if (heading) {
         const level = heading[1].length;
-        const element = container.createEl(
-          level === 1 ? "h3" : level === 2 ? "h4" : "h5",
-          { cls: "vault-answer-heading" },
-        );
-        this.renderInline(element, heading[2], byId, counts);
+        const tag = HEADING_TAGS[level - 1] ?? "h5";
+        const element = container.createEl(tag, {
+          cls: "vault-answer-heading",
+        });
+        this.renderInline(element, heading[2].trim(), byId, counts);
         index++;
         continue;
       }
@@ -113,7 +117,7 @@ export class AnswerRenderer {
       while (
         index < lines.length &&
         lines[index].trim() &&
-        !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
+        !/^(?:#{1,6})[ \t]?|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
           lines[index],
         )
       ) {

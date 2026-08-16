@@ -122,6 +122,18 @@ describe("AnswerRenderer", () => {
     expect(td).toHaveLength(4);
   });
 
+  it("renders 4+-hash headings (with or without a space) as h6", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(
+      container as unknown as HTMLElement,
+      { openCitation: async () => undefined },
+    );
+    renderer.render("####지상 설치와 용도변경", []);
+    const headings = find(container, (node) => node.tag === "h6");
+    expect(headings).toHaveLength(1);
+    expect(headings[0].children[0].textContent).toBe("지상 설치와 용도변경");
+  });
+
   it("copy button calls back with the raw answer", () => {
     const container = makeEl();
     const renderer = new AnswerRenderer(container as unknown as HTMLElement, {

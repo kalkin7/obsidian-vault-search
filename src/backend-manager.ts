@@ -764,6 +764,13 @@ export class BackendManager {
     await this.waitUntilReady();
   }
 
+  /** Rewrite service-config.json from the current settings so a sidecar
+   *  restart keeps hot (in-memory) model/effort changes instead of reloading
+   *  a stale file. Called on every settings save. */
+  async persistServiceConfig(): Promise<void> {
+    await this.writeServiceConfig();
+  }
+
   private async writeServiceConfig(lazyOverride?: boolean): Promise<void> {
     const settings = this.getSettings();
     const payload = {
