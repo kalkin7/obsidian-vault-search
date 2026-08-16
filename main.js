@@ -5524,16 +5524,24 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     const options = this.owner.getAnswerModelOptions();
     const currentProvider = this.owner.settings.answerProvider;
     const current = this.owner.settings.answerModel;
+    const favorites = this.owner.settings.favoriteAnswerModels || [];
     this.modelSelect.empty();
     for (const option of options) {
       const crossProvider = option.provider !== currentProvider;
+      const isCurrent = option.provider === currentProvider && option.model === current;
+      const isFavorite = favorites.some(
+        (favorite) => favorite.provider === option.provider && favorite.model === option.model
+      );
+      let text = option.model;
+      if (crossProvider) text = `${option.model} (${option.provider})`;
+      else if (isCurrent && !isFavorite) text = `${option.model} (\uD604\uC7AC \uC124\uC815)`;
       this.modelSelect.createEl("option", {
-        text: crossProvider ? `${option.model} (${option.provider})` : option.model,
+        text,
         value: `${option.provider}::${option.model}`
       });
     }
     this.modelSelect.value = `${currentProvider}::${current}`;
-    this.modelSelect.title = "\uB2F5\uBCC0 \uBAA8\uB378 \u2014 \uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815\uD55C \uC990\uACA8\uCC3E\uAE30\uC785\uB2C8\uB2E4. \uB2E4\uB978 provider \uBAA8\uB378\uC744 \uACE0\uB974\uBA74 provider\uB3C4 \uD568\uAED8 \uC804\uD658\uB429\uB2C8\uB2E4.";
+    this.modelSelect.title = "\uB2F5\uBCC0 \uBAA8\uB378 \u2014 \uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815\uD55C \uC990\uACA8\uCC3E\uAE30\uC785\uB2C8\uB2E4. (\uD604\uC7AC \uC124\uC815)\uC740 \uC990\uACA8\uCC3E\uAE30\uAC00 \uC544\uB2CC \uC9C0\uAE08 \uC120\uD0DD\uB41C \uBAA8\uB378\uC785\uB2C8\uB2E4.";
     if (this.providerEl) {
       this.providerEl.setText(
         `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}`

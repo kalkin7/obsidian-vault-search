@@ -250,19 +250,28 @@ export class VaultSearchItemView extends ItemView {
     const options = this.owner.getAnswerModelOptions();
     const currentProvider = this.owner.settings.answerProvider;
     const current = this.owner.settings.answerModel;
+    const favorites = this.owner.settings.favoriteAnswerModels || [];
     this.modelSelect.empty();
     for (const option of options) {
       const crossProvider = option.provider !== currentProvider;
+      const isCurrent =
+        option.provider === currentProvider && option.model === current;
+      const isFavorite = favorites.some(
+        (favorite) =>
+          favorite.provider === option.provider &&
+          favorite.model === option.model,
+      );
+      let text = option.model;
+      if (crossProvider) text = `${option.model} (${option.provider})`;
+      else if (isCurrent && !isFavorite) text = `${option.model} (현재 설정)`;
       this.modelSelect.createEl("option", {
-        text: crossProvider
-          ? `${option.model} (${option.provider})`
-          : option.model,
+        text,
         value: `${option.provider}::${option.model}`,
       });
     }
     this.modelSelect.value = `${currentProvider}::${current}`;
     this.modelSelect.title =
-      "답변 모델 — 설정에서 ★로 지정한 즐겨찾기입니다. 다른 provider 모델을 고르면 provider도 함께 전환됩니다.";
+      "답변 모델 — 설정에서 ★로 지정한 즐겨찾기입니다. (현재 설정)은 즐겨찾기가 아닌 지금 선택된 모델입니다.";
     if (this.providerEl) {
       this.providerEl.setText(
         `${this.owner.settings.answerProvider} · ${this.owner.settings.answerModel}`,
