@@ -388,14 +388,14 @@ export class VaultSearchItemView extends ItemView {
 
   private renderAnswer(result: AnswerResult): void {
     this.statusEl?.removeClass("vault-search-error");
-    const deep = result.diagnostics.deep ? ` · 조사 ${result.diagnostics.turns ?? 0}턴` : "";
+    const deep = result.diagnostics.deep
+      ? ` · 조사 ${result.diagnostics.turns ?? 0}턴`
+      : "";
     this.statusEl?.setText(
       `${result.provider} · ${result.model}${result.grounded ? " · 근거 있음" : " · 근거 부족"}${deep}`,
     );
-    this.answerRenderer.render(
-      result.answer,
-      result.citations,
-      (text) => this.copyAnswer(text),
+    this.answerRenderer.render(result.answer, result.citations, (text) =>
+      this.copyAnswer(text),
     );
     this.sourcesEl.empty();
     const details = this.sourcesEl.createEl("details", {
