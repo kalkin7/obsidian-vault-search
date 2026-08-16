@@ -5687,21 +5687,9 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
     return ICON_LIGHTNING;
   }
   getState() {
-    return {
-      query: this.lastQuery,
-      provider: this.owner.settings.answerProvider,
-      model: this.owner.settings.answerModel
-    };
+    return {};
   }
   async setState(state, result) {
-    const value = state && typeof state === "object" ? state : {};
-    if (typeof value.query === "string") {
-      this.lastQuery = value.query;
-      if (this.inputEl) {
-        this.inputEl.value = this.lastQuery;
-        this.autoGrowInput();
-      }
-    }
     await super.setState(state, result);
   }
   async onOpen() {
@@ -5829,7 +5817,7 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
     this.listeners.push(
       () => this.modelSelect.removeEventListener("change", onModelChange)
     );
-    this.inputEl.value = this.lastQuery;
+    this.inputEl.value = "";
     this.autoGrowInput();
     this.refreshModelSelector();
     this.renderBackendStatus(this.owner.backend.status);

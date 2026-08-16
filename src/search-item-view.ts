@@ -94,25 +94,12 @@ export class VaultSearchItemView extends ItemView {
   }
 
   getState(): Record<string, unknown> {
-    return {
-      query: this.lastQuery,
-      provider: this.owner.settings.answerProvider,
-      model: this.owner.settings.answerModel,
-    };
+    // The panel's conversation is session-scoped and the input is cleared on
+    // reopen, so there is nothing meaningful to persist across restarts.
+    return {};
   }
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
-    const value =
-      state && typeof state === "object"
-        ? (state as Record<string, unknown>)
-        : {};
-    if (typeof value.query === "string") {
-      this.lastQuery = value.query;
-      if (this.inputEl) {
-        this.inputEl.value = this.lastQuery;
-        this.autoGrowInput();
-      }
-    }
     await super.setState(state, result);
   }
 
@@ -245,7 +232,9 @@ export class VaultSearchItemView extends ItemView {
     this.listeners.push(() =>
       this.modelSelect.removeEventListener("change", onModelChange),
     );
-    this.inputEl.value = this.lastQuery;
+    // Start with a clean input on reopen — the conversation is session-scoped
+    // and a stale query in an empty chat is confusing.
+    this.inputEl.value = "";
     this.autoGrowInput();
     this.refreshModelSelector();
     this.renderBackendStatus(this.owner.backend.status);

@@ -28,6 +28,8 @@ describe("VaultSearchItemView", () => {
       openSearchSettings: () => undefined,
       getAnswerModelOptions: () => [],
       setAnswerModel: async () => undefined,
+      getAnswerReasoningEffortOptions: () => ["auto", "high", "max"],
+      setAnswerReasoningEffort: async () => undefined,
       toggleFavoriteModel: async () => undefined,
       registerAiView: () => undefined,
       unregisterAiView: () => undefined,
@@ -37,7 +39,8 @@ describe("VaultSearchItemView", () => {
     expect(view.getDisplayText()).toBe("AI Vault Search");
     expect(view.getIcon()).toBe(ICON_LIGHTNING);
     const result = { history: false } satisfies ViewStateResult;
+    // The panel is session-scoped: state carries no query to restore.
     await view.setState({ query: "프로젝트 상태" }, result);
-    expect(view.getState().query).toBe("프로젝트 상태");
+    expect(view.getState()).toEqual({});
   });
 });
