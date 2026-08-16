@@ -100,7 +100,12 @@ unconditionally overwritten from the stored secrets).
   favorite changes persist immediately (hot) — no "설정 적용" needed.
 - **Conversation UI** — the panel keeps a chat history (question bubbles +
   per-answer blocks with markdown, tables, citation pills, and a hover copy
-  button) for the session.
+  button) for the session. Markdown headings of any level (`#`…`######`) are
+  rendered as h3–h6.
+- **Restart persistence** — every settings save rewrites `service-config.json`
+  alongside the hot in-memory apply, so a sidecar restart keeps the currently
+  selected provider/model/reasoning effort instead of reloading a stale
+  snapshot from the last spawn.
 - **API key validation** — 저장/테스트 probe the real chat endpoint with a
   one-token request: 401/403 is reported as an invalid key, a 2xx/3xx as
   valid, and anything else (network/timeout/429/5xx) as "확인 불가". Saving an

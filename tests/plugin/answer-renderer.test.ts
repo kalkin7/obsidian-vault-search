@@ -124,10 +124,9 @@ describe("AnswerRenderer", () => {
 
   it("renders 4+-hash headings (with or without a space) as h6", () => {
     const container = makeEl();
-    const renderer = new AnswerRenderer(
-      container as unknown as HTMLElement,
-      { openCitation: async () => undefined },
-    );
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
     renderer.render("####지상 설치와 용도변경", []);
     const headings = find(container, (node) => node.tag === "h6");
     expect(headings).toHaveLength(1);
