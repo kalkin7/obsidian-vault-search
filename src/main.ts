@@ -306,8 +306,7 @@ export default class VaultSearchPlugin extends Plugin {
    *  cross-provider favorite also switches the provider. */
   getAnswerModelOptions(): FavoriteAnswerModel[] {
     const favorites = (this.settings.favoriteAnswerModels || []).filter(
-      (favorite) =>
-        favorite?.model && this.hasProviderKey(favorite.provider),
+      (favorite) => favorite?.model && this.hasProviderKey(favorite.provider),
     );
     const currentProvider = this.settings.answerProvider;
     const options: FavoriteAnswerModel[] = [];
