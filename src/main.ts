@@ -1001,7 +1001,10 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   private handleStatus(status: BackendStatus): void {
-    this.settingTab?.display();
+    // Update only the settings-tab status line in place — a full display()
+    // re-render resets the scroll position and steals focus while the user
+    // edits settings.
+    this.settingTab?.updateBackendStatus(status);
     this.searchModal?.updateBackendStatus(status);
     for (const view of this.aiSearchViews) view.updateBackendStatus(status);
     if (status.state === "ready" || status.state === "ready_no_index") {

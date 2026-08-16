@@ -4315,6 +4315,34 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   activeTab = "general";
   providerModelSelections = {};
+  /** Status line created by display(); updated in place on backend events so
+   *  the tab never re-renders (which would reset the scroll position) while
+   *  the user is editing settings. */
+  statusEl = null;
+  /** Refresh only the status line (no full re-render). */
+  updateBackendStatus(status) {
+    const el = this.statusEl;
+    if (!el || !el.isConnected) return;
+    el.setText(this.buildStatusText(status));
+    el.toggleClass("vault-search-error", Boolean(status.error));
+  }
+  buildStatusText(status) {
+    return [
+      `\uC0C1\uD0DC: ${status.state}`,
+      status.model_id ? `\uBAA8\uB378: ${status.model_id}` : "",
+      status.device ? `\uB514\uBC14\uC774\uC2A4: ${status.device}` : "",
+      this.providerStatusLine(status),
+      status.pid ? `PID: ${status.pid} / \uD3EC\uD2B8: ${status.port}` : "",
+      status.count_available === false ? "\uC778\uB371\uC2A4 \uAC1C\uC218: \uD655\uC778 \uBD88\uAC00" : status.files === void 0 ? "" : `\uC778\uB371\uC2A4: \uD30C\uC77C ${status.files}\uAC1C / \uCCAD\uD06C ${status.chunks ?? 0}\uAC1C`,
+      status.model_load_seconds === void 0 ? "" : `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08`,
+      status.progress ? `\uC9C4\uD589: ${status.progress}` : "",
+      status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
+      status.index_rebuild_required ? `\uC778\uB371\uC2A4 \uD638\uD658\uC131 \uBB38\uC81C: ${status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uD544\uC694" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uD544\uC694"}` : "",
+      status.error ? `\uC624\uB958: ${status.error}` : "",
+      this.owner.runtimeSummary,
+      this.owner.runtimeWarning || ""
+    ].filter(Boolean).join("\n");
+  }
   display() {
     const { containerEl } = this;
     const draft = this.owner.draftSettings;
@@ -4322,23 +4350,8 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
     containerEl.createEl("h2", { text: "Vault Search Service" });
     const status = this.owner.backend?.status || { state: "stopped" };
     const statusEl = containerEl.createDiv({ cls: "vault-search-status" });
-    statusEl.setText(
-      [
-        `\uC0C1\uD0DC: ${status.state}`,
-        status.model_id ? `\uBAA8\uB378: ${status.model_id}` : "",
-        status.device ? `\uB514\uBC14\uC774\uC2A4: ${status.device}` : "",
-        this.providerStatusLine(status),
-        status.pid ? `PID: ${status.pid} / \uD3EC\uD2B8: ${status.port}` : "",
-        status.count_available === false ? "\uC778\uB371\uC2A4 \uAC1C\uC218: \uD655\uC778 \uBD88\uAC00" : status.files === void 0 ? "" : `\uC778\uB371\uC2A4: \uD30C\uC77C ${status.files}\uAC1C / \uCCAD\uD06C ${status.chunks ?? 0}\uAC1C`,
-        status.model_load_seconds === void 0 ? "" : `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08`,
-        status.progress ? `\uC9C4\uD589: ${status.progress}` : "",
-        status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
-        status.index_rebuild_required ? `\uC778\uB371\uC2A4 \uD638\uD658\uC131 \uBB38\uC81C: ${status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uD544\uC694" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uD544\uC694"}` : "",
-        status.error ? `\uC624\uB958: ${status.error}` : "",
-        this.owner.runtimeSummary,
-        this.owner.runtimeWarning || ""
-      ].filter(Boolean).join("\n")
-    );
+    statusEl.setText(this.buildStatusText(status));
+    this.statusEl = statusEl;
     if (status.error) statusEl.addClass("vault-search-error");
     new import_obsidian3.Setting(containerEl).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4").setDesc(
       "\uC124\uC815 \uBCC0\uACBD\uC740 \uC785\uB825 \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC800\uC7A5\xB7\uC801\uC6A9\uB429\uB2C8\uB2E4 (\uC57D 1\uCD08). \uBAA8\uB378\uC740 \uC774 \uBCFC\uD2B8\uC5D0\uC11C\uB9CC \uC0C1\uC8FC\uD569\uB2C8\uB2E4."
@@ -7349,7 +7362,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     await persist();
   }
   handleStatus(status) {
-    this.settingTab?.display();
+    this.settingTab?.updateBackendStatus(status);
     this.searchModal?.updateBackendStatus(status);
     for (const view of this.aiSearchViews) view.updateBackendStatus(status);
     if (status.state === "ready" || status.state === "ready_no_index") {

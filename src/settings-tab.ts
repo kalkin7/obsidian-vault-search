@@ -13,9 +13,51 @@ type SettingsTabId = "general" | "answer" | "search";
 export class VaultSearchSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = "general";
   private providerModelSelections: Partial<Record<LLMProviderId, string>> = {};
+  /** Status line created by display(); updated in place on backend events so
+   *  the tab never re-renders (which would reset the scroll position) while
+   *  the user is editing settings. */
+  private statusEl: HTMLElement | null = null;
 
   constructor(private readonly owner: VaultSearchPlugin) {
     super(owner.app, owner);
+  }
+
+  /** Refresh only the status line (no full re-render). */
+  updateBackendStatus(status: BackendStatus): void {
+    const el = this.statusEl;
+    if (!el || !el.isConnected) return;
+    el.setText(this.buildStatusText(status));
+    el.toggleClass("vault-search-error", Boolean(status.error));
+  }
+
+  private buildStatusText(status: BackendStatus): string {
+    return [
+      `상태: ${status.state}`,
+      status.model_id ? `모델: ${status.model_id}` : "",
+      status.device ? `디바이스: ${status.device}` : "",
+      this.providerStatusLine(status),
+      status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
+      status.count_available === false
+        ? "인덱스 개수: 확인 불가"
+        : status.files === undefined
+          ? ""
+          : `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개`,
+      status.model_load_seconds === undefined
+        ? ""
+        : `최근 모델 로딩: ${status.model_load_seconds}초`,
+      status.progress ? `진행: ${status.progress}` : "",
+      status.pending_recovery_required
+        ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}`
+        : "",
+      status.index_rebuild_required
+        ? `인덱스 호환성 문제: ${status.recommended_action === "rebuild_vectors" ? "벡터 재구축 필요" : "전체 재구축 필요"}`
+        : "",
+      status.error ? `오류: ${status.error}` : "",
+      this.owner.runtimeSummary,
+      this.owner.runtimeWarning || "",
+    ]
+      .filter(Boolean)
+      .join("\n");
   }
 
   display(): void {
@@ -25,35 +67,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     containerEl.createEl("h2", { text: "Vault Search Service" });
     const status = this.owner.backend?.status || { state: "stopped" as const };
     const statusEl = containerEl.createDiv({ cls: "vault-search-status" });
-    statusEl.setText(
-      [
-        `상태: ${status.state}`,
-        status.model_id ? `모델: ${status.model_id}` : "",
-        status.device ? `디바이스: ${status.device}` : "",
-        this.providerStatusLine(status),
-        status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
-        status.count_available === false
-          ? "인덱스 개수: 확인 불가"
-          : status.files === undefined
-            ? ""
-            : `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개`,
-        status.model_load_seconds === undefined
-          ? ""
-          : `최근 모델 로딩: ${status.model_load_seconds}초`,
-        status.progress ? `진행: ${status.progress}` : "",
-        status.pending_recovery_required
-          ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}`
-          : "",
-        status.index_rebuild_required
-          ? `인덱스 호환성 문제: ${status.recommended_action === "rebuild_vectors" ? "벡터 재구축 필요" : "전체 재구축 필요"}`
-          : "",
-        status.error ? `오류: ${status.error}` : "",
-        this.owner.runtimeSummary,
-        this.owner.runtimeWarning || "",
-      ]
-        .filter(Boolean)
-        .join("\n"),
-    );
+    statusEl.setText(this.buildStatusText(status));
+    this.statusEl = statusEl;
     if (status.error) statusEl.addClass("vault-search-error");
 
     new Setting(containerEl)
