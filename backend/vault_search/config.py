@@ -118,7 +118,7 @@ def _as_float(value: Any, default: float) -> float:
         return default
 
 
-_REASONING_EFFORTS = {"auto", "none", "low", "medium", "high", "max"}
+_REASONING_EFFORTS = {"auto", "none", "low", "medium", "high", "xhigh", "max"}
 
 
 def _as_reasoning_effort(value: Any) -> str:

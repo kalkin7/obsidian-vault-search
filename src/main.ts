@@ -226,7 +226,7 @@ export default class VaultSearchPlugin extends Plugin {
       this.settings.answerModel || DEFAULT_SETTINGS.answerModel,
     );
     if (
-      !["auto", "none", "low", "medium", "high", "max"].includes(
+      !["auto", "none", "low", "medium", "high", "xhigh", "max"].includes(
         this.settings.answerReasoningEffort,
       )
     ) {
@@ -405,9 +405,15 @@ export default class VaultSearchPlugin extends Plugin {
   /** Change the reasoning effort from the panel composer (hot, persists). */
   async setAnswerReasoningEffort(effort: string): Promise<void> {
     const value = effort.trim();
-    const valid = ["auto", "none", "low", "medium", "high", "max"].includes(
-      value,
-    );
+    const valid = [
+      "auto",
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+    ].includes(value);
     if (!valid || value === this.settings.answerReasoningEffort) return;
     this.settings.answerReasoningEffort =
       value as VaultSearchSettings["answerReasoningEffort"];

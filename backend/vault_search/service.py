@@ -632,7 +632,8 @@ class SearchService:
             effort = str(params["answerReasoningEffort"]).strip().lower()
             self.config.reasoning_effort = (
                 effort
-                if effort in {"auto", "none", "low", "medium", "high", "max"}
+                if effort
+                in {"auto", "none", "low", "medium", "high", "xhigh", "max"}
                 else ""
             )
         for key, attribute, minimum, maximum in (

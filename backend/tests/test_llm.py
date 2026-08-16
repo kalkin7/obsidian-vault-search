@@ -137,3 +137,26 @@ def test_provider_sends_reasoning_effort_when_set(monkeypatch):
         reasoning_effort="auto",
     )
     assert "reasoning_effort" not in captured["body"]
+
+
+def test_openai_responses_provider_sends_nested_reasoning(monkeypatch):
+    from vault_search.llm import OpenAIResponsesProvider
+
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout=0):
+        captured["body"] = json.loads(request.data.decode("utf-8"))
+        return _FakeResponse({"output_text": "hi", "model": "m"})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    provider = OpenAIResponsesProvider("gpt-5.6-luna", "sk-test")
+    provider.complete(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        max_output_tokens=10,
+        timeout_seconds=5.0,
+        reasoning_effort="xhigh",
+    )
+    # Official Responses API shape for GPT-5.6: reasoning: {effort}.
+    assert captured["body"]["reasoning"] == {"effort": "xhigh"}
+    assert "reasoning_effort" not in captured["body"]

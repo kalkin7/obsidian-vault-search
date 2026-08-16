@@ -4,14 +4,15 @@ export type EnginePreference = "pytorch" | "onnx";
 export type ProviderPreference = "auto" | "cuda" | "tensorrt";
 export type LLMProviderId = "openai" | "opencode-go" | "deepseek";
 /** Reasoning-effort levels for reasoning models; "auto" sends nothing and
- *  lets the provider pick its default. Not every provider accepts every
- *  level (the backend maps per provider). */
+ *  lets the provider pick its default. Not every model accepts every level
+ *  (see reasoningEffortLevels); the backend maps per provider. */
 export type ReasoningEffort =
   | "auto"
   | "none"
   | "low"
   | "medium"
   | "high"
+  | "xhigh"
   | "max";
 /** A model starred in the settings list; provider is stored so the footer
  *  selector can switch provider when a cross-provider favorite is picked. */

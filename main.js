@@ -3105,7 +3105,18 @@ var LLM_MODEL_ENDPOINTS = {
   deepseek: "https://api.deepseek.com/models"
 };
 var REASONING_EFFORT_LEVELS = {
-  "gpt-5.6-luna": ["none", "low", "medium", "high"],
+  "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
+  "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
+  "deepseek-v4-flash": ["none", "low", "high", "max"],
+  "deepseek-v4-pro": ["none", "low", "high", "max"],
+  "glm-5": ["none", "low", "high", "max"],
+  "glm-5.1": ["none", "low", "high", "max"],
+  "glm-5.2": ["none", "low", "high", "max"],
+  "glm-5.3": ["none", "low", "high", "max"],
+  "kimi-k3": ["low", "high", "max"],
+  "kimi-k2.7-code": ["low", "high", "max"],
+  "kimi-k2.6": ["low", "high", "max"],
+  "kimi-k2.5": ["low", "high", "max"],
   "grok-4.5": ["none", "low", "medium", "high"]
 };
 var DEFAULT_REASONING_LEVELS = [
@@ -6141,7 +6152,7 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
     this.settings.answerModel = String(
       this.settings.answerModel || DEFAULT_SETTINGS.answerModel
     );
-    if (!["auto", "none", "low", "medium", "high", "max"].includes(
+    if (!["auto", "none", "low", "medium", "high", "xhigh", "max"].includes(
       this.settings.answerReasoningEffort
     )) {
       this.settings.answerReasoningEffort = "auto";
@@ -6286,9 +6297,15 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
   /** Change the reasoning effort from the panel composer (hot, persists). */
   async setAnswerReasoningEffort(effort) {
     const value = effort.trim();
-    const valid = ["auto", "none", "low", "medium", "high", "max"].includes(
-      value
-    );
+    const valid = [
+      "auto",
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+    ].includes(value);
     if (!valid || value === this.settings.answerReasoningEffort) return;
     this.settings.answerReasoningEffort = value;
     this.draftSettings.answerReasoningEffort = this.settings.answerReasoningEffort;

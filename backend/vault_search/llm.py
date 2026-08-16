@@ -24,7 +24,9 @@ def _normalize_effort(value: str) -> str:
     """Return the reasoning-effort override to send, or "" when the caller
     wants the provider default ("" or "auto")."""
     effort = value.strip().lower()
-    return effort if effort in {"none", "low", "medium", "high", "max"} else ""
+    if effort in {"none", "low", "medium", "high", "xhigh", "max"}:
+        return effort
+    return ""
 
 
 class ProviderError(RuntimeError):
@@ -196,10 +198,10 @@ class OpenAIResponsesProvider(_BaseProvider):
             "max_output_tokens": max_output_tokens,
         }
         effort = _normalize_effort(reasoning_effort)
-        if effort and effort != "none":
-            # OpenAI's Responses API uses low/medium/high (plus none on newer
-            # models); max is not a valid value there.
-            payload["reasoning_effort"] = "high" if effort == "max" else effort
+        if effort:
+            # GPT-5.6+ uses the nested reasoning object in the Responses API
+            # (the flat reasoning_effort field is not the documented shape).
+            payload["reasoning"] = {"effort": effort}
         value = self._request(payload, timeout_seconds)
         text = value.get("output_text")
         if not isinstance(text, str):

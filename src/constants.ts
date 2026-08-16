@@ -114,13 +114,25 @@ export const LLM_MODEL_ENDPOINTS = {
   deepseek: "https://api.deepseek.com/models",
 } as const;
 
-/** Reasoning-effort levels each model supports. The OpenCode Go gateway
- *  accepts the parameter broadly (deepseek/glm/kimi reason at any level;
- *  hy3/minimax ignore it), so only models with a genuinely different set are
- *  listed — everything else defaults to the full range. "auto" is always
- *  offered on top. */
+/** Reasoning-effort levels each model supports (OpenCode Go model ids).
+ *  Curated from official model catalogs: GPT-5.6 Luna/Terra support
+ *  none/low/medium/high/xhigh/max (no minimal); DeepSeek/GLM use
+ *  none/low/high/max (low maps to high upstream, no medium); Kimi K3 always
+ *  reasons (no none); Grok follows the OpenAI-style set. Unknown models
+ *  default to the full range. "auto" is always offered on top. */
 const REASONING_EFFORT_LEVELS: Record<string, readonly string[]> = {
-  "gpt-5.6-luna": ["none", "low", "medium", "high"],
+  "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
+  "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
+  "deepseek-v4-flash": ["none", "low", "high", "max"],
+  "deepseek-v4-pro": ["none", "low", "high", "max"],
+  "glm-5": ["none", "low", "high", "max"],
+  "glm-5.1": ["none", "low", "high", "max"],
+  "glm-5.2": ["none", "low", "high", "max"],
+  "glm-5.3": ["none", "low", "high", "max"],
+  "kimi-k3": ["low", "high", "max"],
+  "kimi-k2.7-code": ["low", "high", "max"],
+  "kimi-k2.6": ["low", "high", "max"],
+  "kimi-k2.5": ["low", "high", "max"],
   "grok-4.5": ["none", "low", "medium", "high"],
 };
 
