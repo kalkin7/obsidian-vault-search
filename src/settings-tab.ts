@@ -231,58 +231,93 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }),
       );
     const fetchedModels = this.providerModels[draft.answerProvider] || [];
-    const modelOptions = fetchedModels.includes(draft.answerModel)
+    const modelOptions = fetchedModels.length
       ? fetchedModels
-      : [draft.answerModel, ...fetchedModels];
-    new Setting(containerEl)
+      : [draft.answerModel];
+    const favorites = Array.isArray(draft.favoriteAnswerModels)
+      ? [...draft.favoriteAnswerModels]
+      : [];
+    const modelSetting = new Setting(containerEl)
       .setName("답변 모델")
       .setDesc(
         fetchedModels.length
-          ? `${fetchedModels.length}개 모델을 확인했습니다. 기본값: ${answerProvider.model}`
+          ? `${fetchedModels.length}개 모델을 확인했습니다. 모델을 클릭해 선택하고, ★로 즐겨찾기를 지정하세요. 즐겨찾기 모델만 AI Vault Search 패널의 모델 선택에 표시됩니다. 기본값: ${answerProvider.model}`
           : `먼저 모델 최신화를 눌러 선택지를 가져오세요. 기본값: ${answerProvider.model}`,
       )
-      .addDropdown((dropdown) => {
-        for (const model of modelOptions) {
-          dropdown.addOption(
-            model,
-            model === draft.answerModel && !fetchedModels.includes(model)
-              ? `${model} (현재 설정)`
-              : model,
-          );
+      .setClass("vault-search-model-setting");
+    const modelList = modelSetting.controlEl.createDiv({
+      cls: "vault-search-model-list",
+    });
+    const renderModelList = () => {
+      modelList.empty();
+      for (const model of modelOptions) {
+        const row = modelList.createDiv({ cls: "vault-search-model-row" });
+        row.toggleClass("is-selected", model === draft.answerModel);
+        const name = row.createEl("button", {
+          cls: "vault-search-model-name",
+          text: model,
+          attr: { type: "button", title: model },
+        });
+        name.addEventListener("click", () => {
+          draft.answerModel = model;
+          this.providerModelSelections[draft.answerProvider] = model;
+          renderModelList();
+        });
+        if (model === draft.answerModel && !fetchedModels.includes(model)) {
+          row.createEl("span", {
+            cls: "vault-search-model-current",
+            text: "(현재 설정)",
+          });
         }
-        dropdown.setValue(draft.answerModel).onChange((value) => {
-          draft.answerModel = value.trim() || answerProvider.model;
+        const starred = favorites.includes(model);
+        const star = row.createEl("button", {
+          cls: "vault-search-model-star",
+          text: starred ? "★" : "☆",
+          attr: {
+            type: "button",
+            "aria-label": starred ? "즐겨찾기에서 제거" : "즐겨찾기로 지정",
+            title: starred ? "즐겨찾기에서 제거" : "즐겨찾기로 지정",
+          },
+        });
+        star.toggleClass("is-favorite", starred);
+        star.addEventListener("click", () => {
+          const index = favorites.indexOf(model);
+          if (index >= 0) favorites.splice(index, 1);
+          else favorites.push(model);
+          draft.favoriteAnswerModels = [...favorites];
+          renderModelList();
+        });
+      }
+    };
+    renderModelList();
+    modelSetting.addButton((button) =>
+      button.setButtonText("모델 최신화").onClick(async () => {
+        button.setDisabled(true);
+        try {
+          const models = await this.owner.fetchProviderModels(
+            draft.answerProvider,
+          );
+          this.providerModels[draft.answerProvider] = models;
+          this.owner.setProviderModels(draft.answerProvider, models);
+          if (models.length && !models.includes(draft.answerModel))
+            draft.answerModel = models[0];
           this.providerModelSelections[draft.answerProvider] =
             draft.answerModel;
-        });
-      })
-      .addButton((button) =>
-        button.setButtonText("모델 최신화").onClick(async () => {
-          button.setDisabled(true);
-          try {
-            const models = await this.owner.fetchProviderModels(
-              draft.answerProvider,
-            );
-            this.providerModels[draft.answerProvider] = models;
-            if (models.length && !models.includes(draft.answerModel))
-              draft.answerModel = models[0];
-            this.providerModelSelections[draft.answerProvider] =
-              draft.answerModel;
-            new Notice(
-              models.length
-                ? `${answerProvider.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
-                : draft.answerProvider === "openai"
-                  ? "OpenAI API가 선택 가능한 채팅 모델을 반환하지 않았습니다. API 키의 모델 권한을 확인해 주세요."
-                  : `${answerProvider.name}: 선택 가능한 모델을 찾지 못했습니다. API 키의 모델 권한을 확인해 주세요.`,
-            );
-            this.display();
-          } catch (error) {
-            this.showError(error);
-          } finally {
-            button.setDisabled(false);
-          }
-        }),
-      );
+          new Notice(
+            models.length
+              ? `${answerProvider.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
+              : draft.answerProvider === "openai"
+                ? "OpenAI API가 선택 가능한 채팅 모델을 반환하지 않았습니다. API 키의 모델 권한을 확인해 주세요."
+                : `${answerProvider.name}: 선택 가능한 모델을 찾지 못했습니다. API 키의 모델 권한을 확인해 주세요.`,
+          );
+          this.display();
+        } catch (error) {
+          this.showError(error);
+        } finally {
+          button.setDisabled(false);
+        }
+      }),
+    );
     new Setting(containerEl)
       .setName("답변 context 문자 수")
       .setDesc("8,000~32,000자")

@@ -2736,7 +2736,7 @@ __export(main_exports, {
   default: () => VaultSearchPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 var path4 = __toESM(require("path"));
 
 // src/agent-integration.ts
@@ -3009,7 +3009,6 @@ var import_obsidian = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var LIGHTNING_ICON_ASSET = "lightning.search.png";
 var BACKEND_VERSION = "0.1.15";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
@@ -3072,6 +3071,7 @@ var DEFAULT_SETTINGS = {
   modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
   answerModel: "gpt-5.6",
+  favoriteAnswerModels: [],
   answerMaxContextChars: 24e3,
   answerMaxOutputTokens: 1200,
   answerTimeoutSeconds: 60
@@ -4081,6 +4081,7 @@ var HOT_KEYS = [
   "wikiFolders",
   "answerProvider",
   "answerModel",
+  "favoriteAnswerModels",
   "answerMaxContextChars",
   "answerMaxOutputTokens",
   "answerTimeoutSeconds"
@@ -4107,7 +4108,8 @@ function cloneSettings(settings) {
     ...settings,
     includeGlobs: [...settings.includeGlobs],
     excludeGlobs: [...settings.excludeGlobs],
-    wikiFolders: [...settings.wikiFolders]
+    wikiFolders: [...settings.wikiFolders],
+    favoriteAnswerModels: [...settings.favoriteAnswerModels || []]
   };
 }
 function hotConfig(settings) {
@@ -4350,21 +4352,57 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     const fetchedModels = this.providerModels[draft.answerProvider] || [];
-    const modelOptions = fetchedModels.includes(draft.answerModel) ? fetchedModels : [draft.answerModel, ...fetchedModels];
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
-      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uAE30\uBCF8\uAC12: ${answerProvider.model}` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uAE30\uBCF8\uAC12: ${answerProvider.model}`
-    ).addDropdown((dropdown) => {
+    const modelOptions = fetchedModels.length ? fetchedModels : [draft.answerModel];
+    const favorites = Array.isArray(draft.favoriteAnswerModels) ? [...draft.favoriteAnswerModels] : [];
+    const modelSetting = new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
+      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uB9CC AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4. \uAE30\uBCF8\uAC12: ${answerProvider.model}` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uAE30\uBCF8\uAC12: ${answerProvider.model}`
+    ).setClass("vault-search-model-setting");
+    const modelList = modelSetting.controlEl.createDiv({
+      cls: "vault-search-model-list"
+    });
+    const renderModelList = () => {
+      modelList.empty();
       for (const model of modelOptions) {
-        dropdown.addOption(
-          model,
-          model === draft.answerModel && !fetchedModels.includes(model) ? `${model} (\uD604\uC7AC \uC124\uC815)` : model
-        );
+        const row = modelList.createDiv({ cls: "vault-search-model-row" });
+        row.toggleClass("is-selected", model === draft.answerModel);
+        const name = row.createEl("button", {
+          cls: "vault-search-model-name",
+          text: model,
+          attr: { type: "button", title: model }
+        });
+        name.addEventListener("click", () => {
+          draft.answerModel = model;
+          this.providerModelSelections[draft.answerProvider] = model;
+          renderModelList();
+        });
+        if (model === draft.answerModel && !fetchedModels.includes(model)) {
+          row.createEl("span", {
+            cls: "vault-search-model-current",
+            text: "(\uD604\uC7AC \uC124\uC815)"
+          });
+        }
+        const starred = favorites.includes(model);
+        const star = row.createEl("button", {
+          cls: "vault-search-model-star",
+          text: starred ? "\u2605" : "\u2606",
+          attr: {
+            type: "button",
+            "aria-label": starred ? "\uC990\uACA8\uCC3E\uAE30\uC5D0\uC11C \uC81C\uAC70" : "\uC990\uACA8\uCC3E\uAE30\uB85C \uC9C0\uC815",
+            title: starred ? "\uC990\uACA8\uCC3E\uAE30\uC5D0\uC11C \uC81C\uAC70" : "\uC990\uACA8\uCC3E\uAE30\uB85C \uC9C0\uC815"
+          }
+        });
+        star.toggleClass("is-favorite", starred);
+        star.addEventListener("click", () => {
+          const index = favorites.indexOf(model);
+          if (index >= 0) favorites.splice(index, 1);
+          else favorites.push(model);
+          draft.favoriteAnswerModels = [...favorites];
+          renderModelList();
+        });
       }
-      dropdown.setValue(draft.answerModel).onChange((value) => {
-        draft.answerModel = value.trim() || answerProvider.model;
-        this.providerModelSelections[draft.answerProvider] = draft.answerModel;
-      });
-    }).addButton(
+    };
+    renderModelList();
+    modelSetting.addButton(
       (button) => button.setButtonText("\uBAA8\uB378 \uCD5C\uC2E0\uD654").onClick(async () => {
         button.setDisabled(true);
         try {
@@ -4372,6 +4410,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
             draft.answerProvider
           );
           this.providerModels[draft.answerProvider] = models;
+          this.owner.setProviderModels(draft.answerProvider, models);
           if (models.length && !models.includes(draft.answerModel))
             draft.answerModel = models[0];
           this.providerModelSelections[draft.answerProvider] = draft.answerModel;
@@ -5181,7 +5220,7 @@ function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
 }
 
 // src/search-item-view.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/answer-renderer.ts
 var AnswerRenderer = class {
@@ -5285,9 +5324,18 @@ var AnswerSession = class {
   }
 };
 
+// src/icons.ts
+var import_obsidian5 = require("obsidian");
+var ICON_LIGHTNING = "vault-search-lightning";
+var LIGHTNING_BOLT = '<polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>';
+function registerLightningIcon() {
+  (0, import_obsidian5.addIcon)(ICON_LIGHTNING, LIGHTNING_BOLT);
+}
+
 // src/search-item-view.ts
 var ANSWER_TRANSPORT_MARGIN_MS = 2e3;
-var VaultSearchItemView = class extends import_obsidian5.ItemView {
+var INPUT_MAX_HEIGHT = 200;
+var VaultSearchItemView = class extends import_obsidian6.ItemView {
   constructor(viewLeaf, owner) {
     super(viewLeaf);
     this.owner = owner;
@@ -5297,9 +5345,11 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
   statusEl;
   answerEl;
   sourcesEl;
+  providerEl;
   answerRenderer;
   sourceView;
   session;
+  modelSelect;
   lastQuery = "";
   getViewType() {
     return VIEW_TYPE_VAULT_AI_SEARCH;
@@ -5308,7 +5358,7 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
     return "AI Vault Search";
   }
   getIcon() {
-    return "search";
+    return ICON_LIGHTNING;
   }
   getState() {
     return {
@@ -5321,7 +5371,10 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
     const value = state && typeof state === "object" ? state : {};
     if (typeof value.query === "string") {
       this.lastQuery = value.query;
-      if (this.inputEl) this.inputEl.value = this.lastQuery;
+      if (this.inputEl) {
+        this.inputEl.value = this.lastQuery;
+        this.autoGrowInput();
+      }
     }
     await super.setState(state, result);
   }
@@ -5331,22 +5384,18 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
     this.contentEl.addClass("vault-ai-search-view");
     const header = this.contentEl.createDiv({ cls: "vault-ai-search-header" });
     header.createEl("h2", { text: "AI Vault Search" });
-    header.createDiv({
-      cls: "vault-ai-search-provider",
-      text: `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}`
-    });
+    this.providerEl = header.createDiv({ cls: "vault-ai-search-provider" });
     const headerButton = header.createEl("button", {
       cls: "vault-ai-search-lightning-button",
       attr: { type: "button", "aria-label": "AI Vault Search \uC9C8\uBB38 \uC785\uB825" }
     });
-    headerButton.createEl("img", {
-      cls: "vault-search-lightning-icon",
-      attr: { src: this.owner.lightningIconSrc(), alt: "" }
-    });
+    (0, import_obsidian6.setIcon)(headerButton, ICON_LIGHTNING);
     headerButton.addEventListener("click", () => this.inputEl?.focus());
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
-    this.sourcesEl = this.contentEl.createDiv({ cls: "vault-ai-search-sources" });
+    this.sourcesEl = this.contentEl.createDiv({
+      cls: "vault-ai-search-sources"
+    });
     this.answerRenderer = new AnswerRenderer(this.answerEl, {
       openCitation: (location) => this.owner.openSearchResult(location, true)
     });
@@ -5359,36 +5408,74 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
       (state) => this.renderAnswerState(state)
     );
     const footer = this.contentEl.createDiv({ cls: "vault-ai-search-footer" });
-    this.inputEl = footer.createEl("input", {
+    const inputRow = footer.createDiv({ cls: "vault-ai-search-input-row" });
+    this.inputEl = inputRow.createEl("textarea", {
       cls: "vault-ai-search-input",
-      attr: { type: "search", placeholder: "\uBCFC\uD2B8\uC5D0 \uC9C8\uBB38\uD558\uAE30", "aria-label": "AI Vault Search query" }
+      attr: {
+        rows: "2",
+        placeholder: "\uBCFC\uD2B8\uC5D0 \uC9C8\uBB38\uD558\uAE30 (Enter: \uC804\uC1A1, Shift+Enter: \uC904\uBC14\uAFC8)",
+        "aria-label": "AI Vault Search query"
+      }
     });
-    const submit = footer.createEl("button", { text: "\uC9C8\uBB38", attr: { type: "button" } });
-    const clear = footer.createEl("button", { text: "\uC9C0\uC6B0\uAE30", attr: { type: "button" } });
+    const submit = inputRow.createEl("button", {
+      text: "\uC9C8\uBB38",
+      attr: { type: "button" }
+    });
+    const clear = inputRow.createEl("button", {
+      text: "\uC9C0\uC6B0\uAE30",
+      attr: { type: "button" }
+    });
     const submitQuery = () => {
-      this.lastQuery = this.inputEl.value;
-      this.session.submit(this.lastQuery);
+      const query = this.inputEl.value;
+      if (query.trim().length < 2) return;
+      this.lastQuery = query;
+      this.session.submit(query);
+      this.inputEl.value = "";
+      this.autoGrowInput();
     };
     submit.addEventListener("click", submitQuery);
     this.listeners.push(() => submit.removeEventListener("click", submitQuery));
     const onKeyDown = (event) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         submitQuery();
       }
     };
     this.inputEl.addEventListener("keydown", onKeyDown);
-    this.listeners.push(() => this.inputEl.removeEventListener("keydown", onKeyDown));
+    this.listeners.push(
+      () => this.inputEl.removeEventListener("keydown", onKeyDown)
+    );
+    const onInput = () => this.autoGrowInput();
+    this.inputEl.addEventListener("input", onInput);
+    this.listeners.push(
+      () => this.inputEl.removeEventListener("input", onInput)
+    );
     const clearQuery = () => {
       this.lastQuery = "";
       this.inputEl.value = "";
+      this.autoGrowInput();
       this.session.clear();
       this.answerEl.empty();
       this.sourcesEl.empty();
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
+    const modelBar = footer.createDiv({ cls: "vault-ai-search-model-bar" });
+    this.modelSelect = modelBar.createEl("select", {
+      cls: "vault-ai-search-model-select",
+      attr: { "aria-label": "\uB2F5\uBCC0 \uBAA8\uB378 (\uC990\uACA8\uCC3E\uAE30)" }
+    });
+    const onModelChange = () => {
+      const value = this.modelSelect.value;
+      if (value) void this.owner.setAnswerModel(value);
+    };
+    this.modelSelect.addEventListener("change", onModelChange);
+    this.listeners.push(
+      () => this.modelSelect.removeEventListener("change", onModelChange)
+    );
     this.inputEl.value = this.lastQuery;
+    this.autoGrowInput();
+    this.refreshModelSelector();
     this.renderBackendStatus(this.owner.backend.status);
     this.inputEl.focus();
   }
@@ -5400,6 +5487,32 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
   }
   updateBackendStatus(status) {
     if (this.statusEl) this.renderBackendStatus(status);
+  }
+  /** Re-populate the footer model selector from the owner's favorite list
+   *  (called on open and whenever settings/models change externally). */
+  refreshModelSelector() {
+    if (!this.modelSelect) return;
+    const options = this.owner.getAnswerModelOptions();
+    const current = this.owner.settings.answerModel;
+    this.modelSelect.empty();
+    for (const model of options) {
+      this.modelSelect.createEl("option", { text: model, value: model });
+    }
+    this.modelSelect.value = options.includes(current) ? current : options[0] ?? "";
+    this.modelSelect.title = `${this.owner.settings.answerProvider} \xB7 ${current} (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC990\uACA8\uCC3E\uAE30 \uC9C0\uC815)`;
+    if (this.providerEl) {
+      this.providerEl.setText(
+        `${this.owner.settings.answerProvider} \xB7 ${this.owner.settings.answerModel}`
+      );
+    }
+  }
+  autoGrowInput() {
+    const el = this.inputEl;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight + 2, INPUT_MAX_HEIGHT);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > INPUT_MAX_HEIGHT ? "auto" : "hidden";
   }
   async answer(query, conversation) {
     await this.owner.ensureSearchStarted();
@@ -5450,13 +5563,23 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
     this.statusEl?.addClass("vault-search-error");
     if (state.evidence?.length) {
       this.sourcesEl.empty();
-      const details = this.sourcesEl.createEl("details", { cls: "vault-ai-search-evidence" });
-      details.createEl("summary", { text: `\uAC80\uC0C9 \uADFC\uAC70 (${state.evidence.length})` });
+      const details = this.sourcesEl.createEl("details", {
+        cls: "vault-ai-search-evidence"
+      });
+      details.createEl("summary", {
+        text: `\uAC80\uC0C9 \uADFC\uAC70 (${state.evidence.length})`
+      });
       const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-      this.sourceView = new SearchResultView(list, (location) => this.owner.openSearchResult(location, true));
+      this.sourceView = new SearchResultView(
+        list,
+        (location) => this.owner.openSearchResult(location, true)
+      );
       this.sourceView.render(state.evidence);
     }
-    const retry = this.answerEl.createEl("button", { text: "\uB2E4\uC2DC \uC2DC\uB3C4", attr: { type: "button" } });
+    const retry = this.answerEl.createEl("button", {
+      text: "\uB2E4\uC2DC \uC2DC\uB3C4",
+      attr: { type: "button" }
+    });
     retry.addEventListener("click", () => this.session.submit(this.lastQuery));
   }
   renderAnswer(result) {
@@ -5466,15 +5589,24 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
     );
     this.answerRenderer.render(result.answer, result.citations);
     this.sourcesEl.empty();
-    const details = this.sourcesEl.createEl("details", { cls: "vault-ai-search-evidence" });
-    details.createEl("summary", { text: `\uADFC\uAC70 \uD3BC\uCE58\uAE30 (${result.evidence.length})` });
+    const details = this.sourcesEl.createEl("details", {
+      cls: "vault-ai-search-evidence"
+    });
+    details.createEl("summary", {
+      text: `\uADFC\uAC70 \uD3BC\uCE58\uAE30 (${result.evidence.length})`
+    });
     const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-    this.sourceView = new SearchResultView(list, (location) => this.owner.openSearchResult(location, true));
+    this.sourceView = new SearchResultView(
+      list,
+      (location) => this.owner.openSearchResult(location, true)
+    );
     this.sourceView.render(result.evidence);
   }
   renderBackendStatus(status) {
     if (status.state === "error") {
-      this.statusEl.setText(status.error || "\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      this.statusEl.setText(
+        status.error || "\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+      );
       this.statusEl.addClass("vault-search-error");
     } else if (status.state === "idle") {
       this.statusEl.setText("\uBAA8\uB378 \uB300\uAE30 \uC911 \xB7 \uC9C8\uBB38 \uC2DC \uBAA8\uB378\uC744 \uB85C\uB4DC\uD569\uB2C8\uB2E4.");
@@ -5485,7 +5617,7 @@ var VaultSearchItemView = class extends import_obsidian5.ItemView {
 };
 
 // src/main.ts
-var VaultSearchPlugin = class extends import_obsidian6.Plugin {
+var VaultSearchPlugin = class extends import_obsidian7.Plugin {
   draftSettings;
   backend;
   queue;
@@ -5495,15 +5627,17 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   searchModal = null;
   aiSearchViews = /* @__PURE__ */ new Set();
   runtimeChangePromise = null;
+  providerModels = {};
   runtimeSummary = "\uB7F0\uD0C0\uC784: \uD655\uC778 \uC804";
   runtimeWarning = null;
   /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
   agentIntegration = null;
   async onload() {
+    registerLightningIcon();
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian6.FileSystemAdapter)) {
-      new import_obsidian6.Notice(
+    if (!(adapter instanceof import_obsidian7.FileSystemAdapter)) {
+      new import_obsidian7.Notice(
         "Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4."
       );
       return;
@@ -5538,22 +5672,22 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian6.TFile) this.queue.markChanged(file.path);
+        if (file instanceof import_obsidian7.TFile) this.queue.markChanged(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian6.TFile) this.queue.markChanged(file.path);
+        if (file instanceof import_obsidian7.TFile) this.queue.markChanged(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian6.TFile) this.queue.markDeleted(file.path);
+        if (file instanceof import_obsidian7.TFile) this.queue.markDeleted(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian6.TFile) {
+        if (file instanceof import_obsidian7.TFile) {
           this.queue.markDeleted(oldPath);
           this.queue.markChanged(file.path);
         }
@@ -5565,27 +5699,27 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       VIEW_TYPE_VAULT_AI_SEARCH,
       (leaf) => new VaultSearchItemView(leaf, this)
     );
-    const ribbonIcon = this.addRibbonIcon("search", "Open AI Vault Search", () => {
-      void this.openAiSearchPanel();
-    });
-    ribbonIcon.empty();
-    ribbonIcon.createEl("img", {
-      cls: "vault-search-lightning-icon",
-      attr: { src: this.lightningIconSrc(), alt: "" }
-    });
+    const ribbonIcon = this.addRibbonIcon(
+      ICON_LIGHTNING,
+      "Open AI Vault Search",
+      () => {
+        void this.openAiSearchPanel();
+      }
+    );
+    void ribbonIcon;
     this.registerCommands();
     void this.refreshAgentIntegration();
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.loadPolicy === "vault-open") {
         void this.startBackend().catch(
-          (error) => new import_obsidian6.Notice(
+          (error) => new import_obsidian7.Notice(
             `Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
             1e4
           )
         );
       } else if (this.settings.loadPolicy === "first-search") {
         void this.startLazyBackend().catch(
-          (error) => new import_obsidian6.Notice(
+          (error) => new import_obsidian7.Notice(
             `Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
             1e4
           )
@@ -5606,12 +5740,35 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     this.settings.excludeGlobs = loaded?.excludeGlobs || [
       ...DEFAULT_SETTINGS.excludeGlobs
     ];
+    this.settings.favoriteAnswerModels = Array.isArray(
+      loaded?.favoriteAnswerModels
+    ) ? [...loaded.favoriteAnswerModels] : [];
     if (!(this.settings.answerProvider in { openai: true, "opencode-go": true, deepseek: true }))
       this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
-    this.settings.answerModel = String(this.settings.answerModel || DEFAULT_SETTINGS.answerModel);
-    this.settings.answerMaxContextChars = Math.max(8e3, Math.min(32e3, Number(this.settings.answerMaxContextChars) || DEFAULT_SETTINGS.answerMaxContextChars));
-    this.settings.answerMaxOutputTokens = Math.max(128, Math.min(8e3, Number(this.settings.answerMaxOutputTokens) || DEFAULT_SETTINGS.answerMaxOutputTokens));
-    this.settings.answerTimeoutSeconds = Math.max(5, Math.min(60, Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds));
+    this.settings.answerModel = String(
+      this.settings.answerModel || DEFAULT_SETTINGS.answerModel
+    );
+    this.settings.answerMaxContextChars = Math.max(
+      8e3,
+      Math.min(
+        32e3,
+        Number(this.settings.answerMaxContextChars) || DEFAULT_SETTINGS.answerMaxContextChars
+      )
+    );
+    this.settings.answerMaxOutputTokens = Math.max(
+      128,
+      Math.min(
+        8e3,
+        Number(this.settings.answerMaxOutputTokens) || DEFAULT_SETTINGS.answerMaxOutputTokens
+      )
+    );
+    this.settings.answerTimeoutSeconds = Math.max(
+      5,
+      Math.min(
+        60,
+        Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds
+      )
+    );
     const migrated = migrateSettings(this.settings);
     if (loaded?.loadPolicy === void 0) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
@@ -5631,7 +5788,9 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   }
   async saveProviderApiKey(provider, value) {
     if (!hasSecretStorage(this.app)) {
-      throw new Error("Obsidian 1.11.4 \uC774\uC0C1\uC5D0\uC11C\uB9CC API \uD0A4\uB97C \uBCF4\uC548 \uC800\uC7A5\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.");
+      throw new Error(
+        "Obsidian 1.11.4 \uC774\uC0C1\uC5D0\uC11C\uB9CC API \uD0A4\uB97C \uBCF4\uC548 \uC800\uC7A5\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
+      );
     }
     setProviderSecret(this.app, provider, value);
     if (this.backend.status.state !== "stopped") await this.backend.restart();
@@ -5639,14 +5798,44 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   async fetchProviderModels(provider) {
     const apiKey = getProviderSecret(this.app, provider);
     if (!apiKey) throw new Error("\uBA3C\uC800 \uC774 provider\uC758 API \uD0A4\uB97C \uC800\uC7A5\uD574 \uC8FC\uC138\uC694.");
-    const response = await (0, import_obsidian6.requestUrl)({
+    const response = await (0, import_obsidian7.requestUrl)({
       url: LLM_MODEL_ENDPOINTS[provider],
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` }
     });
     const data = response.json?.data;
-    if (!Array.isArray(data)) throw new Error("provider\uAC00 \uBAA8\uB378 \uBAA9\uB85D\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
+    if (!Array.isArray(data))
+      throw new Error("provider\uAC00 \uBAA8\uB378 \uBAA9\uB85D\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
     return normalizeProviderModels(provider, data);
+  }
+  /** Cache of fetched model lists per provider (shared by settings + view). */
+  setProviderModels(provider, models) {
+    this.providerModels[provider] = models;
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
+  }
+  /** Models the AI search footer offers: favorites only when any exist,
+   *  otherwise the full fetched list so the selector is never empty. */
+  getAnswerModelOptions() {
+    const available = this.providerModels[this.settings.answerProvider] || [];
+    const favorites = (this.settings.favoriteAnswerModels || []).filter(
+      (model) => available.includes(model)
+    );
+    const options = favorites.length ? favorites : available;
+    const current = this.settings.answerModel;
+    return options.includes(current) ? options : [current, ...options];
+  }
+  /** Change the answer model from the AI search view footer (hot — no
+   *  restart; the backend picks it up on the next answer request). */
+  async setAnswerModel(model) {
+    const value = model.trim();
+    if (!value || value === this.settings.answerModel) return;
+    this.settings.answerModel = value;
+    await this.saveSettings();
+    if (this.backend.status.state !== "stopped") {
+      await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
+    }
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
+    new import_obsidian7.Notice(`\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`);
   }
   resetDraftSettings() {
     this.draftSettings = cloneSettings(this.settings);
@@ -5693,7 +5882,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
         }
       }
       this.draftSettings = cloneSettings(this.settings);
-      new import_obsidian6.Notice(
+      new import_obsidian7.Notice(
         impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "Vault Search \uC124\uC815\uC744 \uC801\uC6A9\uD588\uC2B5\uB2C8\uB2E4."
       );
     } catch (error) {
@@ -5708,6 +5897,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       throw error;
     } finally {
       this.settingTab?.display();
+      for (const view of this.aiSearchViews) view.refreshModelSelector();
     }
   }
   async startBackend() {
@@ -5731,7 +5921,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     );
     const cuda = await this.backend.managedRuntime("cuda");
     if (current?.cudaAvailable || cuda?.cudaAvailable) {
-      new import_obsidian6.Notice(
+      new import_obsidian7.Notice(
         current?.cudaAvailable ? "\uD604\uC7AC \uB7F0\uD0C0\uC784\uC774 \uC774\uBBF8 CUDA\uB97C \uC0AC\uC6A9 \uC911\uC785\uB2C8\uB2E4." : "\uC124\uCE58\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC774\uBBF8 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4.",
         8e3
       );
@@ -5744,7 +5934,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     if (!await confirmRuntimeInstall(this.app, true)) return;
     const cpu = await this.backend.managedRuntime("cpu");
     const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
-    new import_obsidian6.Notice(
+    new import_obsidian7.Notice(
       "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
       1e4
     );
@@ -5761,7 +5951,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     if (this.settings.device === "cpu") {
       const active = current || cpu;
       this.runtimeSummary = active ? `\uB7F0\uD0C0\uC784: CPU / PyTorch ${active.torchVersion} (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)` : "\uB7F0\uD0C0\uC784: CPU (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)";
-      new import_obsidian6.Notice(
+      new import_obsidian7.Notice(
         "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uD604\uC7AC CPU \uBA85\uC2DC \uC124\uC815\uC740 \uC720\uC9C0\uB429\uB2C8\uB2E4.",
         1e4
       );
@@ -5792,7 +5982,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       }
       throw error;
     }
-    new import_obsidian6.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
+    new import_obsidian7.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
     this.settingTab?.display();
   }
   async startLazyBackend() {
@@ -5818,13 +6008,13 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     }
     const result = await this.backend.call("provision_onnx", {}, 6e5);
     if (!result.provisioned) throw new Error("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131 \uC2E4\uD328");
-    new import_obsidian6.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    new import_obsidian7.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
   async provisionBackend() {
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
-    new import_obsidian6.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    new import_obsidian7.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
   async stopBackend() {
@@ -5838,7 +6028,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     await this.backend.restart();
     await this.completeStartup();
     this.settingTab?.display();
-    new import_obsidian6.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
+    new import_obsidian7.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
   }
   async previewScope() {
     await this.ensureSearchStarted();
@@ -5851,7 +6041,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       { mode },
       6e5
     );
-    new import_obsidian6.Notice(
+    new import_obsidian7.Notice(
       result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.",
       8e3
     );
@@ -5859,13 +6049,13 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   }
   async rebuildAll() {
     await this.ensureSearchStarted();
-    new import_obsidian6.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
+    new import_obsidian7.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
     const result = await this.backend.call(
       "rebuild_all",
       {},
       36e5
     );
-    new import_obsidian6.Notice(
+    new import_obsidian7.Notice(
       `\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`,
       1e4
     );
@@ -5873,13 +6063,13 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   }
   async rebuildVectors() {
     await this.ensureSearchStarted();
-    new import_obsidian6.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
+    new import_obsidian7.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
     const result = await this.backend.call(
       "rebuild_vectors",
       {},
       36e5
     );
-    new import_obsidian6.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian7.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   registerCommands() {
@@ -5933,10 +6123,10 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       name: "Install agent integration (AGENTS.md + wrapper + skill)",
       callback: () => {
         void this.runAgentIntegrationInstall().then((result) => {
-          new import_obsidian6.Notice(agentIntegrationNotice(result), 8e3);
+          new import_obsidian7.Notice(agentIntegrationNotice(result), 8e3);
           this.settingTab?.display();
         }).catch(
-          (error) => new import_obsidian6.Notice(
+          (error) => new import_obsidian7.Notice(
             `Vault Search \uC624\uB958: ${this.errorMessage(error)}`,
             8e3
           )
@@ -6005,7 +6195,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     }
     const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
     try {
-      new import_obsidian6.Notice(
+      new import_obsidian7.Notice(
         "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
         1e4
       );
@@ -6055,7 +6245,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
         if (result.rebuild_required) {
           const status = this.backend.status;
           const action = status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95";
-          new import_obsidian6.Notice(
+          new import_obsidian7.Notice(
             `Vault Search \uC778\uB371\uC2A4\uC5D0 \uD638\uD658\uC131 \uBB38\uC81C\uAC00 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C ${action}\uC744 \uC2E4\uD589\uD558\uC138\uC694.`,
             8e3
           );
@@ -6081,8 +6271,8 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   }
   async openSearchResult(location, keepPanel = false) {
     const file = this.app.vault.getAbstractFileByPath(location.path);
-    if (!(file instanceof import_obsidian6.TFile)) {
-      new import_obsidian6.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
+    if (!(file instanceof import_obsidian7.TFile)) {
+      new import_obsidian7.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
       return;
     }
     await this.app.workspace.getLeaf(keepPanel ? "tab" : false).openFile(file, {
@@ -6094,7 +6284,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
   async openAiSearchPanel(initialQuery = "") {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_VAULT_AI_SEARCH)[0] ?? this.app.workspace.getRightLeaf(false);
     if (!leaf) {
-      new import_obsidian6.Notice("AI Vault Search \uD328\uB110\uC744 \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian7.Notice("AI Vault Search \uD328\uB110\uC744 \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return;
     }
     const currentState = leaf.getViewState();
@@ -6107,12 +6297,6 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
       }
     });
     await this.app.workspace.revealLeaf(leaf);
-  }
-  lightningIconSrc() {
-    const pluginAssetPath = (0, import_obsidian6.normalizePath)(
-      `${this.app.vault.configDir}/plugins/${this.manifest.id}/${LIGHTNING_ICON_ASSET}`
-    );
-    return this.app.vault.adapter.getResourcePath(pluginAssetPath);
   }
   registerAiView(view) {
     this.aiSearchViews.add(view);

@@ -67,6 +67,18 @@ describe("settings impact", () => {
     copy.includeGlobs.push("extra/**");
     expect(DEFAULT_SETTINGS.includeGlobs).not.toContain("extra/**");
   });
+
+  it("does not alias favorite models", () => {
+    const copy = cloneSettings({
+      ...DEFAULT_SETTINGS,
+      favoriteAnswerModels: ["gpt-5.6"],
+    });
+    copy.favoriteAnswerModels.push("o4-mini");
+    expect(DEFAULT_SETTINGS.favoriteAnswerModels).not.toContain("o4-mini");
+    const cloned = cloneSettings(copy);
+    cloned.favoriteAnswerModels.pop();
+    expect(copy.favoriteAnswerModels).toContain("gpt-5.6");
+  });
 });
 
 describe("settings migration", () => {

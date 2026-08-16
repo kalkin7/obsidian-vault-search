@@ -47,6 +47,9 @@ export interface VaultSearchSettings {
   modelIdleTimeoutSeconds: number;
   answerProvider: LLMProviderId;
   answerModel: string;
+  /** Models starred in the settings model list; offered in the AI search
+   *  footer selector (falls back to all fetched models when empty). */
+  favoriteAnswerModels: string[];
   answerMaxContextChars: number;
   answerMaxOutputTokens: number;
   answerTimeoutSeconds: number;
@@ -177,4 +180,9 @@ export type AnswerState =
   | { kind: "retrieving" }
   | { kind: "answering" }
   | { kind: "answer"; result: AnswerResult }
-  | { kind: "unavailable"; message: string; code?: string; evidence?: AnswerEvidence[] };
+  | {
+      kind: "unavailable";
+      message: string;
+      code?: string;
+      evidence?: AnswerEvidence[];
+    };

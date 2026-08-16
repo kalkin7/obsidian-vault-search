@@ -1,40 +1,73 @@
-import { ItemView, type ViewStateResult, type WorkspaceLeaf } from "obsidian";
+import {
+  ItemView,
+  setIcon,
+  type IconName,
+  type ViewStateResult,
+  type WorkspaceLeaf,
+} from "obsidian";
 import { BackendCallError } from "./backend-manager";
 import { AnswerRenderer } from "./answer-renderer";
-import { AnswerSession, type AnswerConversationMessage } from "./answer-session";
-import { SearchResultView, type SearchResultLocation } from "./search-result-view";
-import type { AnswerResult, AnswerState, BackendStatus, VaultSearchSettings } from "./types";
+import {
+  AnswerSession,
+  type AnswerConversationMessage,
+} from "./answer-session";
+import {
+  SearchResultView,
+  type SearchResultLocation,
+} from "./search-result-view";
+import type {
+  AnswerResult,
+  AnswerState,
+  BackendStatus,
+  VaultSearchSettings,
+} from "./types";
 import { VIEW_TYPE_VAULT_AI_SEARCH } from "./constants";
+import { ICON_LIGHTNING } from "./icons";
 
 const ANSWER_TRANSPORT_MARGIN_MS = 2_000;
+/** Textarea auto-grow cap; past this the box scrolls instead. */
+const INPUT_MAX_HEIGHT = 200;
 
 export interface SearchItemViewOwner {
   app: ItemView["app"];
   settings: VaultSearchSettings;
   backend: {
     status: BackendStatus;
-    call<T>(method: string, params?: Record<string, unknown>, timeoutMs?: number): Promise<T>;
+    call<T>(
+      method: string,
+      params?: Record<string, unknown>,
+      timeoutMs?: number,
+    ): Promise<T>;
   };
   ensureSearchStarted(): Promise<void>;
-  openSearchResult(location: SearchResultLocation, keepPanel?: boolean): Promise<void>;
+  openSearchResult(
+    location: SearchResultLocation,
+    keepPanel?: boolean,
+  ): Promise<void>;
   openSearchSettings(): void;
-  lightningIconSrc(): string;
+  getAnswerModelOptions(): string[];
+  setAnswerModel(model: string): Promise<void>;
   registerAiView(view: VaultSearchItemView): void;
   unregisterAiView(view: VaultSearchItemView): void;
 }
 
 export class VaultSearchItemView extends ItemView {
   private readonly listeners: Array<() => void> = [];
-  private inputEl!: HTMLInputElement;
+  private inputEl!: HTMLTextAreaElement;
   private statusEl!: HTMLElement;
   private answerEl!: HTMLElement;
   private sourcesEl!: HTMLElement;
+  private providerEl!: HTMLElement;
   private answerRenderer!: AnswerRenderer;
   private sourceView!: SearchResultView;
   private session!: AnswerSession;
+  private modelSelect!: HTMLSelectElement;
   private lastQuery = "";
 
-  constructor(viewLeaf: WorkspaceLeaf, private readonly owner: SearchItemViewOwner) {
+  constructor(
+    viewLeaf: WorkspaceLeaf,
+    private readonly owner: SearchItemViewOwner,
+  ) {
     super(viewLeaf);
   }
 
@@ -46,8 +79,8 @@ export class VaultSearchItemView extends ItemView {
     return "AI Vault Search";
   }
 
-  getIcon(): "search" {
-    return "search";
+  getIcon(): IconName {
+    return ICON_LIGHTNING;
   }
 
   getState(): Record<string, unknown> {
@@ -59,10 +92,16 @@ export class VaultSearchItemView extends ItemView {
   }
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
-    const value = state && typeof state === "object" ? state as Record<string, unknown> : {};
+    const value =
+      state && typeof state === "object"
+        ? (state as Record<string, unknown>)
+        : {};
     if (typeof value.query === "string") {
       this.lastQuery = value.query;
-      if (this.inputEl) this.inputEl.value = this.lastQuery;
+      if (this.inputEl) {
+        this.inputEl.value = this.lastQuery;
+        this.autoGrowInput();
+      }
     }
     await super.setState(state, result);
   }
@@ -73,64 +112,98 @@ export class VaultSearchItemView extends ItemView {
     this.contentEl.addClass("vault-ai-search-view");
     const header = this.contentEl.createDiv({ cls: "vault-ai-search-header" });
     header.createEl("h2", { text: "AI Vault Search" });
-    header.createDiv({
-      cls: "vault-ai-search-provider",
-      text: `${this.owner.settings.answerProvider} · ${this.owner.settings.answerModel}`,
-    });
+    this.providerEl = header.createDiv({ cls: "vault-ai-search-provider" });
     const headerButton = header.createEl("button", {
       cls: "vault-ai-search-lightning-button",
       attr: { type: "button", "aria-label": "AI Vault Search 질문 입력" },
     });
-    headerButton.createEl("img", {
-      cls: "vault-search-lightning-icon",
-      attr: { src: this.owner.lightningIconSrc(), alt: "" },
-    });
+    setIcon(headerButton, ICON_LIGHTNING);
     headerButton.addEventListener("click", () => this.inputEl?.focus());
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
-    this.sourcesEl = this.contentEl.createDiv({ cls: "vault-ai-search-sources" });
+    this.sourcesEl = this.contentEl.createDiv({
+      cls: "vault-ai-search-sources",
+    });
     this.answerRenderer = new AnswerRenderer(this.answerEl, {
       openCitation: (location) => this.owner.openSearchResult(location, true),
     });
-    this.sourceView = new SearchResultView(
-      this.sourcesEl,
-      (location) => this.owner.openSearchResult(location, true),
+    this.sourceView = new SearchResultView(this.sourcesEl, (location) =>
+      this.owner.openSearchResult(location, true),
     );
     this.session = new AnswerSession(
       (query, conversation) => this.answer(query, conversation),
       (state) => this.renderAnswerState(state),
     );
     const footer = this.contentEl.createDiv({ cls: "vault-ai-search-footer" });
-    this.inputEl = footer.createEl("input", {
+    const inputRow = footer.createDiv({ cls: "vault-ai-search-input-row" });
+    this.inputEl = inputRow.createEl("textarea", {
       cls: "vault-ai-search-input",
-      attr: { type: "search", placeholder: "볼트에 질문하기", "aria-label": "AI Vault Search query" },
+      attr: {
+        rows: "2",
+        placeholder: "볼트에 질문하기 (Enter: 전송, Shift+Enter: 줄바꿈)",
+        "aria-label": "AI Vault Search query",
+      },
     });
-    const submit = footer.createEl("button", { text: "질문", attr: { type: "button" } });
-    const clear = footer.createEl("button", { text: "지우기", attr: { type: "button" } });
+    const submit = inputRow.createEl("button", {
+      text: "질문",
+      attr: { type: "button" },
+    });
+    const clear = inputRow.createEl("button", {
+      text: "지우기",
+      attr: { type: "button" },
+    });
     const submitQuery = () => {
-      this.lastQuery = this.inputEl.value;
-      this.session.submit(this.lastQuery);
+      const query = this.inputEl.value;
+      if (query.trim().length < 2) return;
+      this.lastQuery = query;
+      this.session.submit(query);
+      this.inputEl.value = "";
+      this.autoGrowInput();
     };
     submit.addEventListener("click", submitQuery);
     this.listeners.push(() => submit.removeEventListener("click", submitQuery));
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Enter" && !event.shiftKey) {
+      // Enter sends; Shift+Enter inserts a newline (textarea default).
+      if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
         event.preventDefault();
         submitQuery();
       }
     };
     this.inputEl.addEventListener("keydown", onKeyDown);
-    this.listeners.push(() => this.inputEl.removeEventListener("keydown", onKeyDown));
+    this.listeners.push(() =>
+      this.inputEl.removeEventListener("keydown", onKeyDown),
+    );
+    const onInput = () => this.autoGrowInput();
+    this.inputEl.addEventListener("input", onInput);
+    this.listeners.push(() =>
+      this.inputEl.removeEventListener("input", onInput),
+    );
     const clearQuery = () => {
       this.lastQuery = "";
       this.inputEl.value = "";
+      this.autoGrowInput();
       this.session.clear();
       this.answerEl.empty();
       this.sourcesEl.empty();
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
+    const modelBar = footer.createDiv({ cls: "vault-ai-search-model-bar" });
+    this.modelSelect = modelBar.createEl("select", {
+      cls: "vault-ai-search-model-select",
+      attr: { "aria-label": "답변 모델 (즐겨찾기)" },
+    });
+    const onModelChange = () => {
+      const value = this.modelSelect.value;
+      if (value) void this.owner.setAnswerModel(value);
+    };
+    this.modelSelect.addEventListener("change", onModelChange);
+    this.listeners.push(() =>
+      this.modelSelect.removeEventListener("change", onModelChange),
+    );
     this.inputEl.value = this.lastQuery;
+    this.autoGrowInput();
+    this.refreshModelSelector();
     this.renderBackendStatus(this.owner.backend.status);
     this.inputEl.focus();
   }
@@ -144,6 +217,36 @@ export class VaultSearchItemView extends ItemView {
 
   updateBackendStatus(status: BackendStatus): void {
     if (this.statusEl) this.renderBackendStatus(status);
+  }
+
+  /** Re-populate the footer model selector from the owner's favorite list
+   *  (called on open and whenever settings/models change externally). */
+  refreshModelSelector(): void {
+    if (!this.modelSelect) return;
+    const options = this.owner.getAnswerModelOptions();
+    const current = this.owner.settings.answerModel;
+    this.modelSelect.empty();
+    for (const model of options) {
+      this.modelSelect.createEl("option", { text: model, value: model });
+    }
+    this.modelSelect.value = options.includes(current)
+      ? current
+      : (options[0] ?? "");
+    this.modelSelect.title = `${this.owner.settings.answerProvider} · ${current} (설정에서 ★로 즐겨찾기 지정)`;
+    if (this.providerEl) {
+      this.providerEl.setText(
+        `${this.owner.settings.answerProvider} · ${this.owner.settings.answerModel}`,
+      );
+    }
+  }
+
+  private autoGrowInput(): void {
+    const el = this.inputEl;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight + 2, INPUT_MAX_HEIGHT);
+    el.style.height = `${next}px`;
+    el.style.overflowY = el.scrollHeight > INPUT_MAX_HEIGHT ? "auto" : "hidden";
   }
 
   private async answer(
@@ -161,7 +264,8 @@ export class VaultSearchItemView extends ItemView {
       return await this.owner.backend.call<AnswerResult>(
         "answer",
         params,
-        this.owner.settings.answerTimeoutSeconds * 1000 + ANSWER_TRANSPORT_MARGIN_MS,
+        this.owner.settings.answerTimeoutSeconds * 1000 +
+          ANSWER_TRANSPORT_MARGIN_MS,
       );
     } catch (error) {
       if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
@@ -169,7 +273,8 @@ export class VaultSearchItemView extends ItemView {
         return await this.owner.backend.call<AnswerResult>(
           "answer",
           params,
-          this.owner.settings.answerTimeoutSeconds * 1000 + ANSWER_TRANSPORT_MARGIN_MS,
+          this.owner.settings.answerTimeoutSeconds * 1000 +
+            ANSWER_TRANSPORT_MARGIN_MS,
         );
       }
       throw error;
@@ -199,13 +304,22 @@ export class VaultSearchItemView extends ItemView {
     this.statusEl?.addClass("vault-search-error");
     if (state.evidence?.length) {
       this.sourcesEl.empty();
-      const details = this.sourcesEl.createEl("details", { cls: "vault-ai-search-evidence" });
-      details.createEl("summary", { text: `검색 근거 (${state.evidence.length})` });
+      const details = this.sourcesEl.createEl("details", {
+        cls: "vault-ai-search-evidence",
+      });
+      details.createEl("summary", {
+        text: `검색 근거 (${state.evidence.length})`,
+      });
       const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-      this.sourceView = new SearchResultView(list, (location) => this.owner.openSearchResult(location, true));
+      this.sourceView = new SearchResultView(list, (location) =>
+        this.owner.openSearchResult(location, true),
+      );
       this.sourceView.render(state.evidence);
     }
-    const retry = this.answerEl.createEl("button", { text: "다시 시도", attr: { type: "button" } });
+    const retry = this.answerEl.createEl("button", {
+      text: "다시 시도",
+      attr: { type: "button" },
+    });
     retry.addEventListener("click", () => this.session.submit(this.lastQuery));
   }
 
@@ -216,20 +330,31 @@ export class VaultSearchItemView extends ItemView {
     );
     this.answerRenderer.render(result.answer, result.citations);
     this.sourcesEl.empty();
-    const details = this.sourcesEl.createEl("details", { cls: "vault-ai-search-evidence" });
-    details.createEl("summary", { text: `근거 펼치기 (${result.evidence.length})` });
+    const details = this.sourcesEl.createEl("details", {
+      cls: "vault-ai-search-evidence",
+    });
+    details.createEl("summary", {
+      text: `근거 펼치기 (${result.evidence.length})`,
+    });
     const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-    this.sourceView = new SearchResultView(list, (location) => this.owner.openSearchResult(location, true));
+    this.sourceView = new SearchResultView(list, (location) =>
+      this.owner.openSearchResult(location, true),
+    );
     this.sourceView.render(result.evidence);
   }
 
   private renderBackendStatus(status: BackendStatus): void {
     if (status.state === "error") {
-      this.statusEl.setText(status.error || "검색 서비스를 사용할 수 없습니다.");
+      this.statusEl.setText(
+        status.error || "검색 서비스를 사용할 수 없습니다.",
+      );
       this.statusEl.addClass("vault-search-error");
     } else if (status.state === "idle") {
       this.statusEl.setText("모델 대기 중 · 질문 시 모델을 로드합니다.");
-    } else if (status.state === "starting" || status.state === "loading_model") {
+    } else if (
+      status.state === "starting" ||
+      status.state === "loading_model"
+    ) {
       this.statusEl.setText("검색 모델을 로드하고 있습니다…");
     }
   }

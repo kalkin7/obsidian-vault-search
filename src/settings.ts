@@ -45,6 +45,7 @@ const HOT_KEYS: (keyof VaultSearchSettings)[] = [
   "wikiFolders",
   "answerProvider",
   "answerModel",
+  "favoriteAnswerModels",
   "answerMaxContextChars",
   "answerMaxOutputTokens",
   "answerTimeoutSeconds",
@@ -89,6 +90,7 @@ export function cloneSettings(
     includeGlobs: [...settings.includeGlobs],
     excludeGlobs: [...settings.excludeGlobs],
     wikiFolders: [...settings.wikiFolders],
+    favoriteAnswerModels: [...(settings.favoriteAnswerModels || [])],
   };
 }
 

@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, normalizePath, Plugin, requestUrl, TFile } from "obsidian";
+import { FileSystemAdapter, Notice, Plugin, requestUrl, TFile } from "obsidian";
 import * as path from "path";
 import {
   agentIntegrationNotice,
@@ -10,7 +10,6 @@ import {
 import { BackendManager } from "./backend-manager";
 import {
   DEFAULT_SETTINGS,
-  LIGHTNING_ICON_ASSET,
   LLM_MODEL_ENDPOINTS,
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
@@ -30,9 +29,15 @@ import { selectedTextQuery } from "./search-session";
 import { confirmRuntimeInstall } from "./runtime-install-modal";
 import { selectRuntime } from "./runtime-selection";
 import { VaultSearchItemView } from "./search-item-view";
-import { getProviderSecret, hasSecretStorage, providerEnvironment, setProviderSecret } from "./llm-secrets";
+import {
+  getProviderSecret,
+  hasSecretStorage,
+  providerEnvironment,
+  setProviderSecret,
+} from "./llm-secrets";
 import type { LLMProviderId } from "./types";
 import { normalizeProviderModels } from "./model-catalog";
+import { ICON_LIGHTNING, registerLightningIcon } from "./icons";
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -45,12 +50,15 @@ export default class VaultSearchPlugin extends Plugin {
   private searchModal: VaultSearchModal | null = null;
   private readonly aiSearchViews = new Set<VaultSearchItemView>();
   private runtimeChangePromise: Promise<void> | null = null;
+  private readonly providerModels: Partial<Record<LLMProviderId, string[]>> =
+    {};
   runtimeSummary = "런타임: 확인 전";
   runtimeWarning: string | null = null;
   /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
   agentIntegration: AgentIntegrationStatus | null = null;
 
   async onload(): Promise<void> {
+    registerLightningIcon();
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) {
@@ -118,14 +126,14 @@ export default class VaultSearchPlugin extends Plugin {
       VIEW_TYPE_VAULT_AI_SEARCH,
       (leaf) => new VaultSearchItemView(leaf, this),
     );
-    const ribbonIcon = this.addRibbonIcon("search", "Open AI Vault Search", () => {
-      void this.openAiSearchPanel();
-    });
-    ribbonIcon.empty();
-    ribbonIcon.createEl("img", {
-      cls: "vault-search-lightning-icon",
-      attr: { src: this.lightningIconSrc(), alt: "" },
-    });
+    const ribbonIcon = this.addRibbonIcon(
+      ICON_LIGHTNING,
+      "Open AI Vault Search",
+      () => {
+        void this.openAiSearchPanel();
+      },
+    );
+    void ribbonIcon;
     this.registerCommands();
     void this.refreshAgentIntegration();
 
@@ -167,12 +175,45 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings.excludeGlobs = loaded?.excludeGlobs || [
       ...DEFAULT_SETTINGS.excludeGlobs,
     ];
-    if (!(this.settings.answerProvider in { openai: true, "opencode-go": true, deepseek: true }))
+    this.settings.favoriteAnswerModels = Array.isArray(
+      loaded?.favoriteAnswerModels,
+    )
+      ? [...loaded.favoriteAnswerModels]
+      : [];
+    if (
+      !(
+        this.settings.answerProvider in
+        { openai: true, "opencode-go": true, deepseek: true }
+      )
+    )
       this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
-    this.settings.answerModel = String(this.settings.answerModel || DEFAULT_SETTINGS.answerModel);
-    this.settings.answerMaxContextChars = Math.max(8000, Math.min(32000, Number(this.settings.answerMaxContextChars) || DEFAULT_SETTINGS.answerMaxContextChars));
-    this.settings.answerMaxOutputTokens = Math.max(128, Math.min(8000, Number(this.settings.answerMaxOutputTokens) || DEFAULT_SETTINGS.answerMaxOutputTokens));
-    this.settings.answerTimeoutSeconds = Math.max(5, Math.min(60, Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds));
+    this.settings.answerModel = String(
+      this.settings.answerModel || DEFAULT_SETTINGS.answerModel,
+    );
+    this.settings.answerMaxContextChars = Math.max(
+      8000,
+      Math.min(
+        32000,
+        Number(this.settings.answerMaxContextChars) ||
+          DEFAULT_SETTINGS.answerMaxContextChars,
+      ),
+    );
+    this.settings.answerMaxOutputTokens = Math.max(
+      128,
+      Math.min(
+        8000,
+        Number(this.settings.answerMaxOutputTokens) ||
+          DEFAULT_SETTINGS.answerMaxOutputTokens,
+      ),
+    );
+    this.settings.answerTimeoutSeconds = Math.max(
+      5,
+      Math.min(
+        60,
+        Number(this.settings.answerTimeoutSeconds) ||
+          DEFAULT_SETTINGS.answerTimeoutSeconds,
+      ),
+    );
     const migrated = migrateSettings(this.settings);
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
@@ -193,9 +234,14 @@ export default class VaultSearchPlugin extends Plugin {
     return getProviderSecret(this.app, provider);
   }
 
-  async saveProviderApiKey(provider: LLMProviderId, value: string): Promise<void> {
+  async saveProviderApiKey(
+    provider: LLMProviderId,
+    value: string,
+  ): Promise<void> {
     if (!hasSecretStorage(this.app)) {
-      throw new Error("Obsidian 1.11.4 이상에서만 API 키를 보안 저장할 수 있습니다.");
+      throw new Error(
+        "Obsidian 1.11.4 이상에서만 API 키를 보안 저장할 수 있습니다.",
+      );
     }
     setProviderSecret(this.app, provider, value);
     if (this.backend.status.state !== "stopped") await this.backend.restart();
@@ -210,8 +256,43 @@ export default class VaultSearchPlugin extends Plugin {
       headers: { Authorization: `Bearer ${apiKey}` },
     });
     const data = response.json?.data;
-    if (!Array.isArray(data)) throw new Error("provider가 모델 목록을 반환하지 않았습니다.");
+    if (!Array.isArray(data))
+      throw new Error("provider가 모델 목록을 반환하지 않았습니다.");
     return normalizeProviderModels(provider, data);
+  }
+
+  /** Cache of fetched model lists per provider (shared by settings + view). */
+  setProviderModels(provider: LLMProviderId, models: string[]): void {
+    this.providerModels[provider] = models;
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
+  }
+
+  /** Models the AI search footer offers: favorites only when any exist,
+   *  otherwise the full fetched list so the selector is never empty. */
+  getAnswerModelOptions(): string[] {
+    const available = this.providerModels[this.settings.answerProvider] || [];
+    const favorites = (this.settings.favoriteAnswerModels || []).filter(
+      (model) => available.includes(model),
+    );
+    const options = favorites.length ? favorites : available;
+    const current = this.settings.answerModel;
+    return options.includes(current) ? options : [current, ...options];
+  }
+
+  /** Change the answer model from the AI search view footer (hot — no
+   *  restart; the backend picks it up on the next answer request). */
+  async setAnswerModel(model: string): Promise<void> {
+    const value = model.trim();
+    if (!value || value === this.settings.answerModel) return;
+    this.settings.answerModel = value;
+    await this.saveSettings();
+    if (this.backend.status.state !== "stopped") {
+      await this.backend
+        .call("apply_search_config", hotConfig(this.settings), 30_000)
+        .catch(() => undefined);
+    }
+    for (const view of this.aiSearchViews) view.refreshModelSelector();
+    new Notice(`답변 모델을 ${value}(으)로 변경했습니다.`);
   }
 
   resetDraftSettings(): void {
@@ -292,6 +373,7 @@ export default class VaultSearchPlugin extends Plugin {
       throw error;
     } finally {
       this.settingTab?.display();
+      for (const view of this.aiSearchViews) view.refreshModelSelector();
     }
   }
 
@@ -736,7 +818,10 @@ export default class VaultSearchPlugin extends Plugin {
     this.searchModal.open();
   }
 
-  async openSearchResult(location: SearchResultLocation, keepPanel = false): Promise<void> {
+  async openSearchResult(
+    location: SearchResultLocation,
+    keepPanel = false,
+  ): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(location.path);
     if (!(file instanceof TFile)) {
       new Notice(`파일을 찾을 수 없습니다: ${location.path}`);
@@ -767,13 +852,6 @@ export default class VaultSearchPlugin extends Plugin {
       },
     });
     await this.app.workspace.revealLeaf(leaf);
-  }
-
-  lightningIconSrc(): string {
-    const pluginAssetPath = normalizePath(
-      `${this.app.vault.configDir}/plugins/${this.manifest.id}/${LIGHTNING_ICON_ASSET}`,
-    );
-    return this.app.vault.adapter.getResourcePath(pluginAssetPath);
   }
 
   registerAiView(view: VaultSearchItemView): void {
