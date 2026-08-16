@@ -101,7 +101,6 @@ try {
     if (Test-Path $Stage) { Remove-Item $Stage -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $Stage "backend/vault_search") -Force | Out-Null
     Copy-Item "main.js", "manifest.json", "styles.css" $Stage
-    Copy-Item -LiteralPath "assets/lightning search.png" (Join-Path $Stage "lightning.search.png")
     Copy-Item "backend/pyproject.toml", "backend/requirements.txt", `
         "backend/requirements-runtime.txt", "backend/requirements-optional-tensorrt.txt", `
         "backend/setup-runtime.ps1" (Join-Path $Stage "backend")
@@ -110,14 +109,6 @@ try {
     if (Test-Path $Zip) { Remove-Item $Zip }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [IO.Compression.ZipFile]::CreateFromDirectory($Stage, $Zip)
-    $ZipArchive = [IO.Compression.ZipFile]::OpenRead($Zip)
-    try {
-        if (-not ($ZipArchive.Entries.FullName -contains "lightning.search.png")) {
-            throw "Release archive is missing lightning.search.png"
-        }
-    } finally {
-        $ZipArchive.Dispose()
-    }
     Write-Host "    zip: $Zip ($((Get-Item $Zip).Length) bytes)" -ForegroundColor Green
 
     if ($SkipPublish) {
@@ -141,15 +132,14 @@ try {
     # 5. Create release with all assets (zip + individual files)
     Write-Host "==> Creating GitHub release $Tag" -ForegroundColor Cyan
     Invoke-Checked {
-        gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" "assets/lightning search.png" `
+        gh release create $Tag $Zip "main.js" "manifest.json" "styles.css" "versions.json" `
             --title $Tag --notes "BRAT-compatible release $Tag (zip + individual assets)"
     } "gh release create"
 
     # 6. Verify asset completeness
     Write-Host "==> Verifying release assets" -ForegroundColor Cyan
     $assets = gh release view $Tag --json assets --jq '.assets[].name'
-    # GitHub normalizes spaces in uploaded asset names to dots.
-    foreach ($required in @($ZipName, "main.js", "manifest.json", "styles.css", "versions.json", "lightning.search.png")) {
+    foreach ($required in @($ZipName, "main.js", "manifest.json", "styles.css", "versions.json")) {
         if ($assets -notcontains $required) { throw "Missing release asset: $required" }
     }
     Write-Host "    all assets present." -ForegroundColor Green

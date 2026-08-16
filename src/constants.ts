@@ -3,7 +3,6 @@ import type { LLMProviderId, VaultSearchSettings } from "./types";
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-export const LIGHTNING_ICON_ASSET = "lightning.search.png";
 export const BACKEND_VERSION = "0.1.33";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
