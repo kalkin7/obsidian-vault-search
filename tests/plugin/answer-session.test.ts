@@ -9,31 +9,50 @@ const answer = (text: string): AnswerResult => ({
   provider: "openai",
   model: "test",
   grounded: true,
-  diagnostics: { retrieved_count: 1, context_chars: 1, answer_chars: text.length },
+  diagnostics: {
+    retrieved_count: 1,
+    context_chars: 1,
+    answer_chars: text.length,
+  },
 });
 
 describe("AnswerSession", () => {
-  it("keeps at most four turns and sends prior conversation", async () => {
+  it("keeps the full transcript and sends only the recent window", async () => {
     const requests: Array<{ query: string; conversation: unknown[] }> = [];
     const states: AnswerState[] = [];
-    const session = new AnswerSession(async (query, conversation) => {
-      requests.push({ query, conversation });
-      return answer(`answer ${query}`);
-    }, (state) => states.push(state));
+    const session = new AnswerSession(
+      async (query, conversation) => {
+        requests.push({ query, conversation });
+        return answer(`answer ${query}`);
+      },
+      (state) => states.push(state),
+    );
     for (const query of ["one", "two", "three", "four", "five"]) {
       session.submit(query);
       await Promise.resolve();
       await Promise.resolve();
     }
+    // The backend gets the recent window (last 8 messages).
     expect(requests.at(-1)?.conversation).toHaveLength(8);
-    expect(session.conversation.at(0)).toEqual({ role: "user", content: "two" });
+    // The stored transcript is kept in full so history saving never truncates.
+    expect(session.conversation).toHaveLength(10);
+    expect(session.conversation.at(0)).toEqual({
+      role: "user",
+      content: "one",
+    });
     expect(states.at(-1)?.kind).toBe("answer");
   });
 
   it("does not render a stale response after clear", async () => {
     let resolve!: (value: AnswerResult) => void;
     const states: AnswerState[] = [];
-    const session = new AnswerSession(() => new Promise<AnswerResult>((r) => { resolve = r; }), (state) => states.push(state));
+    const session = new AnswerSession(
+      () =>
+        new Promise<AnswerResult>((r) => {
+          resolve = r;
+        }),
+      (state) => states.push(state),
+    );
     session.submit("old");
     session.clear();
     resolve(answer("old answer"));

@@ -418,6 +418,40 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }),
       );
 
+    containerEl.createEl("h3", { text: "AI Vault 히스토리" });
+    new Setting(containerEl)
+      .setName("히스토리 폴더")
+      .setDesc(
+        "대화가 마크다운 노트로 저장되는 볼트 내 경로입니다. 노트는 언제든 직접 읽고 편집할 수 있습니다.",
+      )
+      .addText((text) =>
+        text
+          .setPlaceholder("AI Vault Search/history")
+          .setValue(draft.historyFolder)
+          .onChange((value) => {
+            draft.historyFolder = value.trim() || "AI Vault Search/history";
+          }),
+      );
+    new Setting(containerEl)
+      .setName("자동 저장")
+      .setDesc("답변이 완료될 때마다 현재 대화를 히스토리에 자동 저장합니다.")
+      .addToggle((toggle) =>
+        toggle.setValue(draft.historyAutosave).onChange((value) => {
+          draft.historyAutosave = value;
+        }),
+      );
+    new Setting(containerEl)
+      .setName("최대 보존 개수")
+      .setDesc("보관할 히스토리 노트 수입니다. 0이면 무제한으로 보관합니다.")
+      .addText((text) =>
+        text.setValue(String(draft.historyMaxEntries)).onChange((value) => {
+          draft.historyMaxEntries = this.nonnegativeNumber(
+            value,
+            draft.historyMaxEntries,
+          );
+        }),
+      );
+
     const agent = this.owner.agentIntegration;
     new Setting(containerEl)
       .setName("에이전트 통합")

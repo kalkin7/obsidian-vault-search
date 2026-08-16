@@ -21,12 +21,22 @@ import type {
   AnswerResult,
   AnswerState,
   BackendStatus,
+  Citation,
   FavoriteAnswerModel,
   LLMProviderId,
   VaultSearchSettings,
 } from "./types";
 import { VIEW_TYPE_VAULT_AI_SEARCH } from "./constants";
-import { ICON_LIGHTNING } from "./icons";
+import { ICON_HISTORY, ICON_LIGHTNING } from "./icons";
+import {
+  deleteHistory,
+  listHistory,
+  loadHistory,
+  saveHistory,
+  type HistoryMessage,
+  type HistoryMeta,
+  type HistorySession,
+} from "./history";
 
 const ANSWER_TRANSPORT_MARGIN_MS = 2_000;
 /** Textarea auto-grow cap; past this the box scrolls instead. */
@@ -73,6 +83,23 @@ export class VaultSearchItemView extends ItemView {
   private effortSelect!: HTMLSelectElement;
   private pendingEl: HTMLElement | null = null;
   private lastQuery = "";
+  private historyButton!: HTMLButtonElement;
+  private historyPopover: HTMLElement | null = null;
+  /** Full transcript of the current panel session (raw [S#] markers) — the
+   *  source for history saves. Reset on 지우기 / history load. */
+  private transcript: HistoryMessage[] = [];
+  private sessionCreated = "";
+  private sessionTitle = "";
+  private lastCitations: Citation[] | null = null;
+
+  /** Close the history popover when clicking anywhere outside it. */
+  private readonly onDocClick = (event: MouseEvent): void => {
+    const target = event.target as Node | null;
+    if (target && this.historyButton?.contains(target)) return;
+    if (this.historyPopover && !this.historyPopover.contains(target)) {
+      this.hideHistoryPopover();
+    }
+  };
 
   constructor(
     viewLeaf: WorkspaceLeaf,
@@ -116,6 +143,15 @@ export class VaultSearchItemView extends ItemView {
     });
     setIcon(headerButton, ICON_LIGHTNING);
     headerButton.addEventListener("click", () => this.inputEl?.focus());
+    this.historyButton = header.createEl("button", {
+      cls: "vault-ai-search-history-button",
+      attr: { type: "button", "aria-label": "AI Vault Search 히스토리" },
+    });
+    setIcon(this.historyButton, ICON_HISTORY);
+    this.historyButton.addEventListener("click", () => {
+      void this.toggleHistoryPopover();
+    });
+    document.addEventListener("mousedown", this.onDocClick, true);
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
     this.session = new AnswerSession(
@@ -188,6 +224,7 @@ export class VaultSearchItemView extends ItemView {
       // "답변 작성 중…" survives.
       this.clearPending();
       this.appendUserMessage(query);
+      this.transcript.push({ role: "user", content: query });
       this.pendingEl = null;
       this.session.submit(query);
       this.inputEl.value = "";
@@ -218,6 +255,11 @@ export class VaultSearchItemView extends ItemView {
       this.session.clear();
       this.answerEl.empty();
       this.pendingEl = null;
+      this.transcript = [];
+      this.sessionCreated = "";
+      this.sessionTitle = "";
+      this.lastCitations = null;
+      this.hideHistoryPopover();
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
@@ -243,6 +285,8 @@ export class VaultSearchItemView extends ItemView {
 
   protected async onClose(): Promise<void> {
     this.session?.dispose();
+    document.removeEventListener("mousedown", this.onDocClick, true);
+    this.hideHistoryPopover();
     for (const remove of this.listeners.splice(0)) remove();
     this.owner.unregisterAiView(this);
     this.contentEl.empty();
@@ -461,6 +505,7 @@ export class VaultSearchItemView extends ItemView {
   private renderAnswer(result: AnswerResult): void {
     this.statusEl?.removeClass("vault-search-error");
     this.clearPending();
+    this.transcript.push({ role: "assistant", content: result.answer });
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant",
     });
@@ -484,7 +529,173 @@ export class VaultSearchItemView extends ItemView {
     if (result.evidence.length) {
       this.renderMessageEvidence(block, result.evidence);
     }
+    if (this.owner.settings.historyAutosave) {
+      void this.saveCurrentSession();
+    }
     this.scrollToBottom();
+  }
+
+  // -------------------------------------------------------------------------
+  // History
+  // -------------------------------------------------------------------------
+
+  private async toggleHistoryPopover(): Promise<void> {
+    if (this.historyPopover) {
+      this.hideHistoryPopover();
+      return;
+    }
+    this.historyPopover = this.contentEl.createDiv({
+      cls: "vault-ai-search-history-popover",
+    });
+    await this.renderHistoryList();
+  }
+
+  private hideHistoryPopover(): void {
+    this.historyPopover?.remove();
+    this.historyPopover = null;
+  }
+
+  private async renderHistoryList(): Promise<void> {
+    const popover = this.historyPopover;
+    if (!popover) return;
+    popover.empty();
+    const head = popover.createDiv({ cls: "vault-ai-search-history-head" });
+    head.createEl("span", { text: "히스토리" });
+    const saveNow = head.createEl("button", {
+      text: "지금 저장",
+      cls: "vault-ai-search-history-save",
+      attr: { type: "button" },
+    });
+    saveNow.addEventListener("click", () => {
+      void this.saveCurrentSession(true);
+      this.hideHistoryPopover();
+      new Notice("히스토리에 저장했습니다.");
+    });
+    const metas = await listHistory(
+      this.app.vault,
+      this.owner.settings.historyFolder,
+    );
+    if (metas.length === 0) {
+      popover.createDiv({
+        cls: "vault-ai-search-history-empty",
+        text: "저장된 히스토리가 없습니다. 답변이 완료되면 자동으로 저장됩니다.",
+      });
+      return;
+    }
+    for (const meta of metas) {
+      const row = popover.createDiv({ cls: "vault-ai-search-history-item" });
+      const info = row.createDiv({ cls: "vault-ai-search-history-info" });
+      info.createDiv({
+        cls: "vault-ai-search-history-title",
+        text: meta.title,
+      });
+      info.createDiv({
+        cls: "vault-ai-search-history-meta",
+        text: `${this.formatHistoryDate(meta.created)} · ${meta.model} · ${meta.messageCount}개 메시지`,
+      });
+      row.addEventListener("click", () => {
+        void this.loadSessionFromHistory(meta);
+      });
+      const del = row.createEl("button", {
+        cls: "vault-ai-search-history-delete",
+        attr: { type: "button", "aria-label": "삭제" },
+      });
+      del.setText("🗑");
+      del.addEventListener("click", (event) => {
+        event.stopPropagation();
+        void this.deleteSessionFromHistory(meta);
+      });
+    }
+  }
+
+  private formatHistoryDate(created: string): string {
+    const date = new Date(created);
+    if (Number.isNaN(date.getTime())) return created;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const time = `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const sameDay = date.toDateString() === new Date().toDateString();
+    return sameDay
+      ? `오늘 ${time}`
+      : `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${time}`;
+  }
+
+  private async loadSessionFromHistory(meta: HistoryMeta): Promise<void> {
+    const session = await loadHistory(this.app.vault, meta.file);
+    if (!session) {
+      new Notice("히스토리를 읽을 수 없습니다.");
+      return;
+    }
+    this.restoreSession(session);
+  }
+
+  private restoreSession(session: HistorySession): void {
+    this.clearPending();
+    this.answerEl.empty();
+    this.pendingEl = null;
+    this.transcript = session.messages.map((message) => ({ ...message }));
+    this.sessionCreated = session.created;
+    this.sessionTitle = session.title;
+    this.lastCitations = session.citations;
+    for (const message of session.messages) {
+      if (message.role === "user") {
+        this.appendUserMessage(message.content);
+      } else {
+        const block = this.answerEl.createDiv({
+          cls: "vault-ai-search-assistant",
+        });
+        const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+        meta.setText(`${session.provider} · ${session.model} · 히스토리`);
+        const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
+        const renderer = new AnswerRenderer(body, {
+          openCitation: (location) =>
+            this.owner.openSearchResult(location, true),
+        });
+        renderer.render(message.content, session.citations, (text) =>
+          this.copyAnswer(toNoteMarkdown(text, session.citations)),
+        );
+      }
+    }
+    this.session.restore(session.messages);
+    this.lastQuery = "";
+    this.hideHistoryPopover();
+    this.scrollToBottom();
+  }
+
+  private async deleteSessionFromHistory(meta: HistoryMeta): Promise<void> {
+    await deleteHistory(this.app.vault, meta.file);
+    await this.renderHistoryList();
+  }
+
+  /** Snapshot the current panel conversation and write it to the history
+   *  folder. `manual` shows a notice when there is nothing to save yet. */
+  private async saveCurrentSession(manual = false): Promise<void> {
+    if (this.transcript.length === 0) {
+      if (manual) new Notice("저장할 대화가 없습니다.");
+      return;
+    }
+    if (!this.sessionCreated) {
+      this.sessionCreated = new Date().toISOString();
+    }
+    if (!this.sessionTitle) {
+      const first = this.transcript.find((message) => message.role === "user");
+      this.sessionTitle = first ? first.content : "대화";
+    }
+    const settings = this.owner.settings;
+    const session: HistorySession = {
+      title: this.sessionTitle,
+      created: this.sessionCreated,
+      provider: settings.answerProvider,
+      model: settings.answerModel,
+      reasoningEffort: settings.answerReasoningEffort,
+      messages: this.transcript,
+      citations: this.lastCitations ?? [],
+    };
+    await saveHistory(
+      this.app.vault,
+      settings.historyFolder,
+      session,
+      settings.historyMaxEntries,
+    );
   }
 
   private renderBackendStatus(status: BackendStatus): void {

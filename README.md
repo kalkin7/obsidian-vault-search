@@ -94,7 +94,10 @@ greps the vault — the same strategy coding agents follow via AGENTS.md — the
 answers with `[S#]` citations. A per-model **추론** selector sits next to the
 model picker in the composer. ★-marked models in the settings list are the
 only ones offered in the model picker, and changes apply immediately. API keys
-are validated against the real endpoint when saved or tested. See
+are validated against the real endpoint when saved or tested. Conversations
+are autosaved to the vault as notes (default `AI Vault Search/history` —
+clock icon in the panel header to browse/load/delete, folder and retention
+configurable in settings). See
 [Settings](docs/settings.md#ai-vault-답변) for the full behavior.
 
 ## Lifecycle guarantees

@@ -81,6 +81,9 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   answerMaxContextChars: 24000,
   answerMaxOutputTokens: 4000,
   answerTimeoutSeconds: 60,
+  historyFolder: "AI Vault Search/history",
+  historyAutosave: true,
+  historyMaxEntries: 0,
 };
 
 export const LLM_PROVIDER_DEFAULTS = {

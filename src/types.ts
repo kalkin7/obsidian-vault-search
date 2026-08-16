@@ -72,6 +72,12 @@ export interface VaultSearchSettings {
   answerMaxContextChars: number;
   answerMaxOutputTokens: number;
   answerTimeoutSeconds: number;
+  /** Vault-relative folder where AI search history notes are saved. */
+  historyFolder: string;
+  /** Autosave each completed answer into the history folder. */
+  historyAutosave: boolean;
+  /** Max history notes to keep; 0 = keep all. */
+  historyMaxEntries: number;
   settingsVersion?: number;
 }
 

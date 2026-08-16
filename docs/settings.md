@@ -100,7 +100,14 @@ unconditionally overwritten from the stored secrets).
   favorite changes persist immediately (hot) — no "설정 적용" needed.
 - **Conversation UI** — the panel keeps a chat history (question bubbles +
   per-answer blocks with markdown, tables, citation pills, and a hover copy
-  button) for the session only; the input is cleared when the panel reopens. Markdown headings of any level (`#`…`######`) are
+  button) for the session only; the input is cleared when the panel reopens.
+- **히스토리 (history)** — each completed answer is autosaved as a note in
+  the vault (default `AI Vault Search/history`, configurable). The note body
+  is the readable, clickable transcript (`## Q` / `## A` with ① wikilinks and
+  a `## 근거` list); YAML frontmatter keeps the raw messages and citations so
+  the panel can reload the conversation losslessly (citation pills included)
+  and continue it. The clock icon in the panel header opens the history list
+  (load / delete / 지금 저장). Retention is configurable (0 = keep all). Markdown headings of any level (`#`…`######`) are
   rendered as h3–h6. **답변 복사** produces note-ready markdown: `[S#]`
   citations become inline wikilinks labeled with circled endnote numbers
   (`[[file|①]]`) that open the source file directly, plus a deduplicated

@@ -23,6 +23,13 @@ export class AnswerSession {
     return this.history.map((message) => ({ ...message }));
   }
 
+  /** Replace the conversation with a previously saved transcript (loaded from
+   *  history). Follow-up questions keep this as their context. */
+  restore(messages: AnswerConversationMessage[]): void {
+    this.history = messages.map((message) => ({ ...message }));
+    if (!this.disposed) this.stateChanged({ kind: "idle" });
+  }
+
   submit(value: string): void {
     const query = value.trim();
     if (query.length < 2 || this.disposed) {
@@ -30,7 +37,11 @@ export class AnswerSession {
       return;
     }
     const generation = ++this.generation;
-    const conversation = this.conversation;
+    // Only the recent window goes to the backend; the full transcript is kept
+    // in memory so history saving never truncates a conversation.
+    const conversation = this.history
+      .slice(-8)
+      .map((message) => ({ ...message }));
     this.stateChanged({ kind: "retrieving" });
     const pending = this.answer(query, conversation);
     this.stateChanged({ kind: "answering" });
@@ -58,15 +69,18 @@ export class AnswerSession {
       if (this.disposed || generation !== this.generation) return;
       this.history.push({ role: "user", content: query });
       this.history.push({ role: "assistant", content: result.answer });
-      this.history = this.history.slice(-8);
       this.stateChanged({ kind: "answer", result });
     } catch (error) {
       if (this.disposed || generation !== this.generation) return;
-      const backendError = error instanceof BackendCallError ? error : undefined;
+      const backendError =
+        error instanceof BackendCallError ? error : undefined;
       const details = backendError?.details;
       const evidence =
-        details && typeof details === "object" && "evidence" in details && Array.isArray(details.evidence)
-          ? details.evidence as AnswerResult["evidence"]
+        details &&
+        typeof details === "object" &&
+        "evidence" in details &&
+        Array.isArray(details.evidence)
+          ? (details.evidence as AnswerResult["evidence"])
           : undefined;
       this.stateChanged({
         kind: "unavailable",
