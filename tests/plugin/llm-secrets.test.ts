@@ -16,6 +16,7 @@ vi.mock("obsidian", async (importOriginal) => {
 const mockRequestUrl = requestUrl as unknown as {
   mockResolvedValue(value: unknown): void;
   mockRejectedValue(error: unknown): void;
+  mockImplementation(impl: () => Promise<unknown>): void;
   mockClear(): void;
   mock: { calls: unknown[][] };
 };
@@ -29,6 +30,8 @@ function response(status: number): unknown {
     arrayBuffer: new ArrayBuffer(0),
   };
 }
+
+beforeEach(() => mockRequestUrl.mockClear());
 
 function fakeApp() {
   const values = new Map<string, string>();
@@ -67,9 +70,10 @@ describe("LLM secrets", () => {
   });
 
   it("rejects a key the provider answers 401 to (real chat endpoint probe)", async () => {
-    beforeEach(() => mockRequestUrl.mockClear());
     mockRequestUrl.mockResolvedValue(response(401));
-    expect(await validateProviderApiKey("opencode-go", "bad-key")).toBe(false);
+    expect(await validateProviderApiKey("opencode-go", "bad-key")).toBe(
+      "invalid",
+    );
     const call = mockRequestUrl.mock.calls[0][0] as {
       url: string;
       headers: Record<string, string>;
@@ -78,10 +82,14 @@ describe("LLM secrets", () => {
     expect(call.headers.Authorization).toBe("Bearer bad-key");
   });
 
-  it("accepts a key on success and on network errors (does not block saving)", async () => {
+  it("returns valid on success and unverified when the provider cannot be reached", async () => {
     mockRequestUrl.mockResolvedValue(response(200));
-    expect(await validateProviderApiKey("deepseek", "good-key")).toBe(true);
-    mockRequestUrl.mockRejectedValue(new Error("network down"));
-    expect(await validateProviderApiKey("opencode-go", "maybe-key")).toBe(true);
+    expect(await validateProviderApiKey("deepseek", "good-key")).toBe("valid");
+    // A non-2xx/3xx status (or a network failure) must not block saving — it
+    // reports "unverified" instead of claiming the key is invalid.
+    mockRequestUrl.mockResolvedValue(response(503));
+    expect(await validateProviderApiKey("opencode-go", "maybe-key")).toBe(
+      "unverified",
+    );
   });
 });

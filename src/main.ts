@@ -286,12 +286,18 @@ export default class VaultSearchPlugin extends Plugin {
       );
     }
     const secret = value.trim();
-    if (!secret) throw new Error("저장할 API 키를 입력해 주세요.");
+    if (!secret) {
+      // Empty value = delete (the settings Delete button): clear the stored
+      // secret and restart the sidecar so the cleared key takes effect.
+      setProviderSecret(this.app, provider, "");
+      if (this.backend.status.state !== "stopped") await this.backend.restart();
+      return;
+    }
     // Probe the real chat endpoint before saving: the models endpoint does
-    // not validate keys, so a 401/403 here is the only reliable way to catch
-    // a wrong or expired key at save time instead of at answer time.
-    const valid = await validateProviderApiKey(provider, secret);
-    if (!valid) {
+    // not validate keys, so a definitive 401/403 here is the only reliable
+    // way to catch a wrong or expired key at save time.
+    const status = await validateProviderApiKey(provider, secret);
+    if (status === "invalid") {
       throw new Error(
         `${LLM_PROVIDER_DEFAULTS[provider].name}가 이 API 키를 거부했습니다. ` +
           "키를 다시 복사하거나 provider 콘솔에서 구독/키 상태를 확인해 주세요.",
@@ -377,6 +383,15 @@ export default class VaultSearchPlugin extends Plugin {
     if (!value || (value === previous && provider === previousProvider)) return;
     this.settings.answerProvider = provider;
     this.settings.answerModel = value;
+    // The reasoning effort must stay valid for the newly selected model:
+    // reset to auto when the stored level is not in the new model's set, so
+    // an unsupported value (e.g. xhigh after switching to deepseek-v4-flash)
+    // is never sent to the provider.
+    const effort = this.settings.answerReasoningEffort;
+    if (effort !== "auto" && !reasoningEffortLevels(provider, value).includes(effort)) {
+      this.settings.answerReasoningEffort = "auto";
+      this.draftSettings.answerReasoningEffort = "auto";
+    }
     // Keep the settings draft in sync so a later "설정 적용" does not
     // overwrite this hot change with a stale draft value.
     this.draftSettings.answerProvider = provider;

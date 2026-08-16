@@ -80,7 +80,13 @@ export class AnswerRenderer {
           const itemMatch = ordered ? nextNumbered : nextBullet;
           if (!itemMatch) break;
           const item = list.createEl("li", { cls: "vault-answer-list-item" });
-          this.renderInline(item, itemMatch[1], byId, counts);
+          // ordered captures the number in group 1 and the content in group 2.
+          this.renderInline(
+            item,
+            ordered ? itemMatch[2] : itemMatch[1],
+            byId,
+            counts,
+          );
           index++;
         }
         continue;
@@ -127,12 +133,15 @@ export class AnswerRenderer {
   ): number {
     const rows: string[][] = [];
     while (index < lines.length && lines[index].trim().startsWith("|")) {
-      const cells = lines[index]
-        .trim()
-        .split("|")
-        .slice(1, -1)
-        .map((cell) => cell.trim());
-      rows.push(cells);
+      const parts = lines[index].trim().split("|");
+      // Drop only the empty edge segments (leading "" before the first | and
+      // trailing "" after the last |) so rows without a trailing pipe keep
+      // their final cell.
+      let start = 0;
+      let end = parts.length;
+      if (parts.length > 1 && parts[0].trim() === "") start = 1;
+      if (parts.length > 1 && parts.at(-1)?.trim() === "") end -= 1;
+      rows.push(parts.slice(start, end).map((cell) => cell.trim()));
       index++;
     }
     const isSeparator = (cells: string[]) =>

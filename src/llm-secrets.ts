@@ -59,15 +59,17 @@ export function mergeProviderEnvironment(
   return environment;
 }
 
-/** One-token probe against the provider's real chat endpoint. Returns false
- *  ONLY on 401/403 — the API definitively rejected the key. Network hiccups,
- *  timeouts, and other HTTP statuses do not block saving (they cannot prove
- *  the key is wrong). The models endpoint does NOT validate keys, so a
- *  successful model fetch is not proof a key works — hence this probe. */
+/** Outcome of a one-token key probe against the provider's real chat
+ *  endpoint: "invalid" only on a definitive 401/403 rejection, "valid" on a
+ *  2xx/3xx, "unverified" when the API could not be reached or answered with
+ *  another status (network, timeout, 429, 5xx). The models endpoint does NOT
+ *  validate keys, so a successful model fetch is not proof a key works. */
+export type ProviderKeyStatus = "valid" | "invalid" | "unverified";
+
 export async function validateProviderApiKey(
   provider: LLMProviderId,
   apiKey: string,
-): Promise<boolean> {
+): Promise<ProviderKeyStatus> {
   const defaults = LLM_PROVIDER_DEFAULTS[provider];
   const url =
     provider === "openai"
@@ -94,8 +96,10 @@ export async function validateProviderApiKey(
       body,
       throw: false,
     });
-    return response.status !== 401 && response.status !== 403;
+    if (response.status === 401 || response.status === 403) return "invalid";
+    if (response.status >= 200 && response.status < 400) return "valid";
+    return "unverified";
   } catch {
-    return true;
+    return "unverified";
   }
 }

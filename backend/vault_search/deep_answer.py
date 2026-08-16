@@ -113,12 +113,15 @@ def grep_vault(
     max_matches: int = 100,
     per_file: int = 10,
     max_file_bytes: int = 512 * 1024,
+    max_pattern_chars: int = 200,
 ) -> list[dict[str, Any]]:
     """Scoped regex scan over vault files — a portable stand-in for `rg`.
-    Returns [{file_path, start_line, content}]; raises ValueError on a bad
-    pattern or empty scope. Honor the config include/exclude globs plus the
-    explicit tool glob, and stay within hard bounds so huge vaults cannot
-    hang the loop."""
+    Returns [{file_path, start_line, content}]; raises ValueError on a bad or
+    oversized pattern. Honor the config include/exclude globs plus the
+    explicit tool glob, stay within hard bounds, and never follow a symlink
+    that resolves outside the vault."""
+    if not pattern or len(pattern) > max_pattern_chars:
+        raise ValueError("regex must be 1-200 characters")
     try:
         regex = re.compile(pattern)
     except re.error as exc:
@@ -128,9 +131,16 @@ def grep_vault(
     ]
     matches: list[dict[str, Any]] = []
     scanned = 0
-    for path in sorted(root.rglob("*")):
-        if not path.is_file() or scanned >= max_files:
+    root_resolved = root.resolve()
+    for path in root.rglob("*"):
+        if not path.is_file():
             continue
+        resolved = path.resolve()
+        if not resolved.is_relative_to(root_resolved):
+            # A symlink under the vault pointing outside must not be read.
+            continue
+        if scanned >= max_files:
+            break
         rel = path.relative_to(root).as_posix()
         if any(fnmatch.fnmatch(rel, g) for g in exclude_globs):
             continue
@@ -176,6 +186,7 @@ class DeepAnswerEngine:
         grep: Callable[[str, str], list[dict[str, Any]]],
         max_output_tokens: int,
         timeout_seconds: float,
+        max_context_chars: int = MAX_ACCUMULATED_CHARS,
     ) -> None:
         self._complete = complete
         self._search = search
@@ -183,6 +194,9 @@ class DeepAnswerEngine:
         self._grep = grep
         self._max_output_tokens = max_output_tokens
         self._timeout_seconds = timeout_seconds
+        # Honor the user's max_context_chars setting (8k-32k) as the cap on
+        # accumulated source content; the constant is just the absolute bound.
+        self._max_context_chars = min(MAX_ACCUMULATED_CHARS, max_context_chars)
         self._sources: list[GroundingSource] = []
         self._messages: list[dict[str, str]] = []
         self._acc_chars = 0
@@ -205,7 +219,7 @@ class DeepAnswerEngine:
         max_chars: int,
     ) -> GroundingSource | None:
         content = content[:max_chars].strip()
-        if not content or self._acc_chars + len(content) > MAX_ACCUMULATED_CHARS:
+        if not content or self._acc_chars + len(content) > self._max_context_chars:
             return None
         source = GroundingSource(
             id=f"S{len(self._sources) + 1}",

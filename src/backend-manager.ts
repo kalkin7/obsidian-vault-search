@@ -523,10 +523,11 @@ export class BackendManager {
     ];
     const env = mergeProviderEnvironment(process.env, providerEnvironment);
     // Provider keys reach the sidecar ONLY via Obsidian secret storage:
-    // explicitly blank any provider var the host process happened to inherit,
-    // so a stale shell/system key cannot masquerade as the stored one.
+    // unconditionally overwrite each provider var — either with the stored
+    // secret or an explicit empty string — so a stale shell/system key the
+    // host process inherited can never masquerade as the stored one.
     for (const name of PROVIDER_ENV_VARS) {
-      if (!(name in env)) env[name] = "";
+      env[name] = providerEnvironment[name] ?? "";
     }
     env.PYTHONUTF8 = "1";
     env.PYTHONPATH =

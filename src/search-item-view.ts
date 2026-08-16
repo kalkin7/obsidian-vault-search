@@ -196,6 +196,10 @@ export class VaultSearchItemView extends ItemView {
         return;
       }
       this.lastQuery = query;
+      // A previous in-flight answer may still have a pending block in the
+      // conversation; remove it before starting a new request so no stale
+      // "답변 작성 중…" survives.
+      this.clearPending();
       this.appendUserMessage(query);
       this.pendingEl = null;
       this.session.submit(query);

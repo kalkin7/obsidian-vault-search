@@ -212,16 +212,19 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
           button.setDisabled(true);
           try {
-            const valid = await validateProviderApiKey(
+            const status = await validateProviderApiKey(
               draft.answerProvider,
               key,
             );
-            new Notice(
-              valid
-                ? `${answerProvider.name} 키가 유효합니다.`
-                : `${answerProvider.name}가 이 키를 거부했습니다. 키를 다시 확인해 주세요.`,
-              8000,
-            );
+            let message: string;
+            if (status === "valid") {
+              message = `${answerProvider.name} 키가 유효합니다.`;
+            } else if (status === "invalid") {
+              message = `${answerProvider.name}가 이 키를 거부했습니다. 키를 다시 확인해 주세요.`;
+            } else {
+              message = `${answerProvider.name} 키 인증을 확인할 수 없습니다 (네트워크/provider 상태). 저장은 가능합니다.`;
+            }
+            new Notice(message, 8000);
           } catch (error) {
             this.showError(error);
           } finally {
@@ -261,8 +264,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       );
     const fetchedModels = this.providerModels[draft.answerProvider] || [];
     let modelOptions = fetchedModels;
-    if (!modelOptions.length && draft.answerModel) {
-      modelOptions = [draft.answerModel];
+    if (draft.answerModel && !modelOptions.includes(draft.answerModel)) {
+      // Keep the stored current model visible even when it is not in the
+      // fetched list (e.g. a snapshot the dated filter removed), so it can
+      // still be selected or favorited.
+      modelOptions = [draft.answerModel, ...modelOptions];
     }
     const favorites = Array.isArray(draft.favoriteAnswerModels)
       ? [...draft.favoriteAnswerModels]

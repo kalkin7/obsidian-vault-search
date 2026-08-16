@@ -297,6 +297,46 @@ def test_deep_answer_routes_and_returns_citations(monkeypatch, tmp_path):
     assert value["citations"][0]["file_path"] == "Notes/state.md"
 
 
+def test_deep_answer_read_respects_exclude_globs(monkeypatch, tmp_path):
+    service = make_service(tmp_path)
+    excluded = tmp_path / ".obsidian" / "config.json"
+    excluded.parent.mkdir(parents=True)
+    excluded.write_text("시크릿 설정", encoding="utf-8")
+    fake, _ = scripted_provider(
+        [
+            'TOOL: read(file=".obsidian/config.json")',
+            "조사 완료.",
+        ]
+    )
+    monkeypatch.setattr(
+        "vault_search.service.create_provider", lambda *_args: fake()
+    )
+    value = service.call(
+        "answer", {"query": "q", "conversation": [], "deep": True}
+    )
+    # The excluded file must never reach the evidence list.
+    assert all("config.json" not in s["file_path"] for s in value["evidence"])
+    assert value["answer"] == "조사 완료."
+
+
+def test_deep_answer_blocks_uncited_general_knowledge_without_sources(
+    monkeypatch, tmp_path
+):
+    service = make_service(tmp_path)
+    service.search_engine = SimpleNamespace(  # type: ignore[assignment]
+        search_detailed=lambda *_a, **_k: SimpleNamespace(results=[])
+    )
+    fake, _ = scripted_provider(["그냥 아는 지식으로 답합니다."])
+    monkeypatch.setattr(
+        "vault_search.service.create_provider", lambda *_args: fake()
+    )
+    value = service.call(
+        "answer", {"query": "아무거나", "conversation": [], "deep": True}
+    )
+    assert value["answer"] == "볼트에서 충분한 근거를 찾지 못했습니다."
+    assert value["grounded"] is False
+
+
 def test_deep_answer_blocks_traversal_reads(monkeypatch, tmp_path):
     service = make_service(tmp_path)
     outside = tmp_path / "secret.txt"

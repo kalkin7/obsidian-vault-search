@@ -3263,9 +3263,11 @@ async function validateProviderApiKey(provider, apiKey) {
       body,
       throw: false
     });
-    return response.status !== 401 && response.status !== 403;
+    if (response.status === 401 || response.status === 403) return "invalid";
+    if (response.status >= 200 && response.status < 400) return "valid";
+    return "unverified";
   } catch {
-    return true;
+    return "unverified";
   }
 }
 
@@ -3677,7 +3679,7 @@ var BackendManager = class {
     ];
     const env = mergeProviderEnvironment(process.env, providerEnvironment2);
     for (const name of PROVIDER_ENV_VARS) {
-      if (!(name in env)) env[name] = "";
+      env[name] = providerEnvironment2[name] ?? "";
     }
     env.PYTHONUTF8 = "1";
     env.PYTHONPATH = this.backendRoot + (env.PYTHONPATH ? path3.delimiter + env.PYTHONPATH : "");
@@ -4412,14 +4414,19 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
         button.setDisabled(true);
         try {
-          const valid = await validateProviderApiKey(
+          const status2 = await validateProviderApiKey(
             draft.answerProvider,
             key
           );
-          new import_obsidian3.Notice(
-            valid ? `${answerProvider.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.` : `${answerProvider.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`,
-            8e3
-          );
+          let message;
+          if (status2 === "valid") {
+            message = `${answerProvider.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.`;
+          } else if (status2 === "invalid") {
+            message = `${answerProvider.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`;
+          } else {
+            message = `${answerProvider.name} \uD0A4 \uC778\uC99D\uC744 \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 (\uB124\uD2B8\uC6CC\uD06C/provider \uC0C1\uD0DC). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
+          }
+          new import_obsidian3.Notice(message, 8e3);
         } catch (error) {
           this.showError(error);
         } finally {
@@ -4454,8 +4461,8 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
     const fetchedModels = this.providerModels[draft.answerProvider] || [];
     let modelOptions = fetchedModels;
-    if (!modelOptions.length && draft.answerModel) {
-      modelOptions = [draft.answerModel];
+    if (draft.answerModel && !modelOptions.includes(draft.answerModel)) {
+      modelOptions = [draft.answerModel, ...modelOptions];
     }
     const favorites = Array.isArray(draft.favoriteAnswerModels) ? [...draft.favoriteAnswerModels] : [];
     const modelSetting = new import_obsidian3.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
@@ -5401,7 +5408,12 @@ var AnswerRenderer = class {
           const itemMatch = ordered ? nextNumbered : nextBullet;
           if (!itemMatch) break;
           const item = list.createEl("li", { cls: "vault-answer-list-item" });
-          this.renderInline(item, itemMatch[1], byId, counts);
+          this.renderInline(
+            item,
+            ordered ? itemMatch[2] : itemMatch[1],
+            byId,
+            counts
+          );
           index++;
         }
         continue;
@@ -5437,8 +5449,12 @@ var AnswerRenderer = class {
   renderTable(container, lines, index, byId, counts) {
     const rows = [];
     while (index < lines.length && lines[index].trim().startsWith("|")) {
-      const cells = lines[index].trim().split("|").slice(1, -1).map((cell) => cell.trim());
-      rows.push(cells);
+      const parts = lines[index].trim().split("|");
+      let start = 0;
+      let end = parts.length;
+      if (parts.length > 1 && parts[0].trim() === "") start = 1;
+      if (parts.length > 1 && parts.at(-1)?.trim() === "") end -= 1;
+      rows.push(parts.slice(start, end).map((cell) => cell.trim()));
       index++;
     }
     const isSeparator = (cells) => cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell));
@@ -5709,6 +5725,7 @@ var VaultSearchItemView = class extends import_obsidian7.ItemView {
         return;
       }
       this.lastQuery = query;
+      this.clearPending();
       this.appendUserMessage(query);
       this.pendingEl = null;
       this.session.submit(query);
@@ -6209,9 +6226,13 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
       );
     }
     const secret = value.trim();
-    if (!secret) throw new Error("\uC800\uC7A5\uD560 API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.");
-    const valid = await validateProviderApiKey(provider, secret);
-    if (!valid) {
+    if (!secret) {
+      setProviderSecret(this.app, provider, "");
+      if (this.backend.status.state !== "stopped") await this.backend.restart();
+      return;
+    }
+    const status = await validateProviderApiKey(provider, secret);
+    if (status === "invalid") {
       throw new Error(
         `${LLM_PROVIDER_DEFAULTS[provider].name}\uAC00 \uC774 API \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uBCF5\uC0AC\uD558\uAC70\uB098 provider \uCF58\uC194\uC5D0\uC11C \uAD6C\uB3C5/\uD0A4 \uC0C1\uD0DC\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
       );
@@ -6284,6 +6305,11 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
     if (!value || value === previous && provider === previousProvider) return;
     this.settings.answerProvider = provider;
     this.settings.answerModel = value;
+    const effort = this.settings.answerReasoningEffort;
+    if (effort !== "auto" && !reasoningEffortLevels(provider, value).includes(effort)) {
+      this.settings.answerReasoningEffort = "auto";
+      this.draftSettings.answerReasoningEffort = "auto";
+    }
     this.draftSettings.answerProvider = provider;
     this.draftSettings.answerModel = value;
     await this.saveSettings();

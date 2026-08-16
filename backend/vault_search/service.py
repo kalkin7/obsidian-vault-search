@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import fnmatch
 import sqlite3
 import threading
 import time
@@ -527,11 +528,23 @@ class SearchService:
 
         def do_read(rel_path: str) -> str:
             root = self.config.vault_path.resolve()
-            path = (root / rel_path.replace("\\", "/")).resolve()
+            rel = rel_path.replace("\\", "/")
+            if not rel or rel.startswith("/") or ".." in rel.split("/"):
+                raise ValueError(f"invalid file path: {rel_path}")
+            path = (root / rel).resolve()
             if not path.is_relative_to(root):
                 raise ValueError(f"file path escapes the vault: {rel_path}")
             if not path.is_file():
                 raise ValueError(f"file not found: {rel_path}")
+            # Respect the configured search scope: files the user excluded from
+            # indexing (e.g. .obsidian/**, .env) must not be shipped to the
+            # external provider.
+            if any(fnmatch.fnmatch(rel, g) for g in self.config.exclude_globs):
+                raise ValueError(f"file is excluded from the vault scope: {rel_path}")
+            if self.config.include_globs and not any(
+                fnmatch.fnmatch(rel, g) for g in self.config.include_globs
+            ):
+                raise ValueError(f"file is outside the vault scope: {rel_path}")
             return path.read_text(encoding="utf-8", errors="replace")[:40000]
 
         def do_grep(pattern: str, glob_pattern: str) -> list[dict[str, Any]]:
@@ -553,6 +566,8 @@ class SearchService:
                 MIN_DEEP_OUTPUT_TOKENS,
             ),
             timeout_seconds=self.config.llm_timeout_seconds,
+            max_context_chars=params.get("max_context_chars")
+            or self.config.llm_max_context_chars,
         )
         try:
             outcome = engine.run(
@@ -569,6 +584,11 @@ class SearchService:
         answer, citations, warning = normalize_citations(outcome["text"], sources)
         if not answer:
             raise ServiceError("LLM_BAD_RESPONSE", "Provider returned an empty answer")
+        # Without any gathered evidence the model must not fall back to general
+        # knowledge: report the explicit insufficiency message (mirrors the
+        # single-shot GROUNDING_EMPTY behavior).
+        if not sources and "충분한 근거를 찾지 못" not in answer:
+            answer = "볼트에서 충분한 근거를 찾지 못했습니다."
         if len(answer) > 32000:
             raise ServiceError("ANSWER_TOO_LARGE", "Provider answer is too large")
         return {
@@ -632,8 +652,7 @@ class SearchService:
             effort = str(params["answerReasoningEffort"]).strip().lower()
             self.config.reasoning_effort = (
                 effort
-                if effort
-                in {"auto", "none", "low", "medium", "high", "xhigh", "max"}
+                if effort in {"auto", "none", "low", "medium", "high", "xhigh", "max"}
                 else ""
             )
         for key, attribute, minimum, maximum in (
