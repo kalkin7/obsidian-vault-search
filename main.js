@@ -5247,42 +5247,147 @@ var AnswerRenderer = class {
     this.containerEl = containerEl;
     this.options = options;
   }
-  render(answer, citations) {
+  render(answer, citations, onCopy) {
     this.containerEl.empty();
     const byId = new Map(citations.map((citation) => [citation.id, citation]));
-    for (const line of answer.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const paragraph = this.containerEl.createDiv({ cls: "vault-answer-paragraph" });
-      this.renderLine(paragraph, line, byId);
+    const counts = this.fileCounts(citations);
+    const toolbar = this.containerEl.createDiv({
+      cls: "vault-answer-toolbar"
+    });
+    if (onCopy) {
+      const copy = toolbar.createEl("button", {
+        text: "\uB2F5\uBCC0 \uBCF5\uC0AC",
+        cls: "vault-answer-copy",
+        attr: { type: "button", "aria-label": "\uB2F5\uBCC0 \uC804\uCCB4 \uD14D\uC2A4\uD2B8 \uBCF5\uC0AC" }
+      });
+      copy.addEventListener("click", () => {
+        onCopy(answer);
+        copy.setText("\uBCF5\uC0AC\uB428 \u2713");
+        globalThis.setTimeout(() => copy.setText("\uB2F5\uBCC0 \uBCF5\uC0AC"), 1500);
+      });
+    }
+    const body = this.containerEl.createDiv({ cls: "vault-answer-body" });
+    this.renderBlocks(body, answer, byId, counts);
+  }
+  renderBlocks(container, answer, byId, counts) {
+    const lines = answer.split(/\r?\n/);
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index].trimEnd();
+      if (!line.trim()) {
+        index++;
+        continue;
+      }
+      const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+      if (heading) {
+        const level = heading[1].length;
+        const element = container.createEl(
+          level === 1 ? "h3" : level === 2 ? "h4" : "h5",
+          { cls: "vault-answer-heading" }
+        );
+        this.renderInline(element, heading[2], byId, counts);
+        index++;
+        continue;
+      }
+      const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+      const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
+      if (bullet || numbered) {
+        const ordered = Boolean(numbered);
+        const list = container.createEl(ordered ? "ol" : "ul", {
+          cls: "vault-answer-list"
+        });
+        while (index < lines.length) {
+          const nextBullet = /^\s*[-*]\s+(.+)$/.exec(lines[index]);
+          const nextNumbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(lines[index]);
+          const itemMatch = ordered ? nextNumbered : nextBullet;
+          if (!itemMatch) break;
+          const item = list.createEl("li", { cls: "vault-answer-list-item" });
+          this.renderInline(item, itemMatch[1], byId, counts);
+          index++;
+        }
+        continue;
+      }
+      const quote = /^\s*>\s?(.+)$/.exec(line);
+      if (quote) {
+        const block = container.createEl("blockquote", {
+          cls: "vault-answer-quote"
+        });
+        this.renderInline(block, quote[1], byId, counts);
+        index++;
+        continue;
+      }
+      if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+        container.createEl("hr", { cls: "vault-answer-rule" });
+        index++;
+        continue;
+      }
+      const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
+      while (index < lines.length && lines[index].trim() && !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?/.test(
+        lines[index]
+      )) {
+        if (paragraph.children.length > 0) paragraph.createEl("br");
+        this.renderInline(paragraph, lines[index].trim(), byId, counts);
+        index++;
+      }
     }
   }
-  renderLine(parent, line, citations) {
+  renderInline(parent, text, byId, counts) {
+    const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\[S\d+\])/g;
     let cursor = 0;
-    const pattern = /\[S\d+\]/g;
-    for (const match of line.matchAll(pattern)) {
+    for (const match of text.matchAll(tokenPattern)) {
       const index = match.index ?? 0;
-      if (index > cursor) parent.createSpan({ text: line.slice(cursor, index) });
-      const id = match[0].slice(1, -1);
-      const citation = citations.get(id);
-      if (citation) {
-        const button = parent.createEl("button", {
-          cls: "vault-answer-citation",
-          text: match[0],
-          attr: { type: "button", "aria-label": `${citation.file_path}:${citation.start_line}` }
-        });
-        button.addEventListener(
-          "click",
-          () => void this.options.openCitation({
-            path: citation.file_path,
-            line: Math.max(1, citation.start_line)
-          })
-        );
+      if (index > cursor)
+        parent.createSpan({ text: text.slice(cursor, index) });
+      const token = match[0];
+      if (token.startsWith("**")) {
+        parent.createEl("strong", { text: token.slice(2, -2) });
+      } else if (token.startsWith("`")) {
+        parent.createEl("code", { text: token.slice(1, -1) });
       } else {
-        parent.createSpan({ text: match[0] });
+        const id = token.slice(1, -1);
+        const citation = byId.get(id);
+        if (citation) {
+          parent.createEl("button", {
+            cls: "vault-answer-citation",
+            text: this.citationLabel(citation, counts),
+            attr: {
+              type: "button",
+              "aria-label": `${citation.file_path}:${citation.start_line}`
+            }
+          }).addEventListener(
+            "click",
+            () => void this.options.openCitation({
+              path: citation.file_path,
+              line: Math.max(1, citation.start_line)
+            })
+          );
+        } else {
+          parent.createSpan({ text: token });
+        }
       }
-      cursor = index + match[0].length;
+      cursor = index + token.length;
     }
-    if (cursor < line.length) parent.createSpan({ text: line.slice(cursor) });
+    if (cursor < text.length)
+      parent.createSpan({ text: text.slice(cursor) });
+  }
+  citationLabel(citation, counts) {
+    const name = citation.heading_path.length > 0 ? citation.heading_path[0] : this.fileStem(citation.file_path);
+    const count = counts.get(citation.file_path) ?? 1;
+    return count > 1 ? `${name} +${count}` : name;
+  }
+  fileStem(filePath) {
+    const base = filePath.split("/").pop() ?? filePath;
+    return base.replace(/\.md$/i, "");
+  }
+  fileCounts(citations) {
+    const counts = /* @__PURE__ */ new Map();
+    for (const citation of citations) {
+      counts.set(
+        citation.file_path,
+        (counts.get(citation.file_path) ?? 0) + 1
+      );
+    }
+    return counts;
   }
 };
 
@@ -5651,10 +5756,15 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
   }
   renderAnswer(result) {
     this.statusEl?.removeClass("vault-search-error");
+    const deep = result.diagnostics.deep ? ` \xB7 \uC870\uC0AC ${result.diagnostics.turns ?? 0}\uD134` : "";
     this.statusEl?.setText(
-      `${result.provider} \xB7 ${result.model}${result.grounded ? " \xB7 \uADFC\uAC70 \uC788\uC74C" : " \xB7 \uADFC\uAC70 \uBD80\uC871"}`
+      `${result.provider} \xB7 ${result.model}${result.grounded ? " \xB7 \uADFC\uAC70 \uC788\uC74C" : " \xB7 \uADFC\uAC70 \uBD80\uC871"}${deep}`
     );
-    this.answerRenderer.render(result.answer, result.citations);
+    this.answerRenderer.render(
+      result.answer,
+      result.citations,
+      (text) => this.copyAnswer(text)
+    );
     this.sourcesEl.empty();
     const details = this.sourcesEl.createEl("details", {
       cls: "vault-ai-search-evidence"
@@ -5680,6 +5790,30 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     } else if (status.state === "starting" || status.state === "loading_model") {
       this.statusEl.setText("\uAC80\uC0C9 \uBAA8\uB378\uC744 \uB85C\uB4DC\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
     }
+  }
+  copyAnswer(text) {
+    const notify = (ok) => new import_obsidian6.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
+    if (navigator.clipboard && window.isSecureContext) {
+      void navigator.clipboard.writeText(text).then(() => notify(true)).catch(() => this.copyAnswerFallback(text, notify));
+    } else {
+      this.copyAnswerFallback(text, notify);
+    }
+  }
+  copyAnswerFallback(text, notify) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    notify(ok);
   }
 };
 

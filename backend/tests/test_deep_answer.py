@@ -14,20 +14,24 @@ from vault_search.service import SearchService
 
 
 def make_service(tmp_path: Path) -> SearchService:
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service.index = object()  # type: ignore[assignment]
     service.search_engine = SimpleNamespace(
         search_detailed=lambda *_args, **_kwargs: SimpleNamespace(
-            results=[{
-                "rank": 1,
-                "file_path": "Notes/state.md",
-                "score": 0.82,
-                "content": "현재 상태는 진행 중이다.",
-                "heading_path": ["현재 상태"],
-                "start_line": 42,
-            }]
+            results=[
+                {
+                    "rank": 1,
+                    "file_path": "Notes/state.md",
+                    "score": 0.82,
+                    "content": "현재 상태는 진행 중이다.",
+                    "heading_path": ["현재 상태"],
+                    "start_line": 42,
+                }
+            ]
         )
     )  # type: ignore[assignment]
     return service
@@ -71,6 +75,29 @@ def test_parse_tool_calls_handles_escaped_quotes_and_fences():
     assert parse_tool_calls("그냥 답변입니다. [S1]") == []
 
 
+def test_parse_tool_calls_splits_concatenated_calls_on_one_line():
+    # Models sometimes emit calls without newlines; the parser must still
+    # find every call instead of swallowing them into one greedy match.
+    text = (
+        'TOOL: search(query="a")'
+        'TOOL: search(query="b")'
+        'TOOL: read(file="c.md")'
+    )
+    assert parse_tool_calls(text) == [
+        ("search", {"query": "a"}),
+        ("search", {"query": "b"}),
+        ("read", {"file": "c.md"}),
+    ]
+
+
+def test_strip_tool_lines_removes_leftover_calls():
+    from vault_search.deep_answer import strip_tool_lines
+
+    text = '도구 호출: TOOL: search(query="x") 그리고 볼트에서 충분한 근거를 찾지 못했습니다.'
+    assert "TOOL:" not in strip_tool_lines(text)
+    assert "볼트에서" in strip_tool_lines(text)
+
+
 def test_engine_loops_over_tools_then_answers():
     script = [
         'TOOL: search(query="전기차")\nTOOL: read(file="Notes/a.md")',
@@ -84,14 +111,16 @@ def test_engine_loops_over_tools_then_answers():
 
     def search(query):
         searched.append(query)
-        return [{
-            "rank": 1,
-            "file_path": "Notes/state.md",
-            "score": 0.82,
-            "content": "전기차 충전기 설치 진행 중",
-            "heading_path": ["상태"],
-            "start_line": 3,
-        }]
+        return [
+            {
+                "rank": 1,
+                "file_path": "Notes/state.md",
+                "score": 0.82,
+                "content": "전기차 충전기 설치 진행 중",
+                "heading_path": ["상태"],
+                "start_line": 3,
+            }
+        ]
 
     def read_file(path):
         read.append(path)
@@ -99,14 +128,18 @@ def test_engine_loops_over_tools_then_answers():
 
     def grep(pattern, glob_pattern):
         grepped.append((pattern, glob_pattern))
-        return [{
-            "file_path": "Notes/other.md",
-            "start_line": 7,
-            "content": "충전기 점검 필요",
-        }]
+        return [
+            {
+                "file_path": "Notes/other.md",
+                "start_line": 7,
+                "content": "충전기 점검 필요",
+            }
+        ]
 
     engine = DeepAnswerEngine(
-        complete=lambda messages, max_tokens, timeout: fake().complete(messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout),
+        complete=lambda messages, max_tokens, timeout: fake().complete(
+            messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout
+        ),
         search=search,
         read_file=read_file,
         grep=grep,
@@ -126,7 +159,9 @@ def test_engine_loops_over_tools_then_answers():
 def test_engine_unknown_tool_becomes_note():
     fake, _ = scripted_provider(['TOOL: explode(x="1")', "완료"])
     engine = DeepAnswerEngine(
-        complete=lambda messages, max_tokens, timeout: fake().complete(messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout),
+        complete=lambda messages, max_tokens, timeout: fake().complete(
+            messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout
+        ),
         search=lambda query: [],
         read_file=lambda path: "",
         grep=lambda pattern, glob_pattern: [],
@@ -159,10 +194,12 @@ def test_grep_vault_scoped_and_bounded(tmp_path):
 
 def test_deep_answer_routes_and_returns_citations(monkeypatch, tmp_path):
     service = make_service(tmp_path)
-    fake, _ = scripted_provider([
-        'TOOL: search(query="상태")',
-        "진행 중입니다. [S1]",
-    ])
+    fake, _ = scripted_provider(
+        [
+            'TOOL: search(query="상태")',
+            "진행 중입니다. [S1]",
+        ]
+    )
     monkeypatch.setattr("vault_search.service.create_provider", lambda *_args: fake())
     value = service.call("answer", {"query": "상태", "conversation": [], "deep": True})
     assert value["diagnostics"]["deep"] is True
@@ -175,10 +212,12 @@ def test_deep_answer_blocks_traversal_reads(monkeypatch, tmp_path):
     service = make_service(tmp_path)
     outside = tmp_path / "secret.txt"
     outside.write_text("비밀 내용", encoding="utf-8")
-    fake, _ = scripted_provider([
-        'TOOL: read(file="../secret.txt")',
-        "조사 완료.",
-    ])
+    fake, _ = scripted_provider(
+        [
+            'TOOL: read(file="../secret.txt")',
+            "조사 완료.",
+        ]
+    )
     monkeypatch.setattr("vault_search.service.create_provider", lambda *_args: fake())
     value = service.call("answer", {"query": "비밀", "conversation": [], "deep": True})
     assert value["answer"] == "조사 완료."
@@ -189,10 +228,12 @@ def test_deep_answer_uses_grep_tool(monkeypatch, tmp_path):
     service = make_service(tmp_path)
     (tmp_path / "Notes").mkdir(parents=True)
     (tmp_path / "Notes" / "g.md").write_text("충전기 점검 필요\n", encoding="utf-8")
-    fake, _ = scripted_provider([
-        'TOOL: grep(pattern="충전", glob="**/*.md")',
-        "점검이 필요합니다. [S1]",
-    ])
+    fake, _ = scripted_provider(
+        [
+            'TOOL: grep(pattern="충전", glob="**/*.md")',
+            "점검이 필요합니다. [S1]",
+        ]
+    )
     monkeypatch.setattr("vault_search.service.create_provider", lambda *_args: fake())
     value = service.call("answer", {"query": "점검", "conversation": [], "deep": True})
     assert value["answer"] == "점검이 필요합니다. [S1]"

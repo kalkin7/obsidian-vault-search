@@ -5,52 +5,186 @@ export interface AnswerRendererOptions {
   openCitation: (location: SearchResultLocation) => Promise<void>;
 }
 
-/** Safe, DOM-only answer renderer. It never assigns innerHTML or renders raw HTML. */
+/** Google-AI-mode-style renderer: lightweight markdown (headings, lists,
+ *  bold, inline code, quotes) with clickable citation pills (source name,
+ *  "+N" when the same file is cited several times). DOM-only — never assigns
+ *  innerHTML. Answer text stays fully selectable. */
 export class AnswerRenderer {
   constructor(
     private readonly containerEl: HTMLElement,
     private readonly options: AnswerRendererOptions,
   ) {}
 
-  render(answer: string, citations: Citation[]): void {
+  render(
+    answer: string,
+    citations: Citation[],
+    onCopy?: (text: string) => void,
+  ): void {
     this.containerEl.empty();
     const byId = new Map(citations.map((citation) => [citation.id, citation]));
-    for (const line of answer.split(/\r?\n/)) {
-      if (!line.trim()) continue;
-      const paragraph = this.containerEl.createDiv({ cls: "vault-answer-paragraph" });
-      this.renderLine(paragraph, line, byId);
+    const counts = this.fileCounts(citations);
+    const toolbar = this.containerEl.createDiv({
+      cls: "vault-answer-toolbar",
+    });
+    if (onCopy) {
+      const copy = toolbar.createEl("button", {
+        text: "답변 복사",
+        cls: "vault-answer-copy",
+        attr: { type: "button", "aria-label": "답변 전체 텍스트 복사" },
+      });
+      copy.addEventListener("click", () => {
+        onCopy(answer);
+        copy.setText("복사됨 ✓");
+        globalThis.setTimeout(() => copy.setText("답변 복사"), 1500);
+      });
+    }
+    const body = this.containerEl.createDiv({ cls: "vault-answer-body" });
+    this.renderBlocks(body, answer, byId, counts);
+  }
+
+  private renderBlocks(
+    container: HTMLElement,
+    answer: string,
+    byId: Map<string, Citation>,
+    counts: Map<string, number>,
+  ): void {
+    const lines = answer.split(/\r?\n/);
+    let index = 0;
+    while (index < lines.length) {
+      const line = lines[index].trimEnd();
+      if (!line.trim()) {
+        index++;
+        continue;
+      }
+      const heading = /^(#{1,3})\s+(.+)$/.exec(line);
+      if (heading) {
+        const level = heading[1].length;
+        const element = container.createEl(
+          level === 1 ? "h3" : level === 2 ? "h4" : "h5",
+          { cls: "vault-answer-heading" },
+        );
+        this.renderInline(element, heading[2], byId, counts);
+        index++;
+        continue;
+      }
+      const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
+      const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
+      if (bullet || numbered) {
+        const ordered = Boolean(numbered);
+        const list = container.createEl(ordered ? "ol" : "ul", {
+          cls: "vault-answer-list",
+        });
+        while (index < lines.length) {
+          const nextBullet = /^\s*[-*]\s+(.+)$/.exec(lines[index]);
+          const nextNumbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(lines[index]);
+          const itemMatch = ordered ? nextNumbered : nextBullet;
+          if (!itemMatch) break;
+          const item = list.createEl("li", { cls: "vault-answer-list-item" });
+          this.renderInline(item, itemMatch[1], byId, counts);
+          index++;
+        }
+        continue;
+      }
+      const quote = /^\s*>\s?(.+)$/.exec(line);
+      if (quote) {
+        const block = container.createEl("blockquote", {
+          cls: "vault-answer-quote",
+        });
+        this.renderInline(block, quote[1], byId, counts);
+        index++;
+        continue;
+      }
+      if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+        container.createEl("hr", { cls: "vault-answer-rule" });
+        index++;
+        continue;
+      }
+      const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
+      while (
+        index < lines.length &&
+        lines[index].trim() &&
+        !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?/.test(
+          lines[index],
+        )
+      ) {
+        if (paragraph.children.length > 0) paragraph.createEl("br");
+        this.renderInline(paragraph, lines[index].trim(), byId, counts);
+        index++;
+      }
     }
   }
 
-  private renderLine(
+  private renderInline(
     parent: HTMLElement,
-    line: string,
-    citations: Map<string, Citation>,
+    text: string,
+    byId: Map<string, Citation>,
+    counts: Map<string, number>,
   ): void {
+    const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\[S\d+\])/g;
     let cursor = 0;
-    const pattern = /\[S\d+\]/g;
-    for (const match of line.matchAll(pattern)) {
+    for (const match of text.matchAll(tokenPattern)) {
       const index = match.index ?? 0;
-      if (index > cursor) parent.createSpan({ text: line.slice(cursor, index) });
-      const id = match[0].slice(1, -1);
-      const citation = citations.get(id);
-      if (citation) {
-        const button = parent.createEl("button", {
-          cls: "vault-answer-citation",
-          text: match[0],
-          attr: { type: "button", "aria-label": `${citation.file_path}:${citation.start_line}` },
-        });
-        button.addEventListener("click", () =>
-          void this.options.openCitation({
-            path: citation.file_path,
-            line: Math.max(1, citation.start_line),
-          }),
-        );
+      if (index > cursor)
+        parent.createSpan({ text: text.slice(cursor, index) });
+      const token = match[0];
+      if (token.startsWith("**")) {
+        parent.createEl("strong", { text: token.slice(2, -2) });
+      } else if (token.startsWith("`")) {
+        parent.createEl("code", { text: token.slice(1, -1) });
       } else {
-        parent.createSpan({ text: match[0] });
+        const id = token.slice(1, -1);
+        const citation = byId.get(id);
+        if (citation) {
+          parent
+            .createEl("button", {
+              cls: "vault-answer-citation",
+              text: this.citationLabel(citation, counts),
+              attr: {
+                type: "button",
+                "aria-label": `${citation.file_path}:${citation.start_line}`,
+              },
+            })
+            .addEventListener("click", () =>
+              void this.options.openCitation({
+                path: citation.file_path,
+                line: Math.max(1, citation.start_line),
+              }),
+            );
+        } else {
+          parent.createSpan({ text: token });
+        }
       }
-      cursor = index + match[0].length;
+      cursor = index + token.length;
     }
-    if (cursor < line.length) parent.createSpan({ text: line.slice(cursor) });
+    if (cursor < text.length)
+      parent.createSpan({ text: text.slice(cursor) });
+  }
+
+  private citationLabel(
+    citation: Citation,
+    counts: Map<string, number>,
+  ): string {
+    const name =
+      citation.heading_path.length > 0
+        ? citation.heading_path[0]
+        : this.fileStem(citation.file_path);
+    const count = counts.get(citation.file_path) ?? 1;
+    return count > 1 ? `${name} +${count}` : name;
+  }
+
+  private fileStem(filePath: string): string {
+    const base = filePath.split("/").pop() ?? filePath;
+    return base.replace(/\.md$/i, "");
+  }
+
+  private fileCounts(citations: Citation[]): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const citation of citations) {
+      counts.set(
+        citation.file_path,
+        (counts.get(citation.file_path) ?? 0) + 1,
+      );
+    }
+    return counts;
   }
 }

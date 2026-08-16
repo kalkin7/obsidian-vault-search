@@ -459,21 +459,77 @@
  overflow-y: auto;
  padding: var(--size-4-3);
  line-height: var(--line-height-normal);
+ user-select: text;
+ -webkit-user-select: text;
+}
+.vault-ai-search-answer ::selection {
+ background: var(--text-selection);
+}
+.vault-answer-toolbar {
+ display: flex;
+ justify-content: flex-end;
+ margin-bottom: var(--size-4-2);
+}
+.vault-answer-copy {
+ flex: 0 0 auto;
+ padding: 2px 10px;
+ font-size: var(--font-ui-smaller);
+}
+.vault-answer-body {
+ min-width: 0;
+ overflow-wrap: anywhere;
+}
+.vault-answer-heading {
+ margin: var(--size-4-3) 0 var(--size-4-2);
+ font-weight: var(--font-semibold);
+}
+.vault-answer-heading:first-child {
+ margin-top: 0;
 }
 .vault-answer-paragraph {
- margin-bottom: var(--size-4-3);
- white-space: pre-wrap;
+ margin-bottom: var(--size-4-2);
 }
+.vault-answer-list {
+ margin: 0 0 var(--size-4-2);
+ padding-inline-start: var(--size-4-4);
+}
+.vault-answer-list-item {
+ margin-bottom: var(--size-4-1);
+}
+.vault-answer-quote {
+ margin: 0 0 var(--size-4-2);
+ padding: var(--size-4-1) var(--size-4-2);
+ border-inline-start: 3px solid var(--background-modifier-border);
+ color: var(--text-muted);
+}
+.vault-answer-rule {
+ margin: var(--size-4-3) 0;
+ border: 0;
+ border-top: 1px solid var(--background-modifier-border);
+}
+.vault-answer-paragraph code,
+.vault-answer-quote code {
+ padding: 0 4px;
+ border-radius: var(--radius-s);
+ background: var(--background-secondary);
+ font-size: 0.9em;
+}
+/* Google-AI-mode style citation pill: clickable, source name, +N when the
+ * same file is cited several times. */
 .vault-answer-citation {
  display: inline-block;
- margin: 0 2px;
- padding: 0 4px;
- border: 1px solid var(--interactive-accent);
- border-radius: var(--radius-s);
+ margin: 1px 3px 1px 0;
+ padding: 1px 9px;
+ border: 1px solid var(--background-modifier-border);
+ border-radius: 999px;
  background: var(--background-secondary);
  color: var(--text-accent);
  font-size: var(--font-ui-smaller);
- line-height: 1.4;
+ line-height: 1.6;
+ white-space: nowrap;
+}
+.vault-answer-citation:hover {
+ border-color: var(--interactive-accent);
 }
 .vault-ai-search-sources {
  flex: 0 0 auto;

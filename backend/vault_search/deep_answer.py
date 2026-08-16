@@ -26,9 +26,15 @@ MAX_READ_CHARS = 12_000
 MAX_GREP_CHARS = 300
 MAX_ACCUMULATED_CHARS = 60_000
 
-TOOL_LINE = re.compile(r"^\s*TOOL:\s*([a-z_]+)\s*\((.*)\)\s*$", re.IGNORECASE)
+TOOL_LINE = re.compile(r"^\s*TOOL:\s*([a-z_]+)\s*\(.*\)\s*$", re.IGNORECASE)
 ARG_PATTERN = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
 FENCE = re.compile(r"^```(?:[a-zA-Z]*)\s*\n?(.*?)```\s*$", re.DOTALL)
+# Finds ``TOOL: name(args)`` anywhere in the text (not just whole lines), so
+# concatenated calls without newlines are still extracted.
+TOOL_CALL = re.compile(
+    r"TOOL:\s*([a-z_]+)\s*\(((?:[^()]|\([^()]*\))*)\)",
+    re.IGNORECASE,
+)
 
 DEEP_SYSTEM_PROMPT = (
     "You are a research assistant for an Obsidian vault. Answer the user's "
@@ -62,17 +68,14 @@ def _unescape(value: str) -> str:
 
 def parse_tool_calls(text: str) -> list[tuple[str, dict[str, str]]]:
     """Extract ``TOOL: name(args)`` calls from an LLM turn. Accepts the whole
-    turn inside a markdown code fence. Returns [] when the model answered
-    instead of calling tools."""
+    turn inside a markdown code fence and calls concatenated without newlines.
+    Returns [] when the model answered instead of calling tools."""
     content = text.strip()
     fence = FENCE.match(content)
     if fence:
         content = fence.group(1).strip()
     calls: list[tuple[str, dict[str, str]]] = []
-    for line in content.splitlines():
-        match = TOOL_LINE.match(line)
-        if not match:
-            continue
+    for match in TOOL_CALL.finditer(content):
         name = match.group(1).lower()
         args = {
             key: _unescape(value)
@@ -80,6 +83,13 @@ def parse_tool_calls(text: str) -> list[tuple[str, dict[str, str]]]:
         }
         calls.append((name, args))
     return calls
+
+
+def strip_tool_lines(text: str) -> str:
+    """Remove any remaining ``TOOL: ...`` text so it can never leak into the
+    rendered answer (defense in depth for models that mix tool calls with
+    prose)."""
+    return TOOL_CALL.sub("", text).strip()
 
 
 def grep_vault(
@@ -114,9 +124,7 @@ def grep_vault(
         rel = path.relative_to(root).as_posix()
         if any(fnmatch.fnmatch(rel, g) for g in exclude_globs):
             continue
-        if include_globs and not any(
-            fnmatch.fnmatch(rel, g) for g in include_globs
-        ):
+        if include_globs and not any(fnmatch.fnmatch(rel, g) for g in include_globs):
             continue
         if not any(fnmatch.fnmatch(rel, g) for g in tool_globs):
             continue
@@ -152,9 +160,7 @@ class DeepAnswerEngine:
     def __init__(
         self,
         *,
-        complete: Callable[
-            [list[dict[str, str]], int, float], ProviderResponse
-        ],
+        complete: Callable[[list[dict[str, str]], int, float], ProviderResponse],
         search: Callable[[str], list[dict[str, Any]]],
         read_file: Callable[[str], str],
         grep: Callable[[str, str], list[dict[str, Any]]],
@@ -213,14 +219,10 @@ class DeepAnswerEngine:
                 sources = []
                 for index, item in enumerate(self._search(query)):
                     source = self._add_source(
-                        file_path=str(item.get("file_path", "")).replace(
-                            "\\", "/"
-                        ),
+                        file_path=str(item.get("file_path", "")).replace("\\", "/"),
                         start_line=max(1, int(item.get("start_line") or 1)),
                         heading_path=[
-                            str(x)
-                            for x in (item.get("heading_path") or [])
-                            if str(x)
+                            str(x) for x in (item.get("heading_path") or []) if str(x)
                         ],
                         content=str(item.get("content") or ""),
                         rank=max(1, int(item.get("rank") or index + 1)),
@@ -265,9 +267,7 @@ class DeepAnswerEngine:
                 sources = []
                 for match in self._grep(pattern, glob_pattern):
                     source = self._add_source(
-                        file_path=str(match.get("file_path", "")).replace(
-                            "\\", "/"
-                        ),
+                        file_path=str(match.get("file_path", "")).replace("\\", "/"),
                         start_line=max(1, int(match.get("start_line") or 1)),
                         heading_path=[],
                         content=str(match.get("content") or ""),
@@ -286,9 +286,7 @@ class DeepAnswerEngine:
         except Exception as exc:  # tool failure becomes a note, loop continues
             return f"tool error: {type(exc).__name__}: {exc}"
 
-    def run(
-        self, *, query: str, conversation: list[dict[str, str]]
-    ) -> dict[str, Any]:
+    def run(self, *, query: str, conversation: list[dict[str, str]]) -> dict[str, Any]:
         self._messages = [
             *conversation,
             {"role": "user", "content": f"질문:\n{query}"},
@@ -311,9 +309,7 @@ class DeepAnswerEngine:
                 self._tool_calls += 1
                 parts.append(self._execute(name, args))
             self._messages.append({"role": "assistant", "content": text})
-            self._messages.append(
-                {"role": "user", "content": "\n\n".join(parts)}
-            )
+            self._messages.append({"role": "user", "content": "\n\n".join(parts)})
         else:
             # Budget exhausted: one forced answering turn without tools.
             self._messages.append(
@@ -331,9 +327,10 @@ class DeepAnswerEngine:
                 self._timeout_seconds,
             ).text.strip()
         if parse_tool_calls(final_text):
-            final_text = (
-                "볼트에서 충분한 근거를 찾지 못했습니다. (조사 횟수 한계 도달)"
-            )
+            final_text = "볼트에서 충분한 근거를 찾지 못했습니다. (조사 횟수 한계 도달)"
+        else:
+            # Defense in depth: never leak leftover TOOL: text into the answer.
+            final_text = strip_tool_lines(final_text) or final_text
         return {
             "text": final_text,
             "sources": self.sources,

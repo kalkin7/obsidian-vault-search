@@ -388,10 +388,15 @@ export class VaultSearchItemView extends ItemView {
 
   private renderAnswer(result: AnswerResult): void {
     this.statusEl?.removeClass("vault-search-error");
+    const deep = result.diagnostics.deep ? ` · 조사 ${result.diagnostics.turns ?? 0}턴` : "";
     this.statusEl?.setText(
-      `${result.provider} · ${result.model}${result.grounded ? " · 근거 있음" : " · 근거 부족"}`,
+      `${result.provider} · ${result.model}${result.grounded ? " · 근거 있음" : " · 근거 부족"}${deep}`,
     );
-    this.answerRenderer.render(result.answer, result.citations);
+    this.answerRenderer.render(
+      result.answer,
+      result.citations,
+      (text) => this.copyAnswer(text),
+    );
     this.sourcesEl.empty();
     const details = this.sourcesEl.createEl("details", {
       cls: "vault-ai-search-evidence",
@@ -420,5 +425,38 @@ export class VaultSearchItemView extends ItemView {
     ) {
       this.statusEl.setText("검색 모델을 로드하고 있습니다…");
     }
+  }
+
+  private copyAnswer(text: string): void {
+    const notify = (ok: boolean) =>
+      new Notice(ok ? "답변을 복사했습니다." : "답변 복사에 실패했습니다.");
+    if (navigator.clipboard && window.isSecureContext) {
+      void navigator.clipboard
+        .writeText(text)
+        .then(() => notify(true))
+        .catch(() => this.copyAnswerFallback(text, notify));
+    } else {
+      this.copyAnswerFallback(text, notify);
+    }
+  }
+
+  private copyAnswerFallback(
+    text: string,
+    notify: (ok: boolean) => void,
+  ): void {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.append(area);
+    area.select();
+    let ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch {
+      ok = false;
+    }
+    area.remove();
+    notify(ok);
   }
 }
