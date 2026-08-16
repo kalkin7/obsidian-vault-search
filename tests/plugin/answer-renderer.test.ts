@@ -133,7 +133,7 @@ describe("AnswerRenderer", () => {
     expect(headings[0].children[0].textContent).toBe("지상 설치와 용도변경");
   });
 
-  it("turns [S#] citations into inline superscript links and a 근거 list", () => {
+  it("turns [S#] citations into clickable circled-number links and a mapped 근거 list", () => {
     const first: Citation = {
       id: "S1",
       file_path: "5_Wiki/law/지상_화단_전기차충전소_용도변경_요건.md",
@@ -154,15 +154,35 @@ describe("AnswerRenderer", () => {
       first,
       second,
     ]);
-    // Direct one-hop links: superscript wikilink to the source file.
-    expect(note.match(/<sup>\[\[5_Wiki\/law\/지상_화단_전기차충전소_용도변경_요건\|지상 화단 전기차충전소 용도변경 요건\]\]<\/sup>/g)).toHaveLength(2);
+    // Direct one-hop links: inline wikilinks labeled ① (same file deduped).
+    expect(note.match(/\|①\]\]/g) ?? []).toHaveLength(2);
+    expect(note).not.toContain("②");
     expect(note).toContain("[S99]"); // unknown marker kept as-is
     expect(note).toContain("## 근거");
-    expect(note).toContain(
-      "- [[5_Wiki/law/지상_화단_전기차충전소_용도변경_요건]]",
-    );
-    // Same file cited twice: only one 근거 entry.
-    expect(note.match(/- \[\[5_Wiki\/law\/지상_화단_전기차충전소_용도변경_요건\]\]/g)).toHaveLength(1);
+    expect(note).toContain("- ① [[5_Wiki/law/지상_화단_전기차충전소_용도변경_요건]]");
+  });
+
+  it("assigns distinct circled numbers to distinct source files", () => {
+    const first: Citation = {
+      id: "S1",
+      file_path: "5_Wiki/law/a.md",
+      start_line: 1,
+      heading_path: [],
+      rank: 1,
+      score: 0.8,
+    };
+    const second: Citation = {
+      id: "S2",
+      file_path: "5_Wiki/issues/b.md",
+      start_line: 1,
+      heading_path: [],
+      rank: 2,
+      score: 0.7,
+    };
+    const note = toNoteMarkdown("A [S1] B [S2]", [first, second]);
+    expect(note).toContain("[[5_Wiki/law/a|①]]");
+    expect(note).toContain("[[5_Wiki/issues/b|②]]");
+    expect(note).toContain("- ② [[5_Wiki/issues/b]]");
   });
 
   it("copy button calls back with the raw answer", () => {

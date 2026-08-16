@@ -5541,26 +5541,57 @@ var AnswerRenderer = class {
     return counts;
   }
 };
+var CIRCLED_NUMBERS = [
+  "\u2460",
+  "\u2461",
+  "\u2462",
+  "\u2463",
+  "\u2464",
+  "\u2465",
+  "\u2466",
+  "\u2467",
+  "\u2468",
+  "\u2469",
+  "\u246A",
+  "\u246B",
+  "\u246C",
+  "\u246D",
+  "\u246E",
+  "\u246F",
+  "\u2470",
+  "\u2471",
+  "\u2472",
+  "\u2473"
+];
 function toNoteMarkdown(answer, citations) {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
-  const seen = /* @__PURE__ */ new Set();
-  const sources = [];
+  const fileToNumber = /* @__PURE__ */ new Map();
+  const files = [];
+  const numberFor = (citation) => {
+    let number = fileToNumber.get(citation.file_path);
+    if (number === void 0) {
+      number = files.length + 1;
+      fileToNumber.set(citation.file_path, number);
+      files.push(citation.file_path);
+    }
+    return number;
+  };
+  const marker = (number) => CIRCLED_NUMBERS[number - 1] ?? String(number);
   const inline = answer.replace(/\[S(\d+)\]/g, (match, id) => {
     const citation = byId.get(`S${id}`);
     if (!citation) return match;
+    const number = numberFor(citation);
     const path5 = citation.file_path.replace(/\.md$/i, "");
-    const label = (path5.split("/").pop() ?? path5).replace(/_/g, " ").replace(/\|/g, "\xB7");
-    if (!seen.has(path5)) {
-      seen.add(path5);
-      sources.push(`- [[${path5}]]`);
-    }
-    return `<sup>[[${path5}|${label}]]</sup>`;
+    return `[[${path5}|${marker(number)}]]`;
   });
-  if (sources.length === 0) return inline;
+  if (files.length === 0) return inline;
+  const list = files.map(
+    (file, index) => `- ${marker(index + 1)} [[${file.replace(/\.md$/i, "")}]]`
+  );
   return `${inline}
 
 ## \uADFC\uAC70
-${sources.join("\n")}`;
+${list.join("\n")}`;
 }
 
 // src/answer-session.ts

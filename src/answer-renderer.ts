@@ -245,27 +245,62 @@ export class AnswerRenderer {
   }
 }
 
+/** Circled endnote markers for the note copy: ①…⑳, then plain digits. */
+const CIRCLED_NUMBERS = [
+  "①",
+  "②",
+  "③",
+  "④",
+  "⑤",
+  "⑥",
+  "⑦",
+  "⑧",
+  "⑨",
+  "⑩",
+  "⑪",
+  "⑫",
+  "⑬",
+  "⑭",
+  "⑮",
+  "⑯",
+  "⑰",
+  "⑱",
+  "⑲",
+  "⑳",
+];
+
 /** Turn a raw answer (with ``[S#]`` markers) into note-ready markdown: each
- *  known citation becomes an inline superscript wikilink
- *  (``<sup>[[file|name]]</sup>``) — visually an annotation, but clicking it
- *  opens the source file directly (no footnote hop). A deduplicated
- *  ``## 근거`` list of the cited files is appended for overview. Unknown
+ *  known citation becomes an inline wikilink whose label is a circled
+ *  endnote number (``[[file|①]]``) — clearly an annotation, and clicking it
+ *  opens the source file directly (one hop; pure wikilink, no HTML). A
+ *  deduplicated ``## 근거`` list maps each number to its file. Unknown
  *  ``[S#]`` markers are kept as-is. */
 export function toNoteMarkdown(answer: string, citations: Citation[]): string {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
-  const seen = new Set<string>();
-  const sources: string[] = [];
+  const fileToNumber = new Map<string, number>();
+  const files: string[] = [];
+  const numberFor = (citation: Citation): number => {
+    let number = fileToNumber.get(citation.file_path);
+    if (number === undefined) {
+      number = files.length + 1;
+      fileToNumber.set(citation.file_path, number);
+      files.push(citation.file_path);
+    }
+    return number;
+  };
+  const marker = (number: number): string =>
+    CIRCLED_NUMBERS[number - 1] ?? String(number);
   const inline = answer.replace(/\[S(\d+)\]/g, (match, id: string) => {
     const citation = byId.get(`S${id}`);
     if (!citation) return match;
+    const number = numberFor(citation);
     const path = citation.file_path.replace(/\.md$/i, "");
-    const label = (path.split("/").pop() ?? path).replace(/_/g, " ").replace(/\|/g, "·");
-    if (!seen.has(path)) {
-      seen.add(path);
-      sources.push(`- [[${path}]]`);
-    }
-    return `<sup>[[${path}|${label}]]</sup>`;
+    return `[[${path}|${marker(number)}]]`;
   });
-  if (sources.length === 0) return inline;
-  return `${inline}\n\n## 근거\n${sources.join("\n")}`;
+  if (files.length === 0) return inline;
+  const list = files.map(
+    (file, index) =>
+      `- ${marker(index + 1)} [[${file.replace(/\.md$/i, "")}]]`,
+  );
+  return `${inline}\n\n## 근거\n${list.join("\n")}`;
 }
