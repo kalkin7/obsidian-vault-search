@@ -204,10 +204,7 @@ describe("vault I/O", () => {
 
   it("does not load unmarked files as history", async () => {
     const { vault } = fakeVault();
-    await vault.create(
-      "h/foreign.md",
-      "---\ntitle: x\n---\n\n# 다른 내용",
-    );
+    await vault.create("h/foreign.md", "---\ntitle: x\n---\n\n# 다른 내용");
     expect(await loadHistory(vault, "h/foreign.md")).toBeNull();
   });
 

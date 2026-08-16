@@ -77,9 +77,7 @@ describe("AnswerSession", () => {
     await Promise.resolve();
     await Promise.resolve();
     // The stale answer must not append into the restored conversation.
-    expect(session.conversation).toEqual([
-      { role: "user", content: "loaded" },
-    ]);
+    expect(session.conversation).toEqual([{ role: "user", content: "loaded" }]);
     expect(states.at(-1)).toEqual({ kind: "idle" });
   });
 });
