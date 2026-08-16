@@ -113,12 +113,27 @@ unconditionally overwritten from the stored secrets).
   a `## 근거` list); YAML frontmatter keeps the raw messages and citations so
   the panel can reload the conversation losslessly (citation pills included)
   and continue it. The clock icon in the panel header opens the history list
-  (load / delete / 지금 저장). Retention is configurable (0 = keep all). Markdown headings of any level (`#`…`######`) are
-  rendered as h3–h6. **답변 복사** produces note-ready markdown: `[S#]`
-  citations become inline wikilinks labeled with circled endnote numbers
-  (`[[file|①]]`) that open the source file directly, plus a deduplicated
-  `## 근거` list mapping each number to its file — pasting an answer into a
-  note keeps every reference live and clearly annotated.
+  (load / delete / 지금 저장). Retention is configurable (0 = keep all).
+  History notes carry a frontmatter schema marker
+  (`ai_vault_search_history: 1`); only marked notes are listed/loaded/pruned,
+  so notes in the folder without the marker are never touched, and a
+  misconfigured folder (root, `..`) falls back to the default. Deletion moves
+  notes to the vault trash (recoverable), not a permanent delete. History
+  notes are ordinary vault files and are indexed like any other note — to
+  keep AI-generated answers out of search evidence, add the history folder to
+  the exclude list.
+- **Panel rendering & note copy** — markdown headings of any level
+  (`#`…`######`) render as h3–h6; numbered lists with nested bullets render
+  with continuous numbering (one `<ol>`, 1, 2, 3…), matching the note.
+  **답변 복사** produces note-ready markdown: `[S#]` citations become inline
+  wikilinks labeled with circled endnote numbers (`[[file|①]]`) that open the
+  source file directly, plus a deduplicated `## 근거` list mapping each number
+  to its file — pasting an answer into a note keeps every reference live and
+  clearly annotated.
+- **Diagnostic command** — "AI Vault Search: 목록 렌더링 샘플 미리보기"
+  (command palette) renders a fixed sample answer (numbered list with nested
+  bullets + citations) in the panel, so list rendering can be checked
+  deterministically without the model.
 - **Restart persistence** — every settings save rewrites `service-config.json`
   alongside the hot in-memory apply, so a sidecar restart keeps the currently
   selected provider/model/reasoning effort instead of reloading a stale

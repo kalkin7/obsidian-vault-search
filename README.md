@@ -97,7 +97,10 @@ only ones offered in the model picker, and changes apply immediately. API keys
 are validated against the real endpoint when saved or tested. Conversations
 are autosaved to the vault as notes (default `AI Vault Search/history` —
 clock icon in the panel header to browse/load/delete, folder and retention
-configurable in settings). See
+configurable in settings); **답변 복사** pastes the answer as note-ready
+markdown with clickable ① source links and a `## 근거` list. The command
+palette offers "AI Vault Search: 목록 렌더링 샘플 미리보기" for checking
+list rendering without the model. See
 [Settings](docs/settings.md#ai-vault-답변) for the full behavior.
 
 ## Lifecycle guarantees
