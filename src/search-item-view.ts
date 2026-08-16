@@ -271,8 +271,7 @@ export class VaultSearchItemView extends ItemView {
         );
         let text = option.model;
         if (crossProvider) text = `${option.model} (${option.provider})`;
-        else if (isCurrent && !isFavorite)
-          text = `${option.model} (현재 설정)`;
+        else if (isCurrent && !isFavorite) text = `${option.model} (현재 설정)`;
         this.modelSelect.createEl("option", {
           text,
           value: `${option.provider}::${option.model}`,
@@ -316,13 +315,21 @@ export class VaultSearchItemView extends ItemView {
       top_k: 12,
       max_context_chars: this.owner.settings.answerMaxContextChars,
       conversation,
+      // Agentic mode: the model iteratively searches / reads / greps the
+      // vault (same quality as a CLI agent) before answering.
+      deep: true,
     };
+    // The agent loop takes multiple LLM round-trips; give it a generous
+    // transport budget (per-call timeout x turns) instead of the single-shot
+    // timeout.
+    const timeoutMs =
+      this.owner.settings.answerTimeoutSeconds * 1000 * 12 +
+      ANSWER_TRANSPORT_MARGIN_MS;
     try {
       return await this.owner.backend.call<AnswerResult>(
         "answer",
         params,
-        this.owner.settings.answerTimeoutSeconds * 1000 +
-          ANSWER_TRANSPORT_MARGIN_MS,
+        timeoutMs,
       );
     } catch (error) {
       if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
@@ -330,8 +337,7 @@ export class VaultSearchItemView extends ItemView {
         return await this.owner.backend.call<AnswerResult>(
           "answer",
           params,
-          this.owner.settings.answerTimeoutSeconds * 1000 +
-            ANSWER_TRANSPORT_MARGIN_MS,
+          timeoutMs,
         );
       }
       throw error;

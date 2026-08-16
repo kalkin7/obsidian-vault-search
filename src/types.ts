@@ -165,6 +165,9 @@ export interface AnswerRequest {
   top_k?: number;
   max_context_chars?: number;
   conversation?: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Agentic mode: the model iteratively searches / reads / greps the vault
+   *  (CLI-agent quality) before answering. */
+  deep?: boolean;
 }
 
 export interface AnswerResult {
@@ -179,6 +182,10 @@ export interface AnswerResult {
     context_chars: number;
     answer_chars: number;
     citation_warning?: string;
+    /** Agentic (deep) mode diagnostics. */
+    deep?: boolean;
+    turns?: number;
+    tool_calls?: number;
   };
 }
 

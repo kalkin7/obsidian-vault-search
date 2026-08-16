@@ -39,6 +39,9 @@ def validate_answer_params(params: dict[str, Any]) -> dict[str, Any]:
     conversation = params.get("conversation", [])
     if not isinstance(conversation, list) or len(conversation) > 8:
         raise ProtocolError("conversation must contain at most 8 messages")
+    deep = params.get("deep", False)
+    if not isinstance(deep, bool):
+        raise ProtocolError("deep must be a boolean")
     normalized_conversation: list[dict[str, str]] = []
     for index, item in enumerate(conversation):
         if not isinstance(item, dict) or item.get("role") not in {"user", "assistant"}:
@@ -56,6 +59,7 @@ def validate_answer_params(params: dict[str, Any]) -> dict[str, Any]:
         "top_k": top_k,
         "max_context_chars": max_context_chars,
         "conversation": normalized_conversation,
+        "deep": deep,
     }
 
 
@@ -90,7 +94,10 @@ def request(host: str, port: int, token: str, method: str,
         raise ProtocolError("Backend returned no response")
     if len(line) > MAX_MESSAGE_BYTES:
         raise ProtocolError("Backend response is too large")
-    response = json.loads(line.decode("utf-8"))
+    try:
+        response = json.loads(line.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise ProtocolError("Backend returned an invalid response") from exc
     if response.get("request_id") != payload["request_id"]:
         raise ProtocolError("Mismatched request ID")
     return response

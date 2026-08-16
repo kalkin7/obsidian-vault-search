@@ -9,16 +9,21 @@ from typing import Any
 
 from .config import SearchConfig
 from .database import index_counts
+from .deep_answer import (  # pyright: ignore[reportMissingImports] — resolves fine (verified via basedpyright CLI); stale LSP module map
+    DEEP_SYSTEM_PROMPT,
+    DeepAnswerEngine,
+    grep_vault,
+)
 from .errors import (
     ServiceError,  # pyright: ignore[reportMissingImports] — resolves fine (verified via basedpyright CLI); stale LSP module map
 )
+from .grounding import build_grounding_context, build_prompt, normalize_citations
 from .index_metadata import classify_index_problems, validate_index_files
 from .indexing import IndexManager
-from .model_manager import ModelManager
-from .search import IndexCompatibilityError, SearchEngine
-from .grounding import build_grounding_context, build_prompt, normalize_citations
 from .llm import ProviderError, create_provider
-from .protocol import validate_answer_params, ProtocolError
+from .model_manager import ModelManager
+from .protocol import ProtocolError, validate_answer_params
+from .search import IndexCompatibilityError, SearchEngine
 
 
 class SearchService:
@@ -410,6 +415,8 @@ class SearchService:
         raise ServiceError("UNKNOWN_METHOD", f"Unknown method: {method}")
 
     def _answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        if params.get("deep"):
+            return self._deep_answer(params)
         if self.index_rebuild_reason:
             raise ServiceError(
                 "INDEX_REBUILD_REQUIRED",
@@ -468,6 +475,108 @@ class SearchService:
             },
         }
 
+    def _deep_answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Agentic answer: the model iteratively searches / reads / greps the
+        vault (CLI-agent quality) until it has enough evidence, then answers
+        with [S#] citations. Works with any plain chat model — tool calls
+        travel as ``TOOL: name(args)`` lines in the model text."""
+        if self.index_rebuild_reason:
+            raise ServiceError(
+                "INDEX_REBUILD_REQUIRED",
+                self.index_rebuild_reason,
+                {"problems": self.index_problems, "recommended_action": self.recommended_action},
+            )
+        if self.search_engine is None:
+            raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
+        search_engine = self.search_engine
+
+        provider_id = self.config.llm_provider
+        try:
+            provider = create_provider(provider_id, self.config.llm_model)
+        except ProviderError as exc:
+            raise ServiceError(exc.code, exc.message) from exc
+
+        def complete(
+            messages: list[dict[str, str]],
+            max_output_tokens: int,
+            timeout_seconds: float,
+        ):
+            return provider.complete(
+                system=DEEP_SYSTEM_PROMPT,
+                messages=messages,
+                max_output_tokens=max_output_tokens,
+                timeout_seconds=timeout_seconds,
+            )
+
+        def do_search(query: str) -> list[dict[str, Any]]:
+            outcome = search_engine.search_detailed(
+                query,
+                top_k=max(1, self.config.final_top_k or 40),
+                verbose=True,
+            )
+            return list(outcome.results)
+
+        def do_read(rel_path: str) -> str:
+            root = self.config.vault_path.resolve()
+            path = (root / rel_path.replace("\\", "/")).resolve()
+            if not path.is_relative_to(root):
+                raise ValueError(f"file path escapes the vault: {rel_path}")
+            if not path.is_file():
+                raise ValueError(f"file not found: {rel_path}")
+            return path.read_text(encoding="utf-8", errors="replace")[:40000]
+
+        def do_grep(pattern: str, glob_pattern: str) -> list[dict[str, Any]]:
+            return grep_vault(
+                self.config.vault_path,
+                pattern,
+                glob_pattern,
+                include_globs=self.config.include_globs,
+                exclude_globs=self.config.exclude_globs,
+            )
+
+        engine = DeepAnswerEngine(
+            complete=complete,
+            search=do_search,
+            read_file=do_read,
+            grep=do_grep,
+            max_output_tokens=self.config.llm_max_output_tokens,
+            timeout_seconds=self.config.llm_timeout_seconds,
+        )
+        try:
+            outcome = engine.run(
+                query=params["query"],
+                conversation=list(params["conversation"]),
+            )
+        except ProviderError as exc:
+            raise ServiceError(
+                exc.code,
+                exc.message,
+                {"evidence": [source.evidence() for source in engine.sources]},
+            ) from exc
+        sources = outcome["sources"]
+        answer, citations, warning = normalize_citations(outcome["text"], sources)
+        if not answer:
+            raise ServiceError("LLM_BAD_RESPONSE", "Provider returned an empty answer")
+        if len(answer) > 32000:
+            raise ServiceError("ANSWER_TOO_LARGE", "Provider answer is too large")
+        return {
+            "answer": answer,
+            "citations": citations,
+            "evidence": [source.evidence() for source in sources],
+            "provider": provider.provider_id,
+            "model": provider.model,
+            "grounded": bool(citations),
+            "diagnostics": {
+                "deep": True,
+                "turns": outcome["turns"],
+                "tool_calls": outcome["tool_calls"],
+                "retrieved_count": len(sources),
+                "context_chars": sum(len(source.content) for source in sources),
+                "answer_chars": len(answer),
+                **({"citation_warning": warning} if warning else {}),
+            },
+        }
+
     def _apply_search_config(self, params: dict[str, Any]) -> dict[str, Any]:
         integer_fields = {
             "bm25_top_k": "bm25TopK",
@@ -508,12 +617,12 @@ class SearchService:
             ("answerMaxOutputTokens", "llm_max_output_tokens", 128, 8000),
         ):
             if key in params:
-                try:
+                try:  # noqa: SIM105 — ast-grep guard recognition prefers try/except
                     setattr(self.config, attribute, max(minimum, min(maximum, int(params[key]))))
                 except (TypeError, ValueError):
                     pass
         if "answerTimeoutSeconds" in params:
-            try:
+            try:  # noqa: SIM105 — ast-grep guard recognition prefers try/except
                 self.config.llm_timeout_seconds = max(5.0, min(60.0, float(params["answerTimeoutSeconds"])))
             except (TypeError, ValueError):
                 pass

@@ -5548,8 +5548,7 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
         );
         let text = option.model;
         if (crossProvider) text = `${option.model} (${option.provider})`;
-        else if (isCurrent && !isFavorite)
-          text = `${option.model} (\uD604\uC7AC \uC124\uC815)`;
+        else if (isCurrent && !isFavorite) text = `${option.model} (\uD604\uC7AC \uC124\uC815)`;
         this.modelSelect.createEl("option", {
           text,
           value: `${option.provider}::${option.model}`
@@ -5584,13 +5583,17 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
       query,
       top_k: 12,
       max_context_chars: this.owner.settings.answerMaxContextChars,
-      conversation
+      conversation,
+      // Agentic mode: the model iteratively searches / reads / greps the
+      // vault (same quality as a CLI agent) before answering.
+      deep: true
     };
+    const timeoutMs = this.owner.settings.answerTimeoutSeconds * 1e3 * 12 + ANSWER_TRANSPORT_MARGIN_MS;
     try {
       return await this.owner.backend.call(
         "answer",
         params,
-        this.owner.settings.answerTimeoutSeconds * 1e3 + ANSWER_TRANSPORT_MARGIN_MS
+        timeoutMs
       );
     } catch (error) {
       if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
@@ -5598,7 +5601,7 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
         return await this.owner.backend.call(
           "answer",
           params,
-          this.owner.settings.answerTimeoutSeconds * 1e3 + ANSWER_TRANSPORT_MARGIN_MS
+          timeoutMs
         );
       }
       throw error;
