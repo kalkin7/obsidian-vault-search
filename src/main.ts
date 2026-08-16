@@ -215,6 +215,17 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings.favoriteAnswerModels = Array.isArray(rawFavorites)
       ? normalizeFavoriteModels(rawFavorites, this.settings.answerProvider)
       : [];
+    // Restore the fetched model lists so the settings model list and its
+    // stars survive restarts without re-running "모델 최신화".
+    const fetched = this.settings.fetchedProviderModels || {};
+    for (const provider of Object.keys(fetched) as LLMProviderId[]) {
+      const models = fetched[provider];
+      if (Array.isArray(models)) {
+        this.providerModels[provider] = models.filter(
+          (model): model is string => typeof model === "string",
+        );
+      }
+    }
     if (
       !(
         this.settings.answerProvider in
@@ -327,9 +338,21 @@ export default class VaultSearchPlugin extends Plugin {
     return normalizeProviderModels(provider, data);
   }
 
-  /** Cache of fetched model lists per provider (shared by settings + view). */
+  getProviderModels(provider: LLMProviderId): string[] {
+    return this.providerModels[provider] || [];
+  }
+
+  /** Cache of fetched model lists per provider (shared by settings + view).
+   *  Persists to data.json so restarts keep the list and its stars. */
   setProviderModels(provider: LLMProviderId, models: string[]): void {
     this.providerModels[provider] = models;
+    const fetched = {
+      ...this.settings.fetchedProviderModels,
+      [provider]: models,
+    };
+    this.settings.fetchedProviderModels = fetched;
+    this.draftSettings.fetchedProviderModels = fetched;
+    void this.saveSettings().catch(() => undefined);
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 

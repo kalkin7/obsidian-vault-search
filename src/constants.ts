@@ -84,6 +84,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   historyFolder: "AI Vault Search/history",
   historyAutosave: true,
   historyMaxEntries: 0,
+  fetchedProviderModels: {},
 };
 
 export const LLM_PROVIDER_DEFAULTS = {

@@ -97,7 +97,9 @@ unconditionally overwritten from the stored secrets).
 - **Favorite models** — in the settings model list, ★ marks favorites; only
   starred models (from providers with a stored key) appear in the composer's
   model selector, and selecting one switches the provider too. Model and
-  favorite changes persist immediately (hot) — no "설정 적용" needed.
+  favorite changes persist immediately (hot) — no "설정 적용" needed. The
+  fetched model lists are also persisted, so the list and its stars survive
+  restarts (refresh with **모델 최신화**).
 - **Conversation UI** — the panel keeps a chat history (question bubbles +
   per-answer blocks with markdown, tables, citation pills, and a hover copy
   button) for the session only; the input is cleared when the panel reopens.

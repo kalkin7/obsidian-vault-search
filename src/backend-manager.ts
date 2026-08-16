@@ -779,10 +779,13 @@ export class BackendManager {
 
   private async writeServiceConfig(lazyOverride?: boolean): Promise<void> {
     const settings = this.getSettings();
+    // The fetched-model cache is plugin-side bookkeeping; keep it out of the
+    // sidecar config file.
+    const { fetchedProviderModels: _fetched, ...configSettings } = settings;
     const payload = {
       vaultPath: this.vaultPath,
       dataDir: this.dataDir,
-      ...settings,
+      ...configSettings,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search",
     };
     // Unique temp name: concurrent writers can't clobber each other's file.

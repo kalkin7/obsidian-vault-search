@@ -3078,7 +3078,8 @@ var DEFAULT_SETTINGS = {
   answerTimeoutSeconds: 60,
   historyFolder: "AI Vault Search/history",
   historyAutosave: true,
-  historyMaxEntries: 0
+  historyMaxEntries: 0,
+  fetchedProviderModels: {}
 };
 var LLM_PROVIDER_DEFAULTS = {
   openai: {
@@ -3905,10 +3906,11 @@ var BackendManager = class {
   }
   async writeServiceConfig(lazyOverride) {
     const settings = this.getSettings();
+    const { fetchedProviderModels: _fetched, ...configSettings } = settings;
     const payload = {
       vaultPath: this.vaultPath,
       dataDir: this.dataDir,
-      ...settings,
+      ...configSettings,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search"
     };
     const temp = `${this.configPath}.${Date.now()}.tmp`;
@@ -4312,7 +4314,6 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
     this.owner = owner;
   }
   activeTab = "general";
-  providerModels = {};
   providerModelSelections = {};
   display() {
     const { containerEl } = this;
@@ -4414,7 +4415,7 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
         this.providerModelSelections[previousProvider] = draft.answerModel;
         draft.answerProvider = value;
         draft.answerModel = chooseProviderModel(
-          this.providerModels[draft.answerProvider] || [],
+          this.owner.getProviderModels(draft.answerProvider),
           this.providerModelSelections[draft.answerProvider],
           ""
         );
@@ -4488,7 +4489,7 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       })
     );
-    const fetchedModels = this.providerModels[draft.answerProvider] || [];
+    const fetchedModels = this.owner.getProviderModels(draft.answerProvider);
     let modelOptions = fetchedModels;
     if (draft.answerModel && !modelOptions.includes(draft.answerModel)) {
       modelOptions = [draft.answerModel, ...modelOptions];
@@ -4565,7 +4566,6 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
           const models = await this.owner.fetchProviderModels(
             draft.answerProvider
           );
-          this.providerModels[draft.answerProvider] = models;
           this.owner.setProviderModels(draft.answerProvider, models);
           this.providerModelSelections[draft.answerProvider] = draft.answerModel;
           new import_obsidian3.Notice(
@@ -6723,6 +6723,15 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     ];
     const rawFavorites = loaded?.favoriteAnswerModels;
     this.settings.favoriteAnswerModels = Array.isArray(rawFavorites) ? normalizeFavoriteModels(rawFavorites, this.settings.answerProvider) : [];
+    const fetched = this.settings.fetchedProviderModels || {};
+    for (const provider of Object.keys(fetched)) {
+      const models = fetched[provider];
+      if (Array.isArray(models)) {
+        this.providerModels[provider] = models.filter(
+          (model) => typeof model === "string"
+        );
+      }
+    }
     if (!(this.settings.answerProvider in { openai: true, "opencode-go": true, deepseek: true }))
       this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
     this.settings.answerModel = String(
@@ -6808,9 +6817,20 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       throw new Error("provider\uAC00 \uBAA8\uB378 \uBAA9\uB85D\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
     return normalizeProviderModels(provider, data);
   }
-  /** Cache of fetched model lists per provider (shared by settings + view). */
+  getProviderModels(provider) {
+    return this.providerModels[provider] || [];
+  }
+  /** Cache of fetched model lists per provider (shared by settings + view).
+   *  Persists to data.json so restarts keep the list and its stars. */
   setProviderModels(provider, models) {
     this.providerModels[provider] = models;
+    const fetched = {
+      ...this.settings.fetchedProviderModels,
+      [provider]: models
+    };
+    this.settings.fetchedProviderModels = fetched;
+    this.draftSettings.fetchedProviderModels = fetched;
+    void this.saveSettings().catch(() => void 0);
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
   /** Models the AI search footer offers: the chosen model (if any) plus

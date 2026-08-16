@@ -12,7 +12,6 @@ type SettingsTabId = "general" | "answer" | "search";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = "general";
-  private providerModels: Partial<Record<LLMProviderId, string[]>> = {};
   private providerModelSelections: Partial<Record<LLMProviderId, string>> = {};
 
   constructor(private readonly owner: VaultSearchPlugin) {
@@ -174,7 +173,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           // No presumptuous default: only a previously remembered selection
           // (or nothing) carries over when switching providers.
           draft.answerModel = chooseProviderModel(
-            this.providerModels[draft.answerProvider] || [],
+            this.owner.getProviderModels(draft.answerProvider),
             this.providerModelSelections[draft.answerProvider],
             "",
           );
@@ -262,7 +261,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
         }),
       );
-    const fetchedModels = this.providerModels[draft.answerProvider] || [];
+    const fetchedModels = this.owner.getProviderModels(draft.answerProvider);
     let modelOptions = fetchedModels;
     if (draft.answerModel && !modelOptions.includes(draft.answerModel)) {
       // Keep the stored current model visible even when it is not in the
@@ -356,7 +355,6 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           const models = await this.owner.fetchProviderModels(
             draft.answerProvider,
           );
-          this.providerModels[draft.answerProvider] = models;
           this.owner.setProviderModels(draft.answerProvider, models);
           this.providerModelSelections[draft.answerProvider] =
             draft.answerModel;

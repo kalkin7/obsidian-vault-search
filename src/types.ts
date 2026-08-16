@@ -78,6 +78,9 @@ export interface VaultSearchSettings {
   historyAutosave: boolean;
   /** Max history notes to keep; 0 = keep all. */
   historyMaxEntries: number;
+  /** Last fetched model lists per provider, persisted so the settings model
+   *  list and its stars survive restarts (refresh with "모델 최신화"). */
+  fetchedProviderModels?: Partial<Record<LLMProviderId, string[]>>;
   settingsVersion?: number;
 }
 
