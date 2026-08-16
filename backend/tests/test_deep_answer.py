@@ -78,11 +78,7 @@ def test_parse_tool_calls_handles_escaped_quotes_and_fences():
 def test_parse_tool_calls_splits_concatenated_calls_on_one_line():
     # Models sometimes emit calls without newlines; the parser must still
     # find every call instead of swallowing them into one greedy match.
-    text = (
-        'TOOL: search(query="a")'
-        'TOOL: search(query="b")'
-        'TOOL: read(file="c.md")'
-    )
+    text = 'TOOL: search(query="a")TOOL: search(query="b")TOOL: read(file="c.md")'
     assert parse_tool_calls(text) == [
         ("search", {"query": "a"}),
         ("search", {"query": "b"}),
@@ -147,13 +143,79 @@ def test_engine_loops_over_tools_then_answers():
         timeout_seconds=30.0,
     )
     outcome = engine.run(query="전기차 상태", conversation=[])
-    assert searched == ["전기차"]
+    # The engine seeds one automatic search with the raw question, then runs
+    # the model's own tool calls.
+    assert searched == ["전기차 상태", "전기차"]
     assert read == ["Notes/a.md"]
     assert grepped == [("충전", "**/*.md")]
     assert outcome["text"] == "결론입니다. [S1] [S2]"
-    assert [s.id for s in outcome["sources"]] == ["S1", "S2", "S3"]
+    assert [s.id for s in outcome["sources"]] == ["S1", "S2", "S3", "S4"]
     assert outcome["turns"] == 2
-    assert outcome["tool_calls"] == 3
+    assert outcome["tool_calls"] == 4
+
+
+def test_engine_answers_directly_from_seeded_search():
+    # A model that never emits tools still gets the automatic initial search
+    # results and can answer right away.
+    fake, _ = scripted_provider(["초기 검색 기반 답변입니다. [S1]"])
+    searched: list[str] = []
+
+    def search(query):
+        searched.append(query)
+        return [
+            {
+                "rank": 1,
+                "file_path": "Notes/state.md",
+                "score": 0.9,
+                "content": "전기차 충전기 설치 상태",
+                "heading_path": [],
+                "start_line": 5,
+            }
+        ]
+
+    engine = DeepAnswerEngine(
+        complete=lambda messages, max_tokens, timeout: fake().complete(
+            messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout
+        ),
+        search=search,
+        read_file=lambda path: "",
+        grep=lambda pattern, glob_pattern: [],
+        max_output_tokens=100,
+        timeout_seconds=10.0,
+    )
+    outcome = engine.run(query="상태", conversation=[])
+    assert searched == ["상태"]
+    assert outcome["text"] == "초기 검색 기반 답변입니다. [S1]"
+    assert [s.id for s in outcome["sources"]] == ["S1"]
+    assert outcome["turns"] == 0
+
+
+def test_engine_retries_when_insufficient_despite_sources():
+    fake, _ = scripted_provider([
+        "볼트에서 충분한 근거를 찾지 못했습니다.",
+        "재시도 후 답변입니다. [S1]",
+    ])
+    engine = DeepAnswerEngine(
+        complete=lambda messages, max_tokens, timeout: fake().complete(
+            messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout
+        ),
+        search=lambda query: [
+            {
+                "rank": 1,
+                "file_path": "Notes/a.md",
+                "score": 0.8,
+                "content": "내용 있음",
+                "heading_path": [],
+                "start_line": 1,
+            }
+        ],
+        read_file=lambda path: "",
+        grep=lambda pattern, glob_pattern: [],
+        max_output_tokens=100,
+        timeout_seconds=10.0,
+    )
+    outcome = engine.run(query="질문", conversation=[])
+    assert outcome["text"] == "재시도 후 답변입니다. [S1]"
 
 
 def test_engine_unknown_tool_becomes_note():

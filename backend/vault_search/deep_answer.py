@@ -22,9 +22,9 @@ from .llm import ProviderResponse
 MAX_TURNS = 10
 MAX_TOOL_CALLS_PER_TURN = 6
 MAX_SOURCE_CHARS = 3000
-MAX_READ_CHARS = 12_000
+MAX_READ_CHARS = 40_000
 MAX_GREP_CHARS = 300
-MAX_ACCUMULATED_CHARS = 60_000
+MAX_ACCUMULATED_CHARS = 100_000
 
 TOOL_LINE = re.compile(r"^\s*TOOL:\s*([a-z_]+)\s*\(.*\)\s*$", re.IGNORECASE)
 ARG_PATTERN = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
@@ -38,18 +38,24 @@ TOOL_CALL = re.compile(
 
 DEEP_SYSTEM_PROMPT = (
     "You are a research assistant for an Obsidian vault. Answer the user's "
-    "question by investigating the vault with the tools below.\n"
-    "Strategy:\n"
-    "- Start with a hybrid search for the user's question.\n"
-    "- For broad, exhaustive, or history questions, expand with additional "
-    "searches using people, companies, projects, aliases, and related terms "
-    "from the first pass.\n"
-    "- If the exact target file is already known, use read to read it "
-    "directly instead of searching.\n"
+    "question by investigating the vault with the tools below. An initial "
+    "hybrid search for the question was already run — study those results "
+    "first; the snippets are truncated, so read the full files."
+    "\n"
+    "Strategy (follow closely):\n"
+    "- READ the most relevant files ENTIRELY with read, using the exact "
+    "paths from the search results. The vault's wiki pages, issue pages, and "
+    "meeting minutes hold the detail the snippets miss — snippets alone are "
+    "not enough for a good answer.\n"
+    "- For broad, exhaustive, or history questions, run additional searches "
+    "with shorter key terms (people, companies, projects, aliases, dates, "
+    "places) and read what they surface.\n"
+    "- If the exact target file is already known, read it directly instead "
+    "of searching.\n"
     "- Use grep only to verify an exact known string or to find scattered "
     "occurrences across files, not as the normal search path.\n"
-    "- Read the top search hits before answering; chain tools as needed and "
-    "follow the vault's own wiki links when they point at relevant notes.\n"
+    "- Follow the vault's own wiki links ([[...]]) when they point at "
+    "relevant notes, and read those too.\n"
     "Emit one tool per line:\n"
     'TOOL: search(query="...")                # hybrid keyword+semantic vault search\n'
     'TOOL: read(file="relative/path.md")\n'
@@ -78,8 +84,7 @@ def parse_tool_calls(text: str) -> list[tuple[str, dict[str, str]]]:
     for match in TOOL_CALL.finditer(content):
         name = match.group(1).lower()
         args = {
-            key: _unescape(value)
-            for key, value in ARG_PATTERN.findall(match.group(2))
+            key: _unescape(value) for key, value in ARG_PATTERN.findall(match.group(2))
         }
         calls.append((name, args))
     return calls
@@ -287,9 +292,17 @@ class DeepAnswerEngine:
             return f"tool error: {type(exc).__name__}: {exc}"
 
     def run(self, *, query: str, conversation: list[dict[str, str]]) -> dict[str, Any]:
+        # Seed the loop with one automatic search for the question, so the
+        # model always starts with real candidates even if it never issues a
+        # search tool call itself.
+        initial = self._execute("search", {"query": query})
+        self._tool_calls += 1
         self._messages = [
             *conversation,
-            {"role": "user", "content": f"질문:\n{query}"},
+            {
+                "role": "user",
+                "content": f"질문:\n{query}\n\n{initial}",
+            },
         ]
         final_text = ""
         while self._turns < MAX_TURNS:
@@ -331,6 +344,33 @@ class DeepAnswerEngine:
         else:
             # Defense in depth: never leak leftover TOOL: text into the answer.
             final_text = strip_tool_lines(final_text) or final_text
+        # If the model gave up with the insufficiency phrase but we did gather
+        # sources, push it once more to answer from what it has.
+        if (
+            self._sources
+            and "충분한 근거를 찾지 못" in final_text
+            and self._turns < MAX_TURNS
+        ):
+            self._messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        f"You said the evidence is insufficient, but {len(self._sources)} "
+                        "sources are available. Answer using them now, citing [S#]. "
+                        "If they truly cannot support the question, restate the "
+                        "insufficiency and list the missing details explicitly."
+                    ),
+                }
+            )
+            final_text = self._complete(
+                self._messages,
+                self._max_output_tokens,
+                self._timeout_seconds,
+            ).text.strip()
+            if parse_tool_calls(final_text):
+                final_text = "볼트에서 충분한 근거를 찾지 못했습니다. (조사 횟수 한계 도달)"
+            else:
+                final_text = strip_tool_lines(final_text) or final_text
         return {
             "text": final_text,
             "sources": self.sources,

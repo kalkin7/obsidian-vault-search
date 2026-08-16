@@ -72,14 +72,12 @@ describe("AnswerRenderer", () => {
       rank: 1,
       score: 0.82,
     };
-    const renderer = new AnswerRenderer(
-      container as unknown as HTMLElement,
-      { openCitation: async () => undefined },
-    );
-    renderer.render(
-      "# 제목\n\n**굵게** [S1]\n\n- 항목1\n- 항목2\n\n끝 [S9]",
-      [citation],
-    );
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
+    renderer.render("# 제목\n\n**굵게** [S1]\n\n- 항목1\n- 항목2\n\n끝 [S9]", [
+      citation,
+    ]);
 
     const headings = find(container, (node) => node.tag === "h3");
     expect(headings).toHaveLength(1);
@@ -89,7 +87,10 @@ describe("AnswerRenderer", () => {
     const strong = find(container, (node) => node.tag === "strong");
     expect(strong[0].textContent).toBe("굵게");
 
-    const pills = find(container, (node) => node.cls === "vault-answer-citation");
+    const pills = find(
+      container,
+      (node) => node.cls === "vault-answer-citation",
+    );
     expect(pills).toHaveLength(1);
     // Label comes from the heading path; the unknown [S9] stays as plain text.
     expect(pills[0].textContent).toBe("현재 상태");
@@ -101,18 +102,41 @@ describe("AnswerRenderer", () => {
     ]);
   });
 
-  it("copy button calls back with the raw answer", () => {
+  it("renders markdown tables with a header row", () => {
     const container = makeEl();
     const renderer = new AnswerRenderer(
       container as unknown as HTMLElement,
       { openCitation: async () => undefined },
     );
+    renderer.render(
+      "| 단계 | 공사 |\n| --- | --- |\n| 1단계 | 조경 변경 |\n| 2단계 | 충전기 설치 |",
+      [],
+    );
+    const table = find(container, (node) => node.tag === "table");
+    expect(table).toHaveLength(1);
+    const th = find(table[0], (node) => node.tag === "th");
+    expect(th.map((cell) => cell.children[0].textContent)).toEqual([
+      "단계",
+      "공사",
+    ]);
+    const td = find(table[0], (node) => node.tag === "td");
+    expect(td).toHaveLength(4);
+  });
+
+  it("copy button calls back with the raw answer", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
     const answer = "복사할 답변 [S1]";
     let copied = "";
     renderer.render(answer, [], (text) => {
       copied = text;
     });
-    const copyButton = find(container, (node) => node.cls === "vault-answer-copy");
+    const copyButton = find(
+      container,
+      (node) => node.cls === "vault-answer-copy",
+    );
     expect(copyButton).toHaveLength(1);
     copyButton[0].handlers.click?.();
     expect(copied).toBe(answer);

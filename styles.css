@@ -507,6 +507,23 @@
  border: 0;
  border-top: 1px solid var(--background-modifier-border);
 }
+.vault-answer-table {
+ width: 100%;
+ margin: 0 0 var(--size-4-2);
+ border-collapse: collapse;
+ font-size: var(--font-ui-small);
+}
+.vault-answer-table th,
+.vault-answer-table td {
+ padding: 4px 8px;
+ border: 1px solid var(--background-modifier-border);
+ text-align: left;
+ vertical-align: top;
+}
+.vault-answer-table th {
+ background: var(--background-secondary);
+ font-weight: var(--font-semibold);
+}
 .vault-answer-paragraph code,
 .vault-answer-quote code {
  padding: 0 4px;

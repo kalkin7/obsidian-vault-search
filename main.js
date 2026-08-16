@@ -5321,15 +5321,46 @@ var AnswerRenderer = class {
         index++;
         continue;
       }
+      if (line.trim().startsWith("|")) {
+        index = this.renderTable(container, lines, index, byId, counts);
+        continue;
+      }
       const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
-      while (index < lines.length && lines[index].trim() && !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?/.test(
-        lines[index]
-      )) {
+      while (index < lines.length && lines[index].trim() && !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(lines[index])) {
         if (paragraph.children.length > 0) paragraph.createEl("br");
         this.renderInline(paragraph, lines[index].trim(), byId, counts);
         index++;
       }
     }
+  }
+  renderTable(container, lines, index, byId, counts) {
+    const rows = [];
+    while (index < lines.length && lines[index].trim().startsWith("|")) {
+      const cells = lines[index].trim().split("|").slice(1, -1).map((cell) => cell.trim());
+      rows.push(cells);
+      index++;
+    }
+    const isSeparator = (cells) => cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell));
+    const header = rows.length >= 2 && isSeparator(rows[1]) ? rows[0] : null;
+    const body = header ? rows.slice(2) : rows;
+    const table = container.createEl("table", { cls: "vault-answer-table" });
+    if (header) {
+      const thead = table.createEl("thead");
+      const row = thead.createEl("tr");
+      for (const cell of header) {
+        const th = row.createEl("th");
+        this.renderInline(th, cell, byId, counts);
+      }
+    }
+    const tbody = table.createEl("tbody");
+    for (const cells of body) {
+      const row = tbody.createEl("tr");
+      for (const cell of cells) {
+        const td = row.createEl("td");
+        this.renderInline(td, cell, byId, counts);
+      }
+    }
+    return index;
   }
   renderInline(parent, text, byId, counts) {
     const tokenPattern = /(\*\*[^*]+\*\*|`[^`]+`|\[S\d+\])/g;
@@ -5367,8 +5398,7 @@ var AnswerRenderer = class {
       }
       cursor = index + token.length;
     }
-    if (cursor < text.length)
-      parent.createSpan({ text: text.slice(cursor) });
+    if (cursor < text.length) parent.createSpan({ text: text.slice(cursor) });
   }
   citationLabel(citation, counts) {
     const name = citation.heading_path.length > 0 ? citation.heading_path[0] : this.fileStem(citation.file_path);
@@ -5382,10 +5412,7 @@ var AnswerRenderer = class {
   fileCounts(citations) {
     const counts = /* @__PURE__ */ new Map();
     for (const citation of citations) {
-      counts.set(
-        citation.file_path,
-        (counts.get(citation.file_path) ?? 0) + 1
-      );
+      counts.set(citation.file_path, (counts.get(citation.file_path) ?? 0) + 1);
     }
     return counts;
   }
