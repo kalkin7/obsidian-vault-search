@@ -5,12 +5,14 @@ import { defaultLoadPolicy, settingsImpact } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
 import type { BackendStatus, LLMProviderId } from "./types";
+import { chooseProviderModel } from "./model-catalog";
 
 type SettingsTabId = "general" | "answer" | "search";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = "general";
   private providerModels: Partial<Record<LLMProviderId, string[]>> = {};
+  private providerModelSelections: Partial<Record<LLMProviderId, string>> = {};
 
   constructor(private readonly owner: VaultSearchPlugin) {
     super(owner.app, owner);
@@ -163,9 +165,15 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
           dropdown.addOption(id, provider.name);
         dropdown.setValue(draft.answerProvider).onChange((value) => {
+          const previousProvider = draft.answerProvider;
+          this.providerModelSelections[previousProvider] = draft.answerModel;
           draft.answerProvider = value as typeof draft.answerProvider;
-          if (!draft.answerModel || draft.answerModel === LLM_PROVIDER_DEFAULTS.openai.model)
-            draft.answerModel = LLM_PROVIDER_DEFAULTS[draft.answerProvider].model;
+          draft.answerModel = chooseProviderModel(
+            this.providerModels[draft.answerProvider] || [],
+            this.providerModelSelections[draft.answerProvider],
+            LLM_PROVIDER_DEFAULTS[draft.answerProvider].model,
+          );
+          this.providerModelSelections[draft.answerProvider] = draft.answerModel;
           this.display();
         });
       });
@@ -211,17 +219,30 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
         }),
       );
-    const modelListId = `vault-search-models-${draft.answerProvider}`;
+    const fetchedModels = this.providerModels[draft.answerProvider] || [];
+    const modelOptions = fetchedModels.includes(draft.answerModel)
+      ? fetchedModels
+      : [draft.answerModel, ...fetchedModels];
     new Setting(containerEl)
       .setName("답변 모델")
-      .setDesc(`기본값: ${answerProvider.model}`)
-      .addText((text) => {
-        text.setValue(draft.answerModel);
-        text.inputEl.setAttribute("list", modelListId);
-        text.onChange((value) => {
+      .setDesc(
+        fetchedModels.length
+          ? `${fetchedModels.length}개 모델을 확인했습니다. 기본값: ${answerProvider.model}`
+          : `먼저 모델 최신화를 눌러 선택지를 가져오세요. 기본값: ${answerProvider.model}`,
+      )
+      .addDropdown((dropdown) => {
+        for (const model of modelOptions) {
+          dropdown.addOption(
+            model,
+            model === draft.answerModel && !fetchedModels.includes(model)
+              ? `${model} (현재 설정)`
+              : model,
+          );
+        }
+        dropdown.setValue(draft.answerModel).onChange((value) => {
           draft.answerModel = value.trim() || answerProvider.model;
+          this.providerModelSelections[draft.answerProvider] = draft.answerModel;
         });
-        return text;
       })
       .addButton((button) =>
         button.setButtonText("모델 최신화").onClick(async () => {
@@ -230,7 +251,14 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             const models = await this.owner.fetchProviderModels(draft.answerProvider);
             this.providerModels[draft.answerProvider] = models;
             if (models.length && !models.includes(draft.answerModel)) draft.answerModel = models[0];
-            new Notice(`${answerProvider.name}: 모델 ${models.length}개를 확인했습니다.`);
+            this.providerModelSelections[draft.answerProvider] = draft.answerModel;
+            new Notice(
+              models.length
+                ? `${answerProvider.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
+                : draft.answerProvider === "openai"
+                  ? "OpenAI API가 선택 가능한 채팅 모델을 반환하지 않았습니다. API 키의 모델 권한을 확인해 주세요."
+                  : `${answerProvider.name}: 선택 가능한 모델을 찾지 못했습니다. API 키의 모델 권한을 확인해 주세요.`,
+            );
             this.display();
           } catch (error) {
             this.showError(error);
@@ -239,10 +267,6 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
         }),
       );
-    const modelList = containerEl.createEl("datalist", { attr: { id: modelListId } });
-    for (const model of this.providerModels[draft.answerProvider] || []) {
-      modelList.createEl("option", { attr: { value: model } });
-    }
     new Setting(containerEl)
       .setName("답변 context 문자 수")
       .setDesc("8,000~32,000자")

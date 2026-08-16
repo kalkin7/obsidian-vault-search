@@ -93,19 +93,58 @@
 }
 
 .vault-search-settings-panel .setting-item {
- min-width: 0;
+  display: block;
+  min-width: 0;
+}
+
+.vault-search-settings-panel .setting-item-info {
+  width: 100%;
+  min-width: 0;
 }
 
 .vault-search-settings-panel .setting-item-control {
- min-width: 0;
- max-width: 100%;
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-start;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  margin-top: var(--size-4-2);
+  gap: var(--size-4-2);
 }
 
 .vault-search-settings-panel .setting-item-control > input,
 .vault-search-settings-panel .setting-item-control > textarea,
 .vault-search-settings-panel .setting-item-control > select {
- max-width: 100%;
- min-width: 0;
+  box-sizing: border-box;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.vault-search-settings-panel .setting-item-control > input[type="text"],
+.vault-search-settings-panel .setting-item-control > input[type="password"],
+.vault-search-settings-panel .setting-item-control > select {
+  flex: 1 1 240px;
+  width: min(100%, 32rem);
+}
+
+.vault-search-settings-panel .setting-item-control > textarea {
+  flex: 1 1 100%;
+  width: 100%;
+  min-height: 7rem;
+  resize: vertical;
+}
+
+.vault-search-settings-panel .setting-item-control > button {
+  flex: 0 1 auto;
+  max-width: 100%;
+  min-width: 0;
+  height: auto;
+  min-height: var(--input-height, 30px);
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .setting-item.vault-search-fields-below .setting-item-control {
@@ -131,14 +170,9 @@
   font-size: var(--font-ui-smaller);
  }
 
- .vault-search-settings-panel .setting-item {
-  display: block;
- }
-
  .vault-search-settings-panel .setting-item-control {
   justify-content: flex-start;
   width: 100%;
-  margin-top: var(--size-4-2);
  }
 }
 

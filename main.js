@@ -4136,6 +4136,44 @@ function migrateSettings(settings) {
   return true;
 }
 
+// src/model-catalog.ts
+var OPENAI_NON_CHAT_MARKERS = [
+  "audio",
+  "dall-e",
+  "embedding",
+  "image",
+  "moderation",
+  "realtime",
+  "transcribe",
+  "tts",
+  "whisper"
+];
+function isSelectableAnswerModel(provider, modelId) {
+  if (provider !== "openai") return true;
+  const normalized = modelId.trim().toLowerCase();
+  if (!normalized || OPENAI_NON_CHAT_MARKERS.some((marker) => normalized.includes(marker))) {
+    return false;
+  }
+  return /^(?:gpt(?:-|$)|chatgpt-|codex-|o\d+(?:-|$))/.test(normalized);
+}
+function normalizeProviderModels(provider, data) {
+  const models = data.map((item) => {
+    if (!item || typeof item !== "object") return null;
+    const value = item;
+    const id = typeof value.id === "string" ? value.id.trim() : "";
+    if (!id || !isSelectableAnswerModel(provider, id)) return null;
+    return { id, created: typeof value.created === "number" ? value.created : 0 };
+  }).filter((item) => item !== null).sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
+  return [...new Set(models.map((item) => item.id))].slice(0, 200);
+}
+function chooseProviderModel(availableModels, rememberedModel, fallbackModel) {
+  const remembered = rememberedModel?.trim() || "";
+  if (availableModels.length) {
+    return availableModels.includes(remembered) ? remembered : availableModels[0];
+  }
+  return remembered || fallbackModel;
+}
+
 // src/settings-tab.ts
 var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
   constructor(owner) {
@@ -4144,6 +4182,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
   }
   activeTab = "general";
   providerModels = {};
+  providerModelSelections = {};
   display() {
     const { containerEl } = this;
     const draft = this.owner.draftSettings;
@@ -4238,9 +4277,15 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
         dropdown.addOption(id, provider.name);
       dropdown.setValue(draft.answerProvider).onChange((value) => {
+        const previousProvider = draft.answerProvider;
+        this.providerModelSelections[previousProvider] = draft.answerModel;
         draft.answerProvider = value;
-        if (!draft.answerModel || draft.answerModel === LLM_PROVIDER_DEFAULTS.openai.model)
-          draft.answerModel = LLM_PROVIDER_DEFAULTS[draft.answerProvider].model;
+        draft.answerModel = chooseProviderModel(
+          this.providerModels[draft.answerProvider] || [],
+          this.providerModelSelections[draft.answerProvider],
+          LLM_PROVIDER_DEFAULTS[draft.answerProvider].model
+        );
+        this.providerModelSelections[draft.answerProvider] = draft.answerModel;
         this.display();
       });
     });
@@ -4278,14 +4323,21 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
-    const modelListId = `vault-search-models-${draft.answerProvider}`;
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(`\uAE30\uBCF8\uAC12: ${answerProvider.model}`).addText((text) => {
-      text.setValue(draft.answerModel);
-      text.inputEl.setAttribute("list", modelListId);
-      text.onChange((value) => {
+    const fetchedModels = this.providerModels[draft.answerProvider] || [];
+    const modelOptions = fetchedModels.includes(draft.answerModel) ? fetchedModels : [draft.answerModel, ...fetchedModels];
+    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
+      fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uAE30\uBCF8\uAC12: ${answerProvider.model}` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uAE30\uBCF8\uAC12: ${answerProvider.model}`
+    ).addDropdown((dropdown) => {
+      for (const model of modelOptions) {
+        dropdown.addOption(
+          model,
+          model === draft.answerModel && !fetchedModels.includes(model) ? `${model} (\uD604\uC7AC \uC124\uC815)` : model
+        );
+      }
+      dropdown.setValue(draft.answerModel).onChange((value) => {
         draft.answerModel = value.trim() || answerProvider.model;
+        this.providerModelSelections[draft.answerProvider] = draft.answerModel;
       });
-      return text;
     }).addButton(
       (button) => button.setButtonText("\uBAA8\uB378 \uCD5C\uC2E0\uD654").onClick(async () => {
         button.setDisabled(true);
@@ -4293,7 +4345,10 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
           const models = await this.owner.fetchProviderModels(draft.answerProvider);
           this.providerModels[draft.answerProvider] = models;
           if (models.length && !models.includes(draft.answerModel)) draft.answerModel = models[0];
-          new import_obsidian2.Notice(`${answerProvider.name}: \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.`);
+          this.providerModelSelections[draft.answerProvider] = draft.answerModel;
+          new import_obsidian2.Notice(
+            models.length ? `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.` : draft.answerProvider === "openai" ? "OpenAI API\uAC00 \uC120\uD0DD \uAC00\uB2A5\uD55C \uCC44\uD305 \uBAA8\uB378\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
+          );
           this.display();
         } catch (error) {
           this.showError(error);
@@ -4302,10 +4357,6 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
-    const modelList = containerEl.createEl("datalist", { attr: { id: modelListId } });
-    for (const model of this.providerModels[draft.answerProvider] || []) {
-      modelList.createEl("option", { attr: { value: model } });
-    }
     new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText((text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
       draft.answerMaxContextChars = Math.max(8e3, Math.min(32e3, this.nonnegativeNumber(value, draft.answerMaxContextChars)));
     }));
@@ -5542,12 +5593,7 @@ var VaultSearchPlugin = class extends import_obsidian6.Plugin {
     });
     const data = response.json?.data;
     if (!Array.isArray(data)) throw new Error("provider\uAC00 \uBAA8\uB378 \uBAA9\uB85D\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4.");
-    const models = data.map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const value = item;
-      return typeof value.id === "string" && value.id.trim() ? { id: value.id.trim(), created: typeof value.created === "number" ? value.created : 0 } : null;
-    }).filter((item) => item !== null).sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
-    return [...new Set(models.map((item) => item.id))].slice(0, 200);
+    return normalizeProviderModels(provider, data);
   }
   resetDraftSettings() {
     this.draftSettings = cloneSettings(this.settings);

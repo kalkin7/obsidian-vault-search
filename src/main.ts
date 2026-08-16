@@ -32,6 +32,7 @@ import { selectRuntime } from "./runtime-selection";
 import { VaultSearchItemView } from "./search-item-view";
 import { getProviderSecret, hasSecretStorage, providerEnvironment, setProviderSecret } from "./llm-secrets";
 import type { LLMProviderId } from "./types";
+import { normalizeProviderModels } from "./model-catalog";
 
 export default class VaultSearchPlugin extends Plugin {
   declare settings: VaultSearchSettings;
@@ -210,17 +211,7 @@ export default class VaultSearchPlugin extends Plugin {
     });
     const data = response.json?.data;
     if (!Array.isArray(data)) throw new Error("provider가 모델 목록을 반환하지 않았습니다.");
-    const models = data
-      .map((item: unknown) => {
-        if (!item || typeof item !== "object") return null;
-        const value = item as { id?: unknown; created?: unknown };
-        return typeof value.id === "string" && value.id.trim()
-          ? { id: value.id.trim(), created: typeof value.created === "number" ? value.created : 0 }
-          : null;
-      })
-      .filter((item): item is { id: string; created: number } => item !== null)
-      .sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
-    return [...new Set(models.map((item) => item.id))].slice(0, 200);
+    return normalizeProviderModels(provider, data);
   }
 
   resetDraftSettings(): void {
