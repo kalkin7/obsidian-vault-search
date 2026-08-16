@@ -160,7 +160,9 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "AI Vault 답변" });
     new Setting(containerEl)
       .setName("답변 provider")
-      .setDesc("검색 근거만 provider에 전달합니다. API key는 플러그인에 저장하지 않고 sidecar가 환경변수에서 읽습니다.")
+      .setDesc(
+        "검색 근거만 provider에 전달합니다. API key는 플러그인에 저장하지 않고 sidecar가 환경변수에서 읽습니다.",
+      )
       .addDropdown((dropdown) => {
         for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
           dropdown.addOption(id, provider.name);
@@ -173,7 +175,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             this.providerModelSelections[draft.answerProvider],
             LLM_PROVIDER_DEFAULTS[draft.answerProvider].model,
           );
-          this.providerModelSelections[draft.answerProvider] = draft.answerModel;
+          this.providerModelSelections[draft.answerProvider] =
+            draft.answerModel;
           this.display();
         });
       });
@@ -182,10 +185,18 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     let apiKeyInput: HTMLInputElement | null = null;
     new Setting(containerEl)
       .setName("API 키")
-      .setDesc(savedApiKey ? "Obsidian 보안 저장소에 저장됨" : "Obsidian 보안 저장소에 저장합니다")
+      .setDesc(
+        savedApiKey
+          ? "Obsidian 보안 저장소에 저장됨"
+          : "Obsidian 보안 저장소에 저장합니다",
+      )
       .addText((text) => {
         text.inputEl.type = "password";
-        text.setPlaceholder(savedApiKey ? "저장된 키를 교체하려면 입력" : `${answerProvider.env} 입력`);
+        text.setPlaceholder(
+          savedApiKey
+            ? "저장된 키를 교체하려면 입력"
+            : `${answerProvider.env} 입력`,
+        );
         apiKeyInput = text.inputEl;
         return text;
       })
@@ -241,17 +252,22 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }
         dropdown.setValue(draft.answerModel).onChange((value) => {
           draft.answerModel = value.trim() || answerProvider.model;
-          this.providerModelSelections[draft.answerProvider] = draft.answerModel;
+          this.providerModelSelections[draft.answerProvider] =
+            draft.answerModel;
         });
       })
       .addButton((button) =>
         button.setButtonText("모델 최신화").onClick(async () => {
           button.setDisabled(true);
           try {
-            const models = await this.owner.fetchProviderModels(draft.answerProvider);
+            const models = await this.owner.fetchProviderModels(
+              draft.answerProvider,
+            );
             this.providerModels[draft.answerProvider] = models;
-            if (models.length && !models.includes(draft.answerModel)) draft.answerModel = models[0];
-            this.providerModelSelections[draft.answerProvider] = draft.answerModel;
+            if (models.length && !models.includes(draft.answerModel))
+              draft.answerModel = models[0];
+            this.providerModelSelections[draft.answerProvider] =
+              draft.answerModel;
             new Notice(
               models.length
                 ? `${answerProvider.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
@@ -270,21 +286,45 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("답변 context 문자 수")
       .setDesc("8,000~32,000자")
-      .addText((text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
-        draft.answerMaxContextChars = Math.max(8000, Math.min(32000, this.nonnegativeNumber(value, draft.answerMaxContextChars)));
-      }));
+      .addText((text) =>
+        text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
+          draft.answerMaxContextChars = Math.max(
+            8000,
+            Math.min(
+              32000,
+              this.nonnegativeNumber(value, draft.answerMaxContextChars),
+            ),
+          );
+        }),
+      );
     new Setting(containerEl)
       .setName("답변 출력 토큰")
       .setDesc("128~8,000 토큰")
-      .addText((text) => text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
-        draft.answerMaxOutputTokens = Math.max(128, Math.min(8000, this.nonnegativeNumber(value, draft.answerMaxOutputTokens)));
-      }));
+      .addText((text) =>
+        text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
+          draft.answerMaxOutputTokens = Math.max(
+            128,
+            Math.min(
+              8000,
+              this.nonnegativeNumber(value, draft.answerMaxOutputTokens),
+            ),
+          );
+        }),
+      );
     new Setting(containerEl)
       .setName("답변 timeout (초)")
       .setDesc("provider 요청 timeout은 최대 60초입니다.")
-      .addText((text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
-        draft.answerTimeoutSeconds = Math.max(5, Math.min(60, this.nonnegativeNumber(value, draft.answerTimeoutSeconds)));
-      }));
+      .addText((text) =>
+        text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
+          draft.answerTimeoutSeconds = Math.max(
+            5,
+            Math.min(
+              60,
+              this.nonnegativeNumber(value, draft.answerTimeoutSeconds),
+            ),
+          );
+        }),
+      );
 
     const agent = this.owner.agentIntegration;
     new Setting(containerEl)
@@ -484,6 +524,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Include globs")
       .setDesc("볼트 상대 경로, 한 줄에 하나")
+      .setClass("vault-search-textarea")
       .addTextArea((area) => {
         area.setValue(draft.includeGlobs.join("\n"));
         area.inputEl.rows = 7;
@@ -494,6 +535,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("Exclude globs")
       .setDesc("볼트 상대 경로, 한 줄에 하나")
+      .setClass("vault-search-textarea")
       .addTextArea((area) => {
         area.setValue(draft.excludeGlobs.join("\n"));
         area.inputEl.rows = 7;
@@ -508,6 +550,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         "타임라인/관계 검색에서 sources 참조를 따라가는 위키 폴더 목록입니다 (볼트 상대 경로, 한 줄에 하나). " +
           "기본값(5_Wiki/…)은 K_Notes 배치입니다. 위키가 다른 폴더에 있으면 여기서 지정하고, 위키가 없으면 비워 두면 확장이 동작하지 않습니다.",
       )
+      .setClass("vault-search-textarea")
       .addTextArea((area) => {
         area.setValue(draft.wikiFolders.join("\n"));
         area.inputEl.rows = 4;
@@ -759,8 +802,14 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         if (element.textContent?.includes("AI Vault")) panel = "answer";
         if (element.textContent?.includes("고급")) panel = "search";
       }
-      const settingName = element.querySelector(".setting-item-name")?.textContent?.trim();
-      if (panel === "answer" && settingName && searchSettingNames.has(settingName)) {
+      const settingName = element
+        .querySelector(".setting-item-name")
+        ?.textContent?.trim();
+      if (
+        panel === "answer" &&
+        settingName &&
+        searchSettingNames.has(settingName)
+      ) {
         panel = "search";
       }
       panels[panel].appendChild(element);

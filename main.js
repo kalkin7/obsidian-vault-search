@@ -4148,12 +4148,14 @@ var OPENAI_NON_CHAT_MARKERS = [
   "tts",
   "whisper"
 ];
+var OPENAI_DATED_SNAPSHOT = /-\d{4}-\d{2}-\d{2}$/;
 function isSelectableAnswerModel(provider, modelId) {
   if (provider !== "openai") return true;
   const normalized = modelId.trim().toLowerCase();
   if (!normalized || OPENAI_NON_CHAT_MARKERS.some((marker) => normalized.includes(marker))) {
     return false;
   }
+  if (OPENAI_DATED_SNAPSHOT.test(normalized)) return false;
   return /^(?:gpt(?:-|$)|chatgpt-|codex-|o\d+(?:-|$))/.test(normalized);
 }
 function normalizeProviderModels(provider, data) {
@@ -4494,14 +4496,14 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         draft.documentPrefix = value;
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Include globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").addTextArea((area) => {
+    new import_obsidian2.Setting(containerEl).setName("Include globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.includeGlobs.join("\n"));
       area.inputEl.rows = 7;
       area.onChange((value) => {
         draft.includeGlobs = this.lines(value);
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Exclude globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").addTextArea((area) => {
+    new import_obsidian2.Setting(containerEl).setName("Exclude globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.excludeGlobs.join("\n"));
       area.inputEl.rows = 7;
       area.onChange((value) => {
@@ -4510,7 +4512,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
     });
     new import_obsidian2.Setting(containerEl).setName("\uC704\uD0A4 \uD3F4\uB354").setDesc(
       "\uD0C0\uC784\uB77C\uC778/\uAD00\uACC4 \uAC80\uC0C9\uC5D0\uC11C sources \uCC38\uC870\uB97C \uB530\uB77C\uAC00\uB294 \uC704\uD0A4 \uD3F4\uB354 \uBAA9\uB85D\uC785\uB2C8\uB2E4 (\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098). \uAE30\uBCF8\uAC12(5_Wiki/\u2026)\uC740 K_Notes \uBC30\uCE58\uC785\uB2C8\uB2E4. \uC704\uD0A4\uAC00 \uB2E4\uB978 \uD3F4\uB354\uC5D0 \uC788\uC73C\uBA74 \uC5EC\uAE30\uC11C \uC9C0\uC815\uD558\uACE0, \uC704\uD0A4\uAC00 \uC5C6\uC73C\uBA74 \uBE44\uC6CC \uB450\uBA74 \uD655\uC7A5\uC774 \uB3D9\uC791\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4."
-    ).addTextArea((area) => {
+    ).setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.wikiFolders.join("\n"));
       area.inputEl.rows = 4;
       area.onChange((value) => {

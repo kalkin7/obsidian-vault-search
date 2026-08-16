@@ -24,6 +24,7 @@
  * squeezing 4+ fields into the right control column runs out of space. */
 .setting-item.vault-search-fields-below {
  flex-wrap: wrap;
+ align-items: flex-start;
 }
 
 .setting-item.vault-search-fields-below .setting-item-control {
@@ -92,59 +93,83 @@
  display: block;
 }
 
+/* Standard row layout: name/description on the left, control on the right on
+ * the same line (Obsidian default / Claudian / Copilot style). Long
+ * descriptions wrap inside their own column (min-width: 0 + overflow-wrap)
+ * instead of overlapping the control. Only wide controls — textareas and
+ * multi-number rows — drop below the label across the full card width. */
 .vault-search-settings-panel .setting-item {
-  display: block;
-  min-width: 0;
+ display: flex;
+ min-width: 0;
 }
 
 .vault-search-settings-panel .setting-item-info {
-  width: 100%;
-  min-width: 0;
+ flex: 1 1 auto;
+ min-width: 0;
+ overflow-wrap: anywhere;
 }
 
 .vault-search-settings-panel .setting-item-control {
-  display: flex;
-  flex: none;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: flex-start;
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-  margin-top: var(--size-4-2);
-  gap: var(--size-4-2);
+ display: flex;
+ flex: 0 1 auto;
+ flex-wrap: wrap;
+ align-items: center;
+ justify-content: flex-end;
+ max-width: 100%;
+ min-width: 0;
+ gap: var(--size-4-2);
 }
 
 .vault-search-settings-panel .setting-item-control > input,
-.vault-search-settings-panel .setting-item-control > textarea,
 .vault-search-settings-panel .setting-item-control > select {
-  box-sizing: border-box;
-  max-width: 100%;
-  min-width: 0;
+ box-sizing: border-box;
+ max-width: 100%;
+ min-width: 0;
 }
 
 .vault-search-settings-panel .setting-item-control > input[type="text"],
 .vault-search-settings-panel .setting-item-control > input[type="password"],
 .vault-search-settings-panel .setting-item-control > select {
-  flex: 1 1 240px;
-  width: min(100%, 32rem);
-}
-
-.vault-search-settings-panel .setting-item-control > textarea {
-  flex: 1 1 100%;
-  width: 100%;
-  min-height: 7rem;
-  resize: vertical;
+ flex: 0 1 240px;
+ width: min(100%, 16rem);
 }
 
 .vault-search-settings-panel .setting-item-control > button {
-  flex: 0 1 auto;
-  max-width: 100%;
-  min-width: 0;
-  height: auto;
-  min-height: var(--input-height, 30px);
-  white-space: normal;
-  overflow-wrap: anywhere;
+ flex: 0 1 auto;
+ max-width: 100%;
+ min-width: 0;
+ height: auto;
+ min-height: var(--input-height, 30px);
+ white-space: normal;
+ overflow-wrap: anywhere;
+}
+
+/* Multi-line text areas (glob lists, wiki folders) span the full card width
+ * below the label instead of squeezing into the right control column. */
+.vault-search-settings-panel .setting-item.vault-search-textarea {
+ flex-wrap: wrap;
+ align-items: flex-start;
+}
+
+.vault-search-settings-panel
+ .setting-item.vault-search-textarea
+ .setting-item-info {
+ flex-basis: 100%;
+}
+
+.vault-search-settings-panel
+ .setting-item.vault-search-textarea
+ .setting-item-control {
+ flex-basis: 100%;
+ justify-content: flex-start;
+}
+
+.vault-search-settings-panel .setting-item.vault-search-textarea textarea {
+ box-sizing: border-box;
+ flex: 1 1 100%;
+ width: 100%;
+ min-height: 7rem;
+ resize: vertical;
 }
 
 .setting-item.vault-search-fields-below .setting-item-control {
@@ -170,9 +195,13 @@
   font-size: var(--font-ui-smaller);
  }
 
+ .vault-search-settings-panel .setting-item {
+  flex-wrap: wrap;
+ }
+
  .vault-search-settings-panel .setting-item-control {
+  flex: 1 1 100%;
   justify-content: flex-start;
-  width: 100%;
  }
 }
 
@@ -280,19 +309,95 @@
  margin-top: var(--size-4-3);
 }
 
-.vault-ai-search-view { display: flex; flex-direction: column; height: 100%; min-width: 0; }
-.vault-ai-search-header { display: flex; align-items: baseline; gap: var(--size-4-2); padding: var(--size-4-3); border-bottom: 1px solid var(--background-modifier-border); }
-.vault-ai-search-header h2 { margin: 0; font-size: var(--font-ui-medium); }
-.vault-ai-search-lightning-button { display: inline-flex; width: 24px; height: 24px; margin-left: var(--size-4-2); padding: 2px; border: 0; background: transparent; box-shadow: none; }
-.vault-ai-search-provider { margin-left: auto; color: var(--text-muted); font-size: var(--font-ui-smallest); }
-.vault-ai-search-status { min-height: 24px; padding: var(--size-4-2) var(--size-4-3); color: var(--text-muted); font-size: var(--font-ui-small); white-space: pre-wrap; }
-.vault-ai-search-answer { flex: 1 1 auto; overflow-y: auto; padding: var(--size-4-3); line-height: var(--line-height-normal); }
-.vault-answer-paragraph { margin-bottom: var(--size-4-3); white-space: pre-wrap; }
-.vault-answer-citation { display: inline-block; margin: 0 2px; padding: 0 4px; border: 1px solid var(--interactive-accent); border-radius: var(--radius-s); background: var(--background-secondary); color: var(--text-accent); font-size: var(--font-ui-smaller); line-height: 1.4; }
-.vault-ai-search-sources { flex: 0 0 auto; padding: 0 var(--size-4-3); }
-.vault-ai-search-evidence summary { cursor: pointer; color: var(--text-muted); font-size: var(--font-ui-small); }
-.vault-ai-search-source-list { max-height: 30vh; overflow-y: auto; }
-.vault-ai-search-footer { display: flex; gap: var(--size-4-2); padding: var(--size-4-3); border-top: 1px solid var(--background-modifier-border); }
-.vault-ai-search-input { flex: 1 1 auto; min-width: 0; }
-.vault-search-lightning-icon { display: block; width: 100%; height: 100%; object-fit: contain; }
-body.theme-dark .vault-search-lightning-icon { filter: invert(1); }
+.vault-ai-search-view {
+ display: flex;
+ flex-direction: column;
+ height: 100%;
+ min-width: 0;
+}
+.vault-ai-search-header {
+ display: flex;
+ align-items: baseline;
+ gap: var(--size-4-2);
+ padding: var(--size-4-3);
+ border-bottom: 1px solid var(--background-modifier-border);
+}
+.vault-ai-search-header h2 {
+ margin: 0;
+ font-size: var(--font-ui-medium);
+}
+.vault-ai-search-lightning-button {
+ display: inline-flex;
+ width: 24px;
+ height: 24px;
+ margin-left: var(--size-4-2);
+ padding: 2px;
+ border: 0;
+ background: transparent;
+ box-shadow: none;
+}
+.vault-ai-search-provider {
+ margin-left: auto;
+ color: var(--text-muted);
+ font-size: var(--font-ui-smallest);
+}
+.vault-ai-search-status {
+ min-height: 24px;
+ padding: var(--size-4-2) var(--size-4-3);
+ color: var(--text-muted);
+ font-size: var(--font-ui-small);
+ white-space: pre-wrap;
+}
+.vault-ai-search-answer {
+ flex: 1 1 auto;
+ overflow-y: auto;
+ padding: var(--size-4-3);
+ line-height: var(--line-height-normal);
+}
+.vault-answer-paragraph {
+ margin-bottom: var(--size-4-3);
+ white-space: pre-wrap;
+}
+.vault-answer-citation {
+ display: inline-block;
+ margin: 0 2px;
+ padding: 0 4px;
+ border: 1px solid var(--interactive-accent);
+ border-radius: var(--radius-s);
+ background: var(--background-secondary);
+ color: var(--text-accent);
+ font-size: var(--font-ui-smaller);
+ line-height: 1.4;
+}
+.vault-ai-search-sources {
+ flex: 0 0 auto;
+ padding: 0 var(--size-4-3);
+}
+.vault-ai-search-evidence summary {
+ cursor: pointer;
+ color: var(--text-muted);
+ font-size: var(--font-ui-small);
+}
+.vault-ai-search-source-list {
+ max-height: 30vh;
+ overflow-y: auto;
+}
+.vault-ai-search-footer {
+ display: flex;
+ gap: var(--size-4-2);
+ padding: var(--size-4-3);
+ border-top: 1px solid var(--background-modifier-border);
+}
+.vault-ai-search-input {
+ flex: 1 1 auto;
+ min-width: 0;
+}
+.vault-search-lightning-icon {
+ display: block;
+ width: 100%;
+ height: 100%;
+ object-fit: contain;
+}
+body.theme-dark .vault-search-lightning-icon {
+ filter: invert(1);
+}
