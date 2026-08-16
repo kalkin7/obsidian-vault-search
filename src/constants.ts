@@ -74,7 +74,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   syncDebounceMs: 1500,
   autoSync: true,
   startupReconcile: true,
-  modelIdleTimeoutSeconds: 0,
+  modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
   answerModel: "gpt-5.6",
   answerMaxContextChars: 24000,

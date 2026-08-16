@@ -113,4 +113,25 @@ describe("settings migration", () => {
     expect(stamped.bm25TopK).toBe(80);
     expect(stamped.settingsVersion).toBe(SETTINGS_VERSION);
   });
+
+  it("migrates the legacy 0 idle timeout to 300 seconds", () => {
+    const legacy = {
+      ...DEFAULT_SETTINGS,
+      modelIdleTimeoutSeconds: 0,
+    };
+    delete (legacy as { settingsVersion?: number }).settingsVersion;
+    migrateSettings(legacy);
+    expect(legacy.modelIdleTimeoutSeconds).toBe(300);
+    expect(legacy.settingsVersion).toBe(SETTINGS_VERSION);
+  });
+
+  it("keeps a non-default idle timeout untouched", () => {
+    const custom = {
+      ...DEFAULT_SETTINGS,
+      modelIdleTimeoutSeconds: 120,
+    };
+    delete (custom as { settingsVersion?: number }).settingsVersion;
+    migrateSettings(custom);
+    expect(custom.modelIdleTimeoutSeconds).toBe(120);
+  });
 });

@@ -39,7 +39,7 @@ class SearchConfig:
     embedding_batch_size_cpu: int = 32
     embedding_batch_size_gpu: int = 64
     lazy_model: bool = False
-    model_idle_timeout_seconds: float = 0.0
+    model_idle_timeout_seconds: float = 300.0
     heartbeat_timeout_seconds: float = 20.0
     llm_provider: str = "openai"
     llm_model: str = "gpt-5.6"
@@ -186,7 +186,7 @@ def load_config(
         embedding_batch_size_gpu=max(1, _as_int(raw.get("embeddingBatchSizeGpu"), 64)),
         lazy_model=bool(raw.get("lazyModel", raw.get("loadPolicy") == "first-search")),
         model_idle_timeout_seconds=max(
-            0.0, _as_float(raw.get("modelIdleTimeoutSeconds"), 0.0)
+            0.0, _as_float(raw.get("modelIdleTimeoutSeconds"), 300.0)
         ),
         heartbeat_timeout_seconds=max(
             5.0, _as_float(raw.get("heartbeatTimeoutSeconds"), 20.0)

@@ -118,7 +118,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("유휴 모델 언로드 (초)")
       .setDesc(
-        "0이면 비활성(로드 후 상주). 검색이 없으면 이 시간 후 모델을 언로드합니다. ONNX 엔진은 ORT 세션을 해제해 VRAM/RAM을 반환하고, 다음 검색 시 다시 로드합니다. PyTorch 엔진은 참조를 해제하되 CUDA 캐시로 VRAM 일부가 남을 수 있습니다.",
+        "기본값 300초. 0이면 비활성(로드 후 상주). 검색이 없으면 이 시간 후 모델을 언로드합니다. ONNX 엔진은 ORT 세션을 해제해 VRAM/RAM을 반환하고, 다음 검색 시 다시 로드합니다. PyTorch 엔진은 참조를 해제하되 CUDA 캐시로 VRAM 일부가 남을 수 있습니다.",
       )
       .addText((text) =>
         text

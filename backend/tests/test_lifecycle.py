@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sqlite3
@@ -12,13 +13,13 @@ from types import SimpleNamespace
 
 import pytest
 
+import vault_search.cli as cli
+from vault_search.cli import call_runtime
 from vault_search.config import SearchConfig
 from vault_search.database import init_db
 from vault_search.protocol import request
 from vault_search.runtime import default_data_dir
 from vault_search.service import SearchService, ServiceError
-import vault_search.cli as cli
-from vault_search.cli import call_runtime
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
@@ -287,10 +288,8 @@ def test_cli_spawn_standalone_and_attach(tmp_path: Path):
         assert runtime["owner"] == "standalone"
         # A second spawn must not win the ServiceLock; it either fails or a
         # runtime already exists. call_runtime must reach the first backend.
-        try:
+        with contextlib.suppress(cli.ServiceUnavailable):
             cli._spawn_standalone(vault, timeout=5, idle_exit_seconds=0)
-        except cli.ServiceUnavailable:
-            pass
         status = call_runtime(vault, "status", {}, 10)
         assert status["ok"]
         request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
@@ -399,6 +398,7 @@ def test_listening_event_never_contains_token(tmp_path: Path):
         runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
         token = runtime["token"]
         assert len(token) > 16
+        assert process.stdout is not None
         first_line = process.stdout.readline()  # listening event
         assert token not in first_line
         assert "<redacted>" in first_line
@@ -637,12 +637,27 @@ def test_idle_unload_skips_recent_activity(tmp_path: Path):
     assert service.model.model is not None
 
 
-def test_idle_unload_disabled_by_default(tmp_path: Path):
+def test_idle_unload_uses_default_period(tmp_path: Path):
     config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
     service = SearchService(config, lambda _event, _data: None)
     service.model.model = object()
     service.state = "ready"
     service.last_activity = time.monotonic() - 1000
+
+    service._maybe_unload_if_idle()
+
+    assert service.config.model_idle_timeout_seconds == 300
+    assert service.state == "idle"
+    assert service.model.model is None
+
+
+def test_idle_unload_disabled_when_timeout_is_zero(tmp_path: Path):
+    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    service = SearchService(config, lambda _event, _data: None)
+    service.model.model = object()
+    service.state = "ready"
+    service.last_activity = time.monotonic() - 1000
+    service.config.model_idle_timeout_seconds = 0
 
     service._maybe_unload_if_idle()
 

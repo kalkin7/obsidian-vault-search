@@ -115,7 +115,7 @@ export function hotConfig(
 }
 
 /** Latest settings layout version. Bump when legacy defaults need to migrate. */
-export const SETTINGS_VERSION = 1;
+export const SETTINGS_VERSION = 2;
 const LEGACY_DEFAULT_TOP = { bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
 
 /** Migrate untouched legacy defaults to the benchmarked defaults.
@@ -140,6 +140,13 @@ export function migrateSettings(settings: VaultSearchSettings): boolean {
     settings.bm25TopK = 80;
     settings.vectorTopK = 80;
     settings.finalTopK = 40;
+  }
+  // The legacy default for the idle-unload timeout was 0 (model stays
+  // resident). A stored 0 is indistinguishable from an untouched default, so
+  // upgrade it to the new 300 s default; users who want the model resident
+  // can set 0 again explicitly.
+  if (settings.modelIdleTimeoutSeconds === 0) {
+    settings.modelIdleTimeoutSeconds = 300;
   }
   settings.settingsVersion = SETTINGS_VERSION;
   return true;

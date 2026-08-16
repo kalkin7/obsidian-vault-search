@@ -3069,7 +3069,7 @@ var DEFAULT_SETTINGS = {
   syncDebounceMs: 1500,
   autoSync: true,
   startupReconcile: true,
-  modelIdleTimeoutSeconds: 0,
+  modelIdleTimeoutSeconds: 300,
   answerProvider: "openai",
   answerModel: "gpt-5.6",
   answerMaxContextChars: 24e3,
@@ -4129,7 +4129,7 @@ function hotConfig(settings) {
     answerTimeoutSeconds: settings.answerTimeoutSeconds
   };
 }
-var SETTINGS_VERSION = 1;
+var SETTINGS_VERSION = 2;
 var LEGACY_DEFAULT_TOP = { bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
 function migrateSettings(settings) {
   if ((settings.settingsVersion ?? 0) >= SETTINGS_VERSION) return false;
@@ -4143,6 +4143,9 @@ function migrateSettings(settings) {
     settings.bm25TopK = 80;
     settings.vectorTopK = 80;
     settings.finalTopK = 40;
+  }
+  if (settings.modelIdleTimeoutSeconds === 0) {
+    settings.modelIdleTimeoutSeconds = 300;
   }
   settings.settingsVersion = SETTINGS_VERSION;
   return true;
@@ -4264,7 +4267,7 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     new import_obsidian2.Setting(containerEl).setName("\uC720\uD734 \uBAA8\uB378 \uC5B8\uB85C\uB4DC (\uCD08)").setDesc(
-      "0\uC774\uBA74 \uBE44\uD65C\uC131(\uB85C\uB4DC \uD6C4 \uC0C1\uC8FC). \uAC80\uC0C9\uC774 \uC5C6\uC73C\uBA74 \uC774 \uC2DC\uAC04 \uD6C4 \uBAA8\uB378\uC744 \uC5B8\uB85C\uB4DC\uD569\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC740 ORT \uC138\uC158\uC744 \uD574\uC81C\uD574 VRAM/RAM\uC744 \uBC18\uD658\uD558\uACE0, \uB2E4\uC74C \uAC80\uC0C9 \uC2DC \uB2E4\uC2DC \uB85C\uB4DC\uD569\uB2C8\uB2E4. PyTorch \uC5D4\uC9C4\uC740 \uCC38\uC870\uB97C \uD574\uC81C\uD558\uB418 CUDA \uCE90\uC2DC\uB85C VRAM \uC77C\uBD80\uAC00 \uB0A8\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
+      "\uAE30\uBCF8\uAC12 300\uCD08. 0\uC774\uBA74 \uBE44\uD65C\uC131(\uB85C\uB4DC \uD6C4 \uC0C1\uC8FC). \uAC80\uC0C9\uC774 \uC5C6\uC73C\uBA74 \uC774 \uC2DC\uAC04 \uD6C4 \uBAA8\uB378\uC744 \uC5B8\uB85C\uB4DC\uD569\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC740 ORT \uC138\uC158\uC744 \uD574\uC81C\uD574 VRAM/RAM\uC744 \uBC18\uD658\uD558\uACE0, \uB2E4\uC74C \uAC80\uC0C9 \uC2DC \uB2E4\uC2DC \uB85C\uB4DC\uD569\uB2C8\uB2E4. PyTorch \uC5D4\uC9C4\uC740 \uCC38\uC870\uB97C \uD574\uC81C\uD558\uB418 CUDA \uCE90\uC2DC\uB85C VRAM \uC77C\uBD80\uAC00 \uB0A8\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
     ).addText(
       (text) => text.setValue(String(draft.modelIdleTimeoutSeconds)).onChange((value) => {
         draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(
