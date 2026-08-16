@@ -249,17 +249,14 @@ export class AnswerRenderer {
  *  every known citation becomes an Obsidian wikilink to its vault file, and a
  *  deduplicated ``## 근거`` list of the cited files is appended. Unknown
  *  ``[S#]`` markers are kept as-is. */
-export function toNoteMarkdown(
-  answer: string,
-  citations: Citation[],
-): string {
+export function toNoteMarkdown(answer: string, citations: Citation[]): string {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
   const wikilink = (citation: Citation): string => {
     const path = citation.file_path.replace(/\.md$/i, "");
     const rawLabel =
       citation.heading_path.length > 0
         ? citation.heading_path[0]
-        : path.split("/").pop() ?? path;
+        : (path.split("/").pop() ?? path);
     return `[[${path}|${rawLabel.replace(/\|/g, "·")}]]`;
   };
   const text = answer.replace(/\[S(\d+)\]/g, (match, id: string) => {

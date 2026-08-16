@@ -142,7 +142,9 @@ describe("AnswerRenderer", () => {
       rank: 1,
       score: 0.8,
     };
-    const note = toNoteMarkdown("공사가 진행되었습니다. [S1] [S99]", [citation]);
+    const note = toNoteMarkdown("공사가 진행되었습니다. [S1] [S99]", [
+      citation,
+    ]);
     expect(note).toContain(
       "[[5_Wiki/issues/apt/지상_전기차충전소_설치_행위허가|행위허가]]",
     );
