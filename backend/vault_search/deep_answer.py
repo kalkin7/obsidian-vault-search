@@ -10,6 +10,7 @@ model text, so no native function-calling API is required.
 
 from __future__ import annotations
 
+import contextlib
 import fnmatch
 import re
 from collections.abc import Callable
@@ -25,6 +26,10 @@ MAX_SOURCE_CHARS = 3000
 MAX_READ_CHARS = 40_000
 MAX_GREP_CHARS = 300
 MAX_ACCUMULATED_CHARS = 100_000
+# Reasoning models (deepseek-v4-flash etc.) spend output tokens on
+# chain-of-thought first; with big contexts a small budget leaves content
+# empty. Enforce a floor for the agent loop.
+MIN_DEEP_OUTPUT_TOKENS = 4000
 
 TOOL_LINE = re.compile(r"^\s*TOOL:\s*([a-z_]+)\s*\(.*\)\s*$", re.IGNORECASE)
 ARG_PATTERN = re.compile(r'(\w+)="((?:[^"\\]|\\.)*)"')
@@ -221,8 +226,13 @@ class DeepAnswerEngine:
                 query = (args.get("query") or "").strip()
                 if not query:
                     return "tool error: search requires a query"
+                results = self._search(query)
+                top_k = args.get("top_k")
+                if top_k:
+                    with contextlib.suppress(TypeError, ValueError):
+                        results = results[: max(1, int(top_k))]
                 sources = []
-                for index, item in enumerate(self._search(query)):
+                for index, item in enumerate(results):
                     source = self._add_source(
                         file_path=str(item.get("file_path", "")).replace("\\", "/"),
                         start_line=max(1, int(item.get("start_line") or 1)),

@@ -3073,7 +3073,7 @@ var DEFAULT_SETTINGS = {
   answerModel: "",
   favoriteAnswerModels: [],
   answerMaxContextChars: 24e3,
-  answerMaxOutputTokens: 1200,
+  answerMaxOutputTokens: 4e3,
   answerTimeoutSeconds: 60
 };
 var LLM_PROVIDER_DEFAULTS = {

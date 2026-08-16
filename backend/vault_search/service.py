@@ -11,6 +11,7 @@ from .config import SearchConfig
 from .database import index_counts
 from .deep_answer import (  # pyright: ignore[reportMissingImports] — resolves fine (verified via basedpyright CLI); stale LSP module map
     DEEP_SYSTEM_PROMPT,
+    MIN_DEEP_OUTPUT_TOKENS,
     DeepAnswerEngine,
     grep_vault,
 )
@@ -545,7 +546,10 @@ class SearchService:
             search=do_search,
             read_file=do_read,
             grep=do_grep,
-            max_output_tokens=self.config.llm_max_output_tokens,
+            max_output_tokens=max(
+                self.config.llm_max_output_tokens,
+                MIN_DEEP_OUTPUT_TOKENS,
+            ),
             timeout_seconds=self.config.llm_timeout_seconds,
         )
         try:

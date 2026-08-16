@@ -236,6 +236,33 @@ def test_engine_unknown_tool_becomes_note():
     assert "unknown tool: explode" in outcome["text"] or "완료" in outcome["text"]
 
 
+def test_deep_answer_enforces_min_output_budget(monkeypatch, tmp_path):
+    service = make_service(tmp_path)
+    # A low configured budget must not starve reasoning models of output
+    # tokens — the deep loop enforces a floor.
+    service.config.llm_max_output_tokens = 1200
+    recorded: list[int] = []
+
+    class FakeProvider:
+        provider_id = "opencode-go"
+        model = "deepseek-v4-flash"
+
+        def complete(self, **_kwargs):
+            recorded.append(int(_kwargs.get("max_output_tokens", 0)))
+            return ProviderResponse(
+                "답변입니다. [S1]", "opencode-go", "deepseek-v4-flash"
+            )
+
+    monkeypatch.setattr(
+        "vault_search.service.create_provider", lambda *_args: FakeProvider()
+    )
+    value = service.call(
+        "answer", {"query": "상태", "conversation": [], "deep": True}
+    )
+    assert recorded and recorded[0] >= 4000
+    assert value["answer"] == "답변입니다. [S1]"
+
+
 def test_grep_vault_scoped_and_bounded(tmp_path):
     vault = tmp_path / "vault"
     (vault / "Notes").mkdir(parents=True)

@@ -79,7 +79,7 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   answerModel: "",
   favoriteAnswerModels: [],
   answerMaxContextChars: 24000,
-  answerMaxOutputTokens: 1200,
+  answerMaxOutputTokens: 4000,
   answerTimeoutSeconds: 60,
 };
 

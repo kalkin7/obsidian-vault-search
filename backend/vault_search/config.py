@@ -199,7 +199,7 @@ def load_config(
         ),
         llm_max_output_tokens=max(
             128,
-            min(8000, _as_int(raw.get("answerMaxOutputTokens", raw.get("llmMaxOutputTokens")), 1200)),
+            min(8000, _as_int(raw.get("answerMaxOutputTokens", raw.get("llmMaxOutputTokens")), 4000)),
         ),
         llm_timeout_seconds=max(
             5.0, min(60.0, _as_float(raw.get("answerTimeoutSeconds", raw.get("llmTimeoutSeconds")), 45.0))
