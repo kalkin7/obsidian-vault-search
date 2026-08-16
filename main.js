@@ -3010,7 +3010,7 @@ var import_obsidian = require("obsidian");
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
 var LIGHTNING_ICON_ASSET = "lightning.search.png";
-var BACKEND_VERSION = "0.1.12";
+var BACKEND_VERSION = "0.1.13";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -4164,7 +4164,10 @@ function normalizeProviderModels(provider, data) {
     const value = item;
     const id = typeof value.id === "string" ? value.id.trim() : "";
     if (!id || !isSelectableAnswerModel(provider, id)) return null;
-    return { id, created: typeof value.created === "number" ? value.created : 0 };
+    return {
+      id,
+      created: typeof value.created === "number" ? value.created : 0
+    };
   }).filter((item) => item !== null).sort((a, b) => b.created - a.created || a.id.localeCompare(b.id));
   return [...new Set(models.map((item) => item.id))].slice(0, 200);
 }
@@ -4275,7 +4278,9 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "AI Vault \uB2F5\uBCC0" });
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 provider").setDesc("\uAC80\uC0C9 \uADFC\uAC70\uB9CC provider\uC5D0 \uC804\uB2EC\uD569\uB2C8\uB2E4. API key\uB294 \uD50C\uB7EC\uADF8\uC778\uC5D0 \uC800\uC7A5\uD558\uC9C0 \uC54A\uACE0 sidecar\uAC00 \uD658\uACBD\uBCC0\uC218\uC5D0\uC11C \uC77D\uC2B5\uB2C8\uB2E4.").addDropdown((dropdown) => {
+    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 provider").setDesc(
+      "\uAC80\uC0C9 \uADFC\uAC70\uB9CC provider\uC5D0 \uC804\uB2EC\uD569\uB2C8\uB2E4. API key\uB294 \uD50C\uB7EC\uADF8\uC778\uC5D0 \uC800\uC7A5\uD558\uC9C0 \uC54A\uACE0 sidecar\uAC00 \uD658\uACBD\uBCC0\uC218\uC5D0\uC11C \uC77D\uC2B5\uB2C8\uB2E4."
+    ).addDropdown((dropdown) => {
       for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
         dropdown.addOption(id, provider.name);
       dropdown.setValue(draft.answerProvider).onChange((value) => {
@@ -4294,9 +4299,13 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
     const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
     let apiKeyInput = null;
-    new import_obsidian2.Setting(containerEl).setName("API \uD0A4").setDesc(savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428" : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4").addText((text) => {
+    new import_obsidian2.Setting(containerEl).setName("API \uD0A4").setDesc(
+      savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428" : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4"
+    ).addText((text) => {
       text.inputEl.type = "password";
-      text.setPlaceholder(savedApiKey ? "\uC800\uC7A5\uB41C \uD0A4\uB97C \uAD50\uCCB4\uD558\uB824\uBA74 \uC785\uB825" : `${answerProvider.env} \uC785\uB825`);
+      text.setPlaceholder(
+        savedApiKey ? "\uC800\uC7A5\uB41C \uD0A4\uB97C \uAD50\uCCB4\uD558\uB824\uBA74 \uC785\uB825" : `${answerProvider.env} \uC785\uB825`
+      );
       apiKeyInput = text.inputEl;
       return text;
     }).addButton(
@@ -4344,9 +4353,12 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
       (button) => button.setButtonText("\uBAA8\uB378 \uCD5C\uC2E0\uD654").onClick(async () => {
         button.setDisabled(true);
         try {
-          const models = await this.owner.fetchProviderModels(draft.answerProvider);
+          const models = await this.owner.fetchProviderModels(
+            draft.answerProvider
+          );
           this.providerModels[draft.answerProvider] = models;
-          if (models.length && !models.includes(draft.answerModel)) draft.answerModel = models[0];
+          if (models.length && !models.includes(draft.answerModel))
+            draft.answerModel = models[0];
           this.providerModelSelections[draft.answerProvider] = draft.answerModel;
           new import_obsidian2.Notice(
             models.length ? `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.` : draft.answerProvider === "openai" ? "OpenAI API\uAC00 \uC120\uD0DD \uAC00\uB2A5\uD55C \uCC44\uD305 \uBAA8\uB378\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
@@ -4359,15 +4371,39 @@ var VaultSearchSettingTab = class extends import_obsidian2.PluginSettingTab {
         }
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText((text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
-      draft.answerMaxContextChars = Math.max(8e3, Math.min(32e3, this.nonnegativeNumber(value, draft.answerMaxContextChars)));
-    }));
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uCD9C\uB825 \uD1A0\uD070").setDesc("128~8,000 \uD1A0\uD070").addText((text) => text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
-      draft.answerMaxOutputTokens = Math.max(128, Math.min(8e3, this.nonnegativeNumber(value, draft.answerMaxOutputTokens)));
-    }));
-    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 60\uCD08\uC785\uB2C8\uB2E4.").addText((text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
-      draft.answerTimeoutSeconds = Math.max(5, Math.min(60, this.nonnegativeNumber(value, draft.answerTimeoutSeconds)));
-    }));
+    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText(
+      (text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
+        draft.answerMaxContextChars = Math.max(
+          8e3,
+          Math.min(
+            32e3,
+            this.nonnegativeNumber(value, draft.answerMaxContextChars)
+          )
+        );
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 \uCD9C\uB825 \uD1A0\uD070").setDesc("128~8,000 \uD1A0\uD070").addText(
+      (text) => text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
+        draft.answerMaxOutputTokens = Math.max(
+          128,
+          Math.min(
+            8e3,
+            this.nonnegativeNumber(value, draft.answerMaxOutputTokens)
+          )
+        );
+      })
+    );
+    new import_obsidian2.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 60\uCD08\uC785\uB2C8\uB2E4.").addText(
+      (text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
+        draft.answerTimeoutSeconds = Math.max(
+          5,
+          Math.min(
+            60,
+            this.nonnegativeNumber(value, draft.answerTimeoutSeconds)
+          )
+        );
+      })
+    );
     const agent = this.owner.agentIntegration;
     new import_obsidian2.Setting(containerEl).setName("\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569").setDesc(
       "AI \uC5D0\uC774\uC804\uD2B8(Claude Code, Codex, Gemini CLI \uB4F1)\uAC00 \uC774 \uBCFC\uD2B8\uC5D0\uC11C vault-search\uB97C \uC0AC\uC6A9\uD558\uB3C4\uB85D \uC9C0\uC2DC \uD30C\uC77C\uACFC \uAC80\uC0C9 \uB798\uD37C\uB97C \uC124\uCE58\uD569\uB2C8\uB2E4. \uBCFC\uD2B8 \uB8E8\uD2B8 \uD30C\uC77C\uC740 \uBA85\uC2DC\uC801\uC73C\uB85C \uC124\uCE58\uD560 \uB54C\uB9CC \uC218\uC815\uB418\uBA70, \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC73C\uBA74 \uC790\uB3D9\uC73C\uB85C \uAC74\uB108\uB701\uB2C8\uB2E4. " + (agent ? this.agentStatusText(agent) : "\uC0C1\uD0DC \uD655\uC778 \uC911\u2026")
