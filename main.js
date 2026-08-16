@@ -3119,6 +3119,11 @@ var REASONING_EFFORT_LEVELS = {
   "kimi-k2.5": ["low", "high", "max"],
   "grok-4.5": ["none", "low", "medium", "high"]
 };
+var PROVIDER_REASONING_DEFAULTS = {
+  openai: ["none", "low", "medium", "high", "xhigh", "max"],
+  "opencode-go": ["none", "low", "medium", "high", "max"],
+  deepseek: ["none", "low", "high", "max"]
+};
 var DEFAULT_REASONING_LEVELS = [
   "none",
   "low",
@@ -3126,9 +3131,11 @@ var DEFAULT_REASONING_LEVELS = [
   "high",
   "max"
 ];
-function reasoningEffortLevels(model) {
+function reasoningEffortLevels(provider, model) {
   const levels = REASONING_EFFORT_LEVELS[model];
-  return levels ? [...levels] : [...DEFAULT_REASONING_LEVELS];
+  if (levels) return [...levels];
+  const providerDefault = PROVIDER_REASONING_DEFAULTS[provider];
+  return providerDefault ? [...providerDefault] : [...DEFAULT_REASONING_LEVELS];
 }
 
 // src/backend-protocol.ts
@@ -6292,7 +6299,13 @@ var VaultSearchPlugin = class extends import_obsidian8.Plugin {
   }
   /** Reasoning levels the current answer model supports (with auto). */
   getAnswerReasoningEffortOptions() {
-    return ["auto", ...reasoningEffortLevels(this.settings.answerModel)];
+    return [
+      "auto",
+      ...reasoningEffortLevels(
+        this.settings.answerProvider,
+        this.settings.answerModel
+      )
+    ];
   }
   /** Change the reasoning effort from the panel composer (hot, persists). */
   async setAnswerReasoningEffort(effort) {

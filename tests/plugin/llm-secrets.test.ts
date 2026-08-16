@@ -34,7 +34,7 @@ function fakeApp() {
   const values = new Map<string, string>();
   return {
     secretStorage: {
-      getSecret: (id: string) => values.has(id) ? values.get(id)! : null,
+      getSecret: (id: string) => (values.has(id) ? values.get(id)! : null),
       setSecret: (id: string, value: string) => values.set(id, value),
     },
   } as never;
@@ -58,10 +58,12 @@ describe("LLM secrets", () => {
     setProviderSecret(app, "openai", "");
 
     expect(providerEnvironment(app)).toEqual({ OPENAI_API_KEY: "" });
-    expect(mergeProviderEnvironment(
-      { OPENAI_API_KEY: "inherited-key", OTHER_ENV: "kept" },
-      providerEnvironment(app),
-    )).toEqual({ OPENAI_API_KEY: "", OTHER_ENV: "kept" });
+    expect(
+      mergeProviderEnvironment(
+        { OPENAI_API_KEY: "inherited-key", OTHER_ENV: "kept" },
+        providerEnvironment(app),
+      ),
+    ).toEqual({ OPENAI_API_KEY: "", OTHER_ENV: "kept" });
   });
 
   it("rejects a key the provider answers 401 to (real chat endpoint probe)", async () => {

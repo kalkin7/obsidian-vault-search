@@ -399,7 +399,13 @@ export default class VaultSearchPlugin extends Plugin {
 
   /** Reasoning levels the current answer model supports (with auto). */
   getAnswerReasoningEffortOptions(): string[] {
-    return ["auto", ...reasoningEffortLevels(this.settings.answerModel)];
+    return [
+      "auto",
+      ...reasoningEffortLevels(
+        this.settings.answerProvider,
+        this.settings.answerModel,
+      ),
+    ];
   }
 
   /** Change the reasoning effort from the panel composer (hot, persists). */

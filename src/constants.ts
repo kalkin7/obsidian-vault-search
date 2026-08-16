@@ -1,4 +1,4 @@
-import type { VaultSearchSettings } from "./types";
+import type { LLMProviderId, VaultSearchSettings } from "./types";
 
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
@@ -114,12 +114,25 @@ export const LLM_MODEL_ENDPOINTS = {
   deepseek: "https://api.deepseek.com/models",
 } as const;
 
-/** Reasoning-effort levels each model supports (OpenCode Go model ids).
- *  Curated from official model catalogs: GPT-5.6 Luna/Terra support
- *  none/low/medium/high/xhigh/max (no minimal); DeepSeek/GLM use
- *  none/low/high/max (low maps to high upstream, no medium); Kimi K3 always
- *  reasons (no none); Grok follows the OpenAI-style set. Unknown models
- *  default to the full range. "auto" is always offered on top. */
+/** Reasoning-effort levels each model supports.
+ *
+ *  Official references (checked when models are updated via 모델 최신화):
+ *  - OpenAI: https://platform.openai.com/docs/guides/reasoning (effort values
+ *    none/minimal/low/medium/high/xhigh/max; model pages list subsets) and
+ *    the gpt-5.6-luna / gpt-5.6-terra model pages.
+ *  - DeepSeek: https://api-docs.deepseek.com/api/create-chat-completion
+ *    (none/low/high/max; low maps to high, no medium).
+ *  - GLM/Zhipu: https://docs.bigmodel.cn/cn/guide/start/concept-param
+ *    (none/low/high/max; low maps to high).
+ *  - Kimi: https://www.kimi.com/help/kimi-api/api-troubleshooting
+ *    (K3 reasons always: low/high/max, no none).
+ *  - xAI Grok: OpenAI-style set (none/low/medium/high).
+ *  - OpenCode Go gateway: https://opencode.ai/docs/go (passes reasoning_effort
+ *    through; unknown models fall back to the provider default below).
+ *
+ *  When adding a newly fetched model, consult the provider docs above and add
+ *  an entry here; until then the provider default (below) applies. "auto" is
+ *  always offered on top of the levels. */
 const REASONING_EFFORT_LEVELS: Record<string, readonly string[]> = {
   "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
   "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
@@ -136,6 +149,15 @@ const REASONING_EFFORT_LEVELS: Record<string, readonly string[]> = {
   "grok-4.5": ["none", "low", "medium", "high"],
 };
 
+/** Per-provider fallback for models not in the curated table, so newly
+ *  fetched models still get sensible effort options until they are added
+ *  above. */
+const PROVIDER_REASONING_DEFAULTS: Record<LLMProviderId, readonly string[]> = {
+  openai: ["none", "low", "medium", "high", "xhigh", "max"],
+  "opencode-go": ["none", "low", "medium", "high", "max"],
+  deepseek: ["none", "low", "high", "max"],
+};
+
 const DEFAULT_REASONING_LEVELS: readonly string[] = [
   "none",
   "low",
@@ -144,8 +166,15 @@ const DEFAULT_REASONING_LEVELS: readonly string[] = [
   "max",
 ];
 
-/** Levels available for a model, excluding the always-present "auto". */
-export function reasoningEffortLevels(model: string): string[] {
+/** Levels available for a model (and provider fallback), excluding the
+ *  always-present "auto". Evaluated on every model refresh (모델 최신화) so
+ *  the composer selector tracks the current model. */
+export function reasoningEffortLevels(
+  provider: LLMProviderId,
+  model: string,
+): string[] {
   const levels = REASONING_EFFORT_LEVELS[model];
-  return levels ? [...levels] : [...DEFAULT_REASONING_LEVELS];
+  if (levels) return [...levels];
+  const providerDefault = PROVIDER_REASONING_DEFAULTS[provider];
+  return providerDefault ? [...providerDefault] : [...DEFAULT_REASONING_LEVELS];
 }
