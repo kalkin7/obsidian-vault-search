@@ -3889,11 +3889,16 @@ var BackendManager = class {
     }
     await this.waitUntilReady();
   }
+  /** Serializes service-config writes so concurrent settings saves can't
+   *  interleave tmp-file renames (last-write-wins with always-valid JSON). */
+  configWriteChain = Promise.resolve();
   /** Rewrite service-config.json from the current settings so a sidecar
    *  restart keeps hot (in-memory) model/effort changes instead of reloading
    *  a stale file. Called on every settings save. */
-  async persistServiceConfig() {
-    await this.writeServiceConfig();
+  persistServiceConfig() {
+    const write = this.configWriteChain.then(() => this.writeServiceConfig());
+    this.configWriteChain = write.catch(() => void 0);
+    return write;
   }
   async writeServiceConfig(lazyOverride) {
     const settings = this.getSettings();
@@ -3903,13 +3908,28 @@ var BackendManager = class {
       ...settings,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search"
     };
-    const temp = this.configPath + ".tmp";
+    const temp = `${this.configPath}.${Date.now()}.tmp`;
     await (0, import_promises2.writeFile)(temp, JSON.stringify(payload, null, 2), "utf8");
     try {
       await (0, import_promises2.rename)(temp, this.configPath);
     } catch {
-      await (0, import_promises2.rm)(this.configPath, { force: true });
-      await (0, import_promises2.rename)(temp, this.configPath);
+      const backup = `${this.configPath}.bak`;
+      await (0, import_promises2.rm)(backup, { force: true });
+      try {
+        await (0, import_promises2.rename)(this.configPath, backup);
+      } catch {
+      }
+      try {
+        await (0, import_promises2.rename)(temp, this.configPath);
+      } catch (error) {
+        try {
+          await (0, import_promises2.rename)(backup, this.configPath);
+        } catch {
+        }
+        await (0, import_promises2.rm)(temp, { force: true });
+        throw error;
+      }
+      await (0, import_promises2.rm)(backup, { force: true });
     }
   }
   redactLogLine(line) {
@@ -5355,6 +5375,14 @@ var import_obsidian7 = require("obsidian");
 
 // src/answer-renderer.ts
 var HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"];
+var HEADING_RE = /^(#{1,6})(?!#)[ \t]*(.+)$/;
+var BULLET_RE = /^\s*[-*]\s+(.+)$/;
+var NUMBERED_RE = /^\s*(\d+)[.)]\s+(.+)$/;
+var QUOTE_RE = /^\s*>\s?(.+)$/;
+var HR_RE = /^\s*(?:---+|\*\*\*+)\s*$/;
+function isBlockStart(line) {
+  return HEADING_RE.test(line) || BULLET_RE.test(line) || NUMBERED_RE.test(line) || QUOTE_RE.test(line) || HR_RE.test(line) || line.trim().startsWith("|");
+}
 var AnswerRenderer = class {
   constructor(containerEl, options) {
     this.containerEl = containerEl;
@@ -5391,10 +5419,10 @@ var AnswerRenderer = class {
         index++;
         continue;
       }
-      const heading = /^(#{1,6})[ \t]?(.+)$/.exec(line);
+      const heading = HEADING_RE.exec(line);
       if (heading) {
         const level = heading[1].length;
-        const tag = HEADING_TAGS[level - 1] ?? "h5";
+        const tag = HEADING_TAGS[level - 1] ?? "h6";
         const element = container.createEl(tag, {
           cls: "vault-answer-heading"
         });
@@ -5402,16 +5430,16 @@ var AnswerRenderer = class {
         index++;
         continue;
       }
-      const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
-      const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
+      const bullet = BULLET_RE.exec(line);
+      const numbered = NUMBERED_RE.exec(line);
       if (bullet || numbered) {
         const ordered = Boolean(numbered);
         const list = container.createEl(ordered ? "ol" : "ul", {
           cls: "vault-answer-list"
         });
         while (index < lines.length) {
-          const nextBullet = /^\s*[-*]\s+(.+)$/.exec(lines[index]);
-          const nextNumbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(lines[index]);
+          const nextBullet = BULLET_RE.exec(lines[index]);
+          const nextNumbered = NUMBERED_RE.exec(lines[index]);
           const itemMatch = ordered ? nextNumbered : nextBullet;
           if (!itemMatch) break;
           const item = list.createEl("li", { cls: "vault-answer-list-item" });
@@ -5425,7 +5453,7 @@ var AnswerRenderer = class {
         }
         continue;
       }
-      const quote = /^\s*>\s?(.+)$/.exec(line);
+      const quote = QUOTE_RE.exec(line);
       if (quote) {
         const block = container.createEl("blockquote", {
           cls: "vault-answer-quote"
@@ -5434,7 +5462,7 @@ var AnswerRenderer = class {
         index++;
         continue;
       }
-      if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+      if (HR_RE.test(line)) {
         container.createEl("hr", { cls: "vault-answer-rule" });
         index++;
         continue;
@@ -5444,12 +5472,13 @@ var AnswerRenderer = class {
         continue;
       }
       const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
-      while (index < lines.length && lines[index].trim() && !/^(?:#{1,6})[ \t]?|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
-        lines[index]
-      )) {
+      let advanced = false;
+      while (index < lines.length && lines[index].trim()) {
+        if (advanced && isBlockStart(lines[index])) break;
         if (paragraph.children.length > 0) paragraph.createEl("br");
         this.renderInline(paragraph, lines[index].trim(), byId, counts);
         index++;
+        advanced = true;
       }
     }
   }
@@ -5563,6 +5592,10 @@ var CIRCLED_NUMBERS = [
   "\u2472",
   "\u2473"
 ];
+var PROTECTED_SPAN_RE = /(```[\s\S]*?```|`[^`\n]+`|\[\[[^\]]+\]\]|\[(?:[^[\]]|\[[^\]]*\])*\]\([^)]+\))/g;
+function escapeWikilinkPath(path5) {
+  return path5.replace(/%/g, "%25").replace(/#/g, "%23").replace(/\[/g, "%5B").replace(/\]/g, "%5D").replace(/\|/g, "%7C").replace(/\^/g, "%5E");
+}
 function toNoteMarkdown(answer, citations) {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
   const fileToNumber = /* @__PURE__ */ new Map();
@@ -5577,16 +5610,19 @@ function toNoteMarkdown(answer, citations) {
     return number;
   };
   const marker = (number) => CIRCLED_NUMBERS[number - 1] ?? String(number);
-  const inline = answer.replace(/\[S(\d+)\]/g, (match, id) => {
+  const rewriteMarkers = (segment) => segment.replace(/\[S(\d+)\]/g, (match, id) => {
     const citation = byId.get(`S${id}`);
     if (!citation) return match;
     const number = numberFor(citation);
-    const path5 = citation.file_path.replace(/\.md$/i, "");
+    const path5 = escapeWikilinkPath(citation.file_path.replace(/\.md$/i, ""));
     return `[[${path5}|${marker(number)}]]`;
   });
+  const inline = answer.split(PROTECTED_SPAN_RE).map(
+    (segment, segmentIndex) => segmentIndex % 2 === 1 ? segment : rewriteMarkers(segment)
+  ).join("");
   if (files.length === 0) return inline;
   const list = files.map(
-    (file, index) => `- ${marker(index + 1)} [[${file.replace(/\.md$/i, "")}]]`
+    (file, index) => `- ${marker(index + 1)} [[${escapeWikilinkPath(file.replace(/\.md$/i, ""))}]]`
   );
   return `${inline}
 

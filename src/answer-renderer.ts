@@ -9,6 +9,28 @@ export interface AnswerRendererOptions {
  *  index 0 = level 1. */
 const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
 
+/** Block-entry patterns shared by the render loop and the paragraph
+ *  terminator. Every pattern requires real content, so a lone marker line
+ *  (`#`, `-`, `>`) can never stop a paragraph without being consumed —
+ *  which previously caused an infinite render loop. `(?!#)` rejects a
+ *  seventh hash (Obsidian renders 7+ hashes as literal text). */
+const HEADING_RE = /^(#{1,6})(?!#)[ \t]*(.+)$/;
+const BULLET_RE = /^\s*[-*]\s+(.+)$/;
+const NUMBERED_RE = /^\s*(\d+)[.)]\s+(.+)$/;
+const QUOTE_RE = /^\s*>\s?(.+)$/;
+const HR_RE = /^\s*(?:---+|\*\*\*+)\s*$/;
+
+function isBlockStart(line: string): boolean {
+  return (
+    HEADING_RE.test(line) ||
+    BULLET_RE.test(line) ||
+    NUMBERED_RE.test(line) ||
+    QUOTE_RE.test(line) ||
+    HR_RE.test(line) ||
+    line.trim().startsWith("|")
+  );
+}
+
 /** Google-AI-mode-style renderer: lightweight markdown (headings, lists,
  *  bold, inline code, quotes) with clickable citation pills (source name,
  *  "+N" when the same file is cited several times). DOM-only — never assigns
@@ -60,10 +82,10 @@ export class AnswerRenderer {
         index++;
         continue;
       }
-      const heading = /^(#{1,6})[ \t]?(.+)$/.exec(line);
+      const heading = HEADING_RE.exec(line);
       if (heading) {
         const level = heading[1].length;
-        const tag = HEADING_TAGS[level - 1] ?? "h5";
+        const tag = HEADING_TAGS[level - 1] ?? "h6";
         const element = container.createEl(tag, {
           cls: "vault-answer-heading",
         });
@@ -71,16 +93,16 @@ export class AnswerRenderer {
         index++;
         continue;
       }
-      const bullet = /^\s*[-*]\s+(.+)$/.exec(line);
-      const numbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(line);
+      const bullet = BULLET_RE.exec(line);
+      const numbered = NUMBERED_RE.exec(line);
       if (bullet || numbered) {
         const ordered = Boolean(numbered);
         const list = container.createEl(ordered ? "ol" : "ul", {
           cls: "vault-answer-list",
         });
         while (index < lines.length) {
-          const nextBullet = /^\s*[-*]\s+(.+)$/.exec(lines[index]);
-          const nextNumbered = /^\s*(\d+)[.)]\s+(.+)$/.exec(lines[index]);
+          const nextBullet = BULLET_RE.exec(lines[index]);
+          const nextNumbered = NUMBERED_RE.exec(lines[index]);
           const itemMatch = ordered ? nextNumbered : nextBullet;
           if (!itemMatch) break;
           const item = list.createEl("li", { cls: "vault-answer-list-item" });
@@ -95,7 +117,7 @@ export class AnswerRenderer {
         }
         continue;
       }
-      const quote = /^\s*>\s?(.+)$/.exec(line);
+      const quote = QUOTE_RE.exec(line);
       if (quote) {
         const block = container.createEl("blockquote", {
           cls: "vault-answer-quote",
@@ -104,7 +126,7 @@ export class AnswerRenderer {
         index++;
         continue;
       }
-      if (/^\s*(?:---+|\*\*\*+)\s*$/.test(line)) {
+      if (HR_RE.test(line)) {
         container.createEl("hr", { cls: "vault-answer-rule" });
         index++;
         continue;
@@ -114,16 +136,15 @@ export class AnswerRenderer {
         continue;
       }
       const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
-      while (
-        index < lines.length &&
-        lines[index].trim() &&
-        !/^(?:#{1,6})[ \t]?|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
-          lines[index],
-        )
-      ) {
+      // Always consume the first line (guarantees forward progress); later
+      // lines break out only when they start a new block.
+      let advanced = false;
+      while (index < lines.length && lines[index].trim()) {
+        if (advanced && isBlockStart(lines[index])) break;
         if (paragraph.children.length > 0) paragraph.createEl("br");
         this.renderInline(paragraph, lines[index].trim(), byId, counts);
         index++;
+        advanced = true;
       }
     }
   }
@@ -269,12 +290,32 @@ const CIRCLED_NUMBERS = [
   "⑳",
 ];
 
+/** Spans in which ``[S#]`` markers must never be rewritten: fenced/inline
+ *  code and existing wikilinks / markdown links (labels may contain nested
+ *  bracket pairs like ``[text [S1]](url)``). */
+const PROTECTED_SPAN_RE =
+  /(```[\s\S]*?```|`[^`\n]+`|\[\[[^\]]+\]\]|\[(?:[^[\]]|\[[^\]]*\])*\]\([^)]+\))/g;
+
+/** Percent-encode characters that break Obsidian wikilink parsing (`#` starts
+ *  a heading anchor, `]` closes the target, `|` starts the alias, `^` a block
+ *  ref). Obsidian itself encodes these in the links it generates. */
+function escapeWikilinkPath(path: string): string {
+  return path
+    .replace(/%/g, "%25")
+    .replace(/#/g, "%23")
+    .replace(/\[/g, "%5B")
+    .replace(/\]/g, "%5D")
+    .replace(/\|/g, "%7C")
+    .replace(/\^/g, "%5E");
+}
+
 /** Turn a raw answer (with ``[S#]`` markers) into note-ready markdown: each
  *  known citation becomes an inline wikilink whose label is a circled
  *  endnote number (``[[file|①]]``) — clearly an annotation, and clicking it
  *  opens the source file directly (one hop; pure wikilink, no HTML). A
  *  deduplicated ``## 근거`` list maps each number to its file. Unknown
- *  ``[S#]`` markers are kept as-is. */
+ *  ``[S#]`` markers are kept as-is, and markers inside code spans/blocks or
+ *  existing links are never rewritten. */
 export function toNoteMarkdown(answer: string, citations: Citation[]): string {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
   const fileToNumber = new Map<string, number>();
@@ -290,16 +331,26 @@ export function toNoteMarkdown(answer: string, citations: Citation[]): string {
   };
   const marker = (number: number): string =>
     CIRCLED_NUMBERS[number - 1] ?? String(number);
-  const inline = answer.replace(/\[S(\d+)\]/g, (match, id: string) => {
-    const citation = byId.get(`S${id}`);
-    if (!citation) return match;
-    const number = numberFor(citation);
-    const path = citation.file_path.replace(/\.md$/i, "");
-    return `[[${path}|${marker(number)}]]`;
-  });
+  const rewriteMarkers = (segment: string): string =>
+    segment.replace(/\[S(\d+)\]/g, (match, id: string) => {
+      const citation = byId.get(`S${id}`);
+      if (!citation) return match;
+      const number = numberFor(citation);
+      const path = escapeWikilinkPath(citation.file_path.replace(/\.md$/i, ""));
+      return `[[${path}|${marker(number)}]]`;
+    });
+  // Split keeps protected spans at odd indices (the regex captures them), so
+  // only the plain-text segments between them get their markers rewritten.
+  const inline = answer
+    .split(PROTECTED_SPAN_RE)
+    .map((segment, segmentIndex) =>
+      segmentIndex % 2 === 1 ? segment : rewriteMarkers(segment),
+    )
+    .join("");
   if (files.length === 0) return inline;
   const list = files.map(
-    (file, index) => `- ${marker(index + 1)} [[${file.replace(/\.md$/i, "")}]]`,
+    (file, index) =>
+      `- ${marker(index + 1)} [[${escapeWikilinkPath(file.replace(/\.md$/i, ""))}]]`,
   );
   return `${inline}\n\n## 근거\n${list.join("\n")}`;
 }

@@ -187,6 +187,73 @@ describe("AnswerRenderer", () => {
     expect(note).toContain("- ② [[5_Wiki/issues/b]]");
   });
 
+  it("terminates and renders lone heading markers and 7+ hashes as text", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
+    // Regression: "#" alone previously matched the paragraph terminator but
+    // not the heading branch, so index never advanced — an infinite loop.
+    // The renderer clears the container per call, so render once with
+    // blank-line separators.
+    renderer.render("#\n\n####\n\n####### text", []);
+    const paragraphs = find(
+      container,
+      (node) => node.cls === "vault-answer-paragraph",
+    );
+    expect(paragraphs.length).toBeGreaterThanOrEqual(3);
+    expect(
+      find(container, (node) => node.textContent === "#").length,
+    ).toBeGreaterThan(0);
+    expect(
+      find(container, (node) => node.textContent === "####").length,
+    ).toBeGreaterThan(0);
+    expect(
+      find(container, (node) => node.textContent === "####### text").length,
+    ).toBeGreaterThan(0);
+  });
+
+  it("keeps [S#] markers inside code and existing links untouched", () => {
+    const citation: Citation = {
+      id: "S1",
+      file_path: "5_Wiki/law/a.md",
+      start_line: 1,
+      heading_path: [],
+      rank: 1,
+      score: 0.8,
+    };
+    const answer = [
+      "코드: `[S1]` 안 건드림",
+      "```",
+      "[S1]",
+      "```",
+      "위키링크: [[existing [S1]]]",
+      "마크다운 링크: [텍스트 [S1]](https://example.com)",
+      "본문 [S1]",
+    ].join("\n");
+    const note = toNoteMarkdown(answer, [citation]);
+    expect(note).toContain("`[S1]`");
+    expect(note).toContain("```\n[S1]\n```");
+    expect(note).toContain("[[existing [S1]]]");
+    expect(note).toContain("[텍스트 [S1]](https://example.com)");
+    expect(note).toContain("본문 [[5_Wiki/law/a|①]]");
+    expect(note).toContain("## 근거");
+  });
+
+  it("escapes Obsidian link metacharacters in citation paths", () => {
+    const citation: Citation = {
+      id: "S1",
+      file_path: "5_Wiki/law/C#.md",
+      start_line: 1,
+      heading_path: [],
+      rank: 1,
+      score: 0.8,
+    };
+    const note = toNoteMarkdown("본문 [S1]", [citation]);
+    expect(note).toContain("[[5_Wiki/law/C%23|①]]");
+    expect(note).toContain("- ① [[5_Wiki/law/C%23]]");
+  });
+
   it("copy button calls back with the raw answer", () => {
     const container = makeEl();
     const renderer = new AnswerRenderer(container as unknown as HTMLElement, {

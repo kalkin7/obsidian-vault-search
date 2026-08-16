@@ -764,11 +764,17 @@ export class BackendManager {
     await this.waitUntilReady();
   }
 
+  /** Serializes service-config writes so concurrent settings saves can't
+   *  interleave tmp-file renames (last-write-wins with always-valid JSON). */
+  private configWriteChain: Promise<void> = Promise.resolve();
+
   /** Rewrite service-config.json from the current settings so a sidecar
    *  restart keeps hot (in-memory) model/effort changes instead of reloading
    *  a stale file. Called on every settings save. */
-  async persistServiceConfig(): Promise<void> {
-    await this.writeServiceConfig();
+  persistServiceConfig(): Promise<void> {
+    const write = this.configWriteChain.then(() => this.writeServiceConfig());
+    this.configWriteChain = write.catch(() => undefined);
+    return write;
   }
 
   private async writeServiceConfig(lazyOverride?: boolean): Promise<void> {
@@ -779,13 +785,33 @@ export class BackendManager {
       ...settings,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search",
     };
-    const temp = this.configPath + ".tmp";
+    // Unique temp name: concurrent writers can't clobber each other's file.
+    const temp = `${this.configPath}.${Date.now()}.tmp`;
     await writeFile(temp, JSON.stringify(payload, null, 2), "utf8");
     try {
       await rename(temp, this.configPath);
     } catch {
-      await rm(this.configPath, { force: true });
-      await rename(temp, this.configPath);
+      // Windows rename-over-existing can fail. Swap via a backup so a failed
+      // replacement never leaves the config file missing.
+      const backup = `${this.configPath}.bak`;
+      await rm(backup, { force: true });
+      try {
+        await rename(this.configPath, backup);
+      } catch {
+        // No previous config — nothing to preserve.
+      }
+      try {
+        await rename(temp, this.configPath);
+      } catch (error) {
+        try {
+          await rename(backup, this.configPath);
+        } catch {
+          // Best-effort restore.
+        }
+        await rm(temp, { force: true });
+        throw error;
+      }
+      await rm(backup, { force: true });
     }
   }
 
