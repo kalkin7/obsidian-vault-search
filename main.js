@@ -5543,24 +5543,21 @@ var AnswerRenderer = class {
 };
 function toNoteMarkdown(answer, citations) {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
-  const wikilink = (citation) => {
-    const path5 = citation.file_path.replace(/\.md$/i, "");
-    const rawLabel = citation.heading_path.length > 0 ? citation.heading_path[0] : path5.split("/").pop() ?? path5;
-    return `[[${path5}|${rawLabel.replace(/\|/g, "\xB7")}]]`;
-  };
-  const text = answer.replace(/\[S(\d+)\]/g, (match, id) => {
-    const citation = byId.get(`S${id}`);
-    return citation ? wikilink(citation) : match;
-  });
   const seen = /* @__PURE__ */ new Set();
   const sources = [];
-  for (const citation of citations) {
-    if (seen.has(citation.file_path)) continue;
-    seen.add(citation.file_path);
-    sources.push(`- [[${citation.file_path.replace(/\.md$/i, "")}]]`);
-  }
-  if (sources.length === 0) return text;
-  return `${text}
+  const inline = answer.replace(/\[S(\d+)\]/g, (match, id) => {
+    const citation = byId.get(`S${id}`);
+    if (!citation) return match;
+    const path5 = citation.file_path.replace(/\.md$/i, "");
+    const label = (path5.split("/").pop() ?? path5).replace(/_/g, " ").replace(/\|/g, "\xB7");
+    if (!seen.has(path5)) {
+      seen.add(path5);
+      sources.push(`- [[${path5}]]`);
+    }
+    return `<sup>[[${path5}|${label}]]</sup>`;
+  });
+  if (sources.length === 0) return inline;
+  return `${inline}
 
 ## \uADFC\uAC70
 ${sources.join("\n")}`;

@@ -245,31 +245,27 @@ export class AnswerRenderer {
   }
 }
 
-/** Turn a raw answer (with ``[S#]`` markers) into note-ready markdown:
- *  every known citation becomes an Obsidian wikilink to its vault file, and a
- *  deduplicated ``## 근거`` list of the cited files is appended. Unknown
+/** Turn a raw answer (with ``[S#]`` markers) into note-ready markdown: each
+ *  known citation becomes an inline superscript wikilink
+ *  (``<sup>[[file|name]]</sup>``) — visually an annotation, but clicking it
+ *  opens the source file directly (no footnote hop). A deduplicated
+ *  ``## 근거`` list of the cited files is appended for overview. Unknown
  *  ``[S#]`` markers are kept as-is. */
 export function toNoteMarkdown(answer: string, citations: Citation[]): string {
   const byId = new Map(citations.map((citation) => [citation.id, citation]));
-  const wikilink = (citation: Citation): string => {
-    const path = citation.file_path.replace(/\.md$/i, "");
-    const rawLabel =
-      citation.heading_path.length > 0
-        ? citation.heading_path[0]
-        : (path.split("/").pop() ?? path);
-    return `[[${path}|${rawLabel.replace(/\|/g, "·")}]]`;
-  };
-  const text = answer.replace(/\[S(\d+)\]/g, (match, id: string) => {
-    const citation = byId.get(`S${id}`);
-    return citation ? wikilink(citation) : match;
-  });
   const seen = new Set<string>();
   const sources: string[] = [];
-  for (const citation of citations) {
-    if (seen.has(citation.file_path)) continue;
-    seen.add(citation.file_path);
-    sources.push(`- [[${citation.file_path.replace(/\.md$/i, "")}]]`);
-  }
-  if (sources.length === 0) return text;
-  return `${text}\n\n## 근거\n${sources.join("\n")}`;
+  const inline = answer.replace(/\[S(\d+)\]/g, (match, id: string) => {
+    const citation = byId.get(`S${id}`);
+    if (!citation) return match;
+    const path = citation.file_path.replace(/\.md$/i, "");
+    const label = (path.split("/").pop() ?? path).replace(/_/g, " ").replace(/\|/g, "·");
+    if (!seen.has(path)) {
+      seen.add(path);
+      sources.push(`- [[${path}]]`);
+    }
+    return `<sup>[[${path}|${label}]]</sup>`;
+  });
+  if (sources.length === 0) return inline;
+  return `${inline}\n\n## 근거\n${sources.join("\n")}`;
 }

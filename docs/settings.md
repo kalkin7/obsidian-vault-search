@@ -102,9 +102,10 @@ unconditionally overwritten from the stored secrets).
   per-answer blocks with markdown, tables, citation pills, and a hover copy
   button) for the session. Markdown headings of any level (`#`…`######`) are
   rendered as h3–h6. **답변 복사** produces note-ready markdown: `[S#]`
-  citations become Obsidian wikilinks to the source files and a `## 근거`
-  list is appended, so pasting an answer into a note keeps every reference
-  live.
+  citations become inline superscript wikilinks (`<sup>[[file|name]]</sup>`)
+  that open the source file directly, plus a deduplicated `## 근거` list, so
+  pasting an answer into a note keeps every reference live and clearly
+  annotated.
 - **Restart persistence** — every settings save rewrites `service-config.json`
   alongside the hot in-memory apply, so a sidecar restart keeps the currently
   selected provider/model/reasoning effort instead of reloading a stale
