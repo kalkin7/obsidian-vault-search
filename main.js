@@ -5326,7 +5326,9 @@ var AnswerRenderer = class {
         continue;
       }
       const paragraph = container.createDiv({ cls: "vault-answer-paragraph" });
-      while (index < lines.length && lines[index].trim() && !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(lines[index])) {
+      while (index < lines.length && lines[index].trim() && !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
+        lines[index]
+      )) {
         if (paragraph.children.length > 0) paragraph.createEl("br");
         this.renderInline(paragraph, lines[index].trim(), byId, counts);
         index++;
@@ -5495,12 +5497,10 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
   inputEl;
   statusEl;
   answerEl;
-  sourcesEl;
   providerEl;
-  answerRenderer;
-  sourceView;
   session;
   modelSelect;
+  pendingEl = null;
   lastQuery = "";
   getViewType() {
     return VIEW_TYPE_VAULT_AI_SEARCH;
@@ -5544,16 +5544,6 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
     headerButton.addEventListener("click", () => this.inputEl?.focus());
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
-    this.sourcesEl = this.contentEl.createDiv({
-      cls: "vault-ai-search-sources"
-    });
-    this.answerRenderer = new AnswerRenderer(this.answerEl, {
-      openCitation: (location) => this.owner.openSearchResult(location, true)
-    });
-    this.sourceView = new SearchResultView(
-      this.sourcesEl,
-      (location) => this.owner.openSearchResult(location, true)
-    );
     this.session = new AnswerSession(
       (query, conversation) => this.answer(query, conversation),
       (state) => this.renderAnswerState(state)
@@ -5603,6 +5593,8 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
         return;
       }
       this.lastQuery = query;
+      this.appendUserMessage(query);
+      this.pendingEl = null;
       this.session.submit(query);
       this.inputEl.value = "";
       this.autoGrowInput();
@@ -5630,7 +5622,7 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
       this.autoGrowInput();
       this.session.clear();
       this.answerEl.empty();
-      this.sourcesEl.empty();
+      this.pendingEl = null;
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
@@ -5741,70 +5733,112 @@ var VaultSearchItemView = class extends import_obsidian6.ItemView {
   }
   renderAnswerState(state) {
     if (state.kind === "idle") {
-      this.answerEl.empty();
-      this.sourcesEl.empty();
       this.statusEl?.setText("");
       return;
     }
     if (state.kind === "retrieving") {
-      this.statusEl?.setText("\uBCFC\uD2B8 \uADFC\uAC70\uB97C \uCC3E\uB294 \uC911\u2026");
+      this.setPending("\uBCFC\uD2B8 \uADFC\uAC70\uB97C \uCC3E\uB294 \uC911\u2026");
       return;
     }
     if (state.kind === "answering") {
-      this.statusEl?.setText("\uB2F5\uBCC0\uC744 \uC791\uC131\uD558\uB294 \uC911\u2026");
+      this.setPending("\uB2F5\uBCC0\uC744 \uC791\uC131\uD558\uB294 \uC911\u2026");
       return;
     }
     if (state.kind === "answer") {
       this.renderAnswer(state.result);
       return;
     }
-    this.statusEl?.setText(`\uB2F5\uBCC0\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${state.message}`);
-    this.statusEl?.addClass("vault-search-error");
-    if (state.evidence?.length) {
-      this.sourcesEl.empty();
-      const details = this.sourcesEl.createEl("details", {
-        cls: "vault-ai-search-evidence"
+    this.renderUnavailable(state);
+  }
+  appendUserMessage(text) {
+    const bubble = this.answerEl.createDiv({ cls: "vault-ai-search-user" });
+    bubble.setText(text);
+    this.scrollToBottom();
+  }
+  setPending(text) {
+    if (!this.pendingEl) {
+      this.pendingEl = this.answerEl.createDiv({
+        cls: "vault-ai-search-assistant"
       });
-      details.createEl("summary", {
-        text: `\uAC80\uC0C9 \uADFC\uAC70 (${state.evidence.length})`
-      });
-      const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-      this.sourceView = new SearchResultView(
-        list,
-        (location) => this.owner.openSearchResult(location, true)
-      );
-      this.sourceView.render(state.evidence);
+      this.pendingEl.createDiv({ cls: "vault-ai-search-thinking" });
     }
-    const retry = this.answerEl.createEl("button", {
+    const label = this.pendingEl.querySelector(
+      ".vault-ai-search-thinking"
+    );
+    if (label) label.setText(text);
+    this.scrollToBottom();
+  }
+  clearPending() {
+    if (this.pendingEl) {
+      this.pendingEl.remove();
+      this.pendingEl = null;
+    }
+  }
+  renderMessageEvidence(block, evidence) {
+    const details = block.createEl("details", {
+      cls: "vault-ai-search-evidence"
+    });
+    details.createEl("summary", {
+      text: `\uADFC\uAC70 \uD3BC\uCE58\uAE30 (${evidence.length})`
+    });
+    const list = details.createDiv({ cls: "vault-ai-search-source-list" });
+    const view = new SearchResultView(
+      list,
+      (location) => this.owner.openSearchResult(location, true)
+    );
+    view.render(evidence);
+  }
+  scrollToBottom() {
+    this.answerEl.scrollTop = this.answerEl.scrollHeight;
+  }
+  renderUnavailable(state) {
+    this.clearPending();
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant"
+    });
+    const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    meta.setText("\uB2F5\uBCC0\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4");
+    meta.addClass("vault-search-error");
+    block.createDiv({ cls: "vault-ai-search-answer-body" }).setText(
+      state.message
+    );
+    if (state.evidence?.length) {
+      this.renderMessageEvidence(block, state.evidence);
+    }
+    const retry = block.createEl("button", {
       text: "\uB2E4\uC2DC \uC2DC\uB3C4",
       attr: { type: "button" }
     });
-    retry.addEventListener("click", () => this.session.submit(this.lastQuery));
+    retry.addEventListener(
+      "click",
+      () => this.session.submit(this.lastQuery)
+    );
+    this.scrollToBottom();
   }
   renderAnswer(result) {
     this.statusEl?.removeClass("vault-search-error");
+    this.clearPending();
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant"
+    });
     const deep = result.diagnostics.deep ? ` \xB7 \uC870\uC0AC ${result.diagnostics.turns ?? 0}\uD134` : "";
-    this.statusEl?.setText(
+    const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    meta.setText(
       `${result.provider} \xB7 ${result.model}${result.grounded ? " \xB7 \uADFC\uAC70 \uC788\uC74C" : " \xB7 \uADFC\uAC70 \uBD80\uC871"}${deep}`
     );
-    this.answerRenderer.render(
+    const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
+    const renderer = new AnswerRenderer(body, {
+      openCitation: (location) => this.owner.openSearchResult(location, true)
+    });
+    renderer.render(
       result.answer,
       result.citations,
       (text) => this.copyAnswer(text)
     );
-    this.sourcesEl.empty();
-    const details = this.sourcesEl.createEl("details", {
-      cls: "vault-ai-search-evidence"
-    });
-    details.createEl("summary", {
-      text: `\uADFC\uAC70 \uD3BC\uCE58\uAE30 (${result.evidence.length})`
-    });
-    const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-    this.sourceView = new SearchResultView(
-      list,
-      (location) => this.owner.openSearchResult(location, true)
-    );
-    this.sourceView.render(result.evidence);
+    if (result.evidence.length) {
+      this.renderMessageEvidence(block, result.evidence);
+    }
+    this.scrollToBottom();
   }
   renderBackendStatus(status) {
     if (status.state === "error") {

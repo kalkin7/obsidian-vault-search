@@ -465,6 +465,38 @@
 .vault-ai-search-answer ::selection {
  background: var(--text-selection);
 }
+/* Conversation history: user question bubble (right), assistant block (left),
+ * muted thought/thinking line on top of each assistant answer. */
+.vault-ai-search-user {
+ max-width: 86%;
+ margin: 0 0 var(--size-4-3) auto;
+ padding: var(--size-4-2) var(--size-4-3);
+ border: 1px solid var(--background-modifier-border);
+ border-radius: var(--radius-m);
+ background: var(--background-secondary);
+ white-space: pre-wrap;
+ overflow-wrap: anywhere;
+}
+.vault-ai-search-assistant {
+ max-width: 100%;
+ margin-bottom: var(--size-4-3);
+}
+.vault-ai-search-thought,
+.vault-ai-search-thinking {
+ color: var(--text-muted);
+ font-size: var(--font-ui-smaller);
+ font-style: italic;
+ margin-bottom: var(--size-4-2);
+}
+.vault-ai-search-answer-body {
+ min-width: 0;
+}
+.vault-ai-search-answer-body .vault-answer-toolbar {
+ margin-top: var(--size-4-1);
+}
+.vault-ai-search-answer-body:empty {
+ display: none;
+}
 .vault-answer-toolbar {
  display: flex;
  justify-content: flex-end;

@@ -17,6 +17,7 @@ import {
   type SearchResultLocation,
 } from "./search-result-view";
 import type {
+  AnswerEvidence,
   AnswerResult,
   AnswerState,
   BackendStatus,
@@ -64,12 +65,10 @@ export class VaultSearchItemView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private statusEl!: HTMLElement;
   private answerEl!: HTMLElement;
-  private sourcesEl!: HTMLElement;
   private providerEl!: HTMLElement;
-  private answerRenderer!: AnswerRenderer;
-  private sourceView!: SearchResultView;
   private session!: AnswerSession;
   private modelSelect!: HTMLSelectElement;
+  private pendingEl: HTMLElement | null = null;
   private lastQuery = "";
 
   constructor(
@@ -129,15 +128,6 @@ export class VaultSearchItemView extends ItemView {
     headerButton.addEventListener("click", () => this.inputEl?.focus());
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
-    this.sourcesEl = this.contentEl.createDiv({
-      cls: "vault-ai-search-sources",
-    });
-    this.answerRenderer = new AnswerRenderer(this.answerEl, {
-      openCitation: (location) => this.owner.openSearchResult(location, true),
-    });
-    this.sourceView = new SearchResultView(this.sourcesEl, (location) =>
-      this.owner.openSearchResult(location, true),
-    );
     this.session = new AnswerSession(
       (query, conversation) => this.answer(query, conversation),
       (state) => this.renderAnswerState(state),
@@ -187,6 +177,8 @@ export class VaultSearchItemView extends ItemView {
         return;
       }
       this.lastQuery = query;
+      this.appendUserMessage(query);
+      this.pendingEl = null;
       this.session.submit(query);
       this.inputEl.value = "";
       this.autoGrowInput();
@@ -215,7 +207,7 @@ export class VaultSearchItemView extends ItemView {
       this.autoGrowInput();
       this.session.clear();
       this.answerEl.empty();
-      this.sourcesEl.empty();
+      this.pendingEl = null;
     };
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
@@ -346,69 +338,123 @@ export class VaultSearchItemView extends ItemView {
 
   private renderAnswerState(state: AnswerState): void {
     if (state.kind === "idle") {
-      this.answerEl.empty();
-      this.sourcesEl.empty();
       this.statusEl?.setText("");
       return;
     }
     if (state.kind === "retrieving") {
-      this.statusEl?.setText("볼트 근거를 찾는 중…");
+      this.setPending("볼트 근거를 찾는 중…");
       return;
     }
     if (state.kind === "answering") {
-      this.statusEl?.setText("답변을 작성하는 중…");
+      this.setPending("답변을 작성하는 중…");
       return;
     }
     if (state.kind === "answer") {
       this.renderAnswer(state.result);
       return;
     }
-    this.statusEl?.setText(`답변을 사용할 수 없습니다: ${state.message}`);
-    this.statusEl?.addClass("vault-search-error");
-    if (state.evidence?.length) {
-      this.sourcesEl.empty();
-      const details = this.sourcesEl.createEl("details", {
-        cls: "vault-ai-search-evidence",
+    this.renderUnavailable(state);
+  }
+
+  private appendUserMessage(text: string): void {
+    const bubble = this.answerEl.createDiv({ cls: "vault-ai-search-user" });
+    bubble.setText(text);
+    this.scrollToBottom();
+  }
+
+  private setPending(text: string): void {
+    if (!this.pendingEl) {
+      this.pendingEl = this.answerEl.createDiv({
+        cls: "vault-ai-search-assistant",
       });
-      details.createEl("summary", {
-        text: `검색 근거 (${state.evidence.length})`,
-      });
-      const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-      this.sourceView = new SearchResultView(list, (location) =>
-        this.owner.openSearchResult(location, true),
-      );
-      this.sourceView.render(state.evidence);
+      this.pendingEl.createDiv({ cls: "vault-ai-search-thinking" });
     }
-    const retry = this.answerEl.createEl("button", {
+    const label = this.pendingEl.querySelector(
+      ".vault-ai-search-thinking",
+    ) as HTMLElement | null;
+    if (label) label.setText(text);
+    this.scrollToBottom();
+  }
+
+  private clearPending(): void {
+    if (this.pendingEl) {
+      this.pendingEl.remove();
+      this.pendingEl = null;
+    }
+  }
+
+  private renderMessageEvidence(
+    block: HTMLElement,
+    evidence: AnswerEvidence[],
+  ): void {
+    const details = block.createEl("details", {
+      cls: "vault-ai-search-evidence",
+    });
+    details.createEl("summary", {
+      text: `근거 펼치기 (${evidence.length})`,
+    });
+    const list = details.createDiv({ cls: "vault-ai-search-source-list" });
+    const view = new SearchResultView(list, (location) =>
+      this.owner.openSearchResult(location, true),
+    );
+    view.render(evidence);
+  }
+
+  private scrollToBottom(): void {
+    this.answerEl.scrollTop = this.answerEl.scrollHeight;
+  }
+
+  private renderUnavailable(
+    state: Extract<AnswerState, { kind: "unavailable" }>,
+  ): void {
+    this.clearPending();
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant",
+    });
+    const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    meta.setText("답변을 사용할 수 없습니다");
+    meta.addClass("vault-search-error");
+    block.createDiv({ cls: "vault-ai-search-answer-body" }).setText(
+      state.message,
+    );
+    if (state.evidence?.length) {
+      this.renderMessageEvidence(block, state.evidence);
+    }
+    const retry = block.createEl("button", {
       text: "다시 시도",
       attr: { type: "button" },
     });
-    retry.addEventListener("click", () => this.session.submit(this.lastQuery));
+    retry.addEventListener("click", () =>
+      this.session.submit(this.lastQuery),
+    );
+    this.scrollToBottom();
   }
 
   private renderAnswer(result: AnswerResult): void {
     this.statusEl?.removeClass("vault-search-error");
+    this.clearPending();
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant",
+    });
     const deep = result.diagnostics.deep
       ? ` · 조사 ${result.diagnostics.turns ?? 0}턴`
       : "";
-    this.statusEl?.setText(
+    const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    meta.setText(
       `${result.provider} · ${result.model}${result.grounded ? " · 근거 있음" : " · 근거 부족"}${deep}`,
     );
-    this.answerRenderer.render(result.answer, result.citations, (text) =>
+    const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
+    const renderer = new AnswerRenderer(body, {
+      openCitation: (location) =>
+        this.owner.openSearchResult(location, true),
+    });
+    renderer.render(result.answer, result.citations, (text) =>
       this.copyAnswer(text),
     );
-    this.sourcesEl.empty();
-    const details = this.sourcesEl.createEl("details", {
-      cls: "vault-ai-search-evidence",
-    });
-    details.createEl("summary", {
-      text: `근거 펼치기 (${result.evidence.length})`,
-    });
-    const list = details.createDiv({ cls: "vault-ai-search-source-list" });
-    this.sourceView = new SearchResultView(list, (location) =>
-      this.owner.openSearchResult(location, true),
-    );
-    this.sourceView.render(result.evidence);
+    if (result.evidence.length) {
+      this.renderMessageEvidence(block, result.evidence);
+    }
+    this.scrollToBottom();
   }
 
   private renderBackendStatus(status: BackendStatus): void {
