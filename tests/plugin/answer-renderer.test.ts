@@ -104,10 +104,9 @@ describe("AnswerRenderer", () => {
 
   it("renders markdown tables with a header row", () => {
     const container = makeEl();
-    const renderer = new AnswerRenderer(
-      container as unknown as HTMLElement,
-      { openCitation: async () => undefined },
-    );
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
     renderer.render(
       "| 단계 | 공사 |\n| --- | --- |\n| 1단계 | 조경 변경 |\n| 2단계 | 충전기 설치 |",
       [],

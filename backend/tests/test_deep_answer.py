@@ -191,10 +191,12 @@ def test_engine_answers_directly_from_seeded_search():
 
 
 def test_engine_retries_when_insufficient_despite_sources():
-    fake, _ = scripted_provider([
-        "볼트에서 충분한 근거를 찾지 못했습니다.",
-        "재시도 후 답변입니다. [S1]",
-    ])
+    fake, _ = scripted_provider(
+        [
+            "볼트에서 충분한 근거를 찾지 못했습니다.",
+            "재시도 후 답변입니다. [S1]",
+        ]
+    )
     engine = DeepAnswerEngine(
         complete=lambda messages, max_tokens, timeout: fake().complete(
             messages=messages, max_output_tokens=max_tokens, timeout_seconds=timeout

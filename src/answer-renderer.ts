@@ -107,7 +107,9 @@ export class AnswerRenderer {
       while (
         index < lines.length &&
         lines[index].trim() &&
-        !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(lines[index])
+        !/^(?:#{1,3})\s+|^\s*[-*]\s+|^\s*\d+[.)]\s+|^\s*>\s?|^\s*\|/.test(
+          lines[index],
+        )
       ) {
         if (paragraph.children.length > 0) paragraph.createEl("br");
         this.renderInline(paragraph, lines[index].trim(), byId, counts);

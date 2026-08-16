@@ -368,7 +368,9 @@ class DeepAnswerEngine:
                 self._timeout_seconds,
             ).text.strip()
             if parse_tool_calls(final_text):
-                final_text = "볼트에서 충분한 근거를 찾지 못했습니다. (조사 횟수 한계 도달)"
+                final_text = (
+                    "볼트에서 충분한 근거를 찾지 못했습니다. (조사 횟수 한계 도달)"
+                )
             else:
                 final_text = strip_tool_lines(final_text) or final_text
         return {
