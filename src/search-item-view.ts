@@ -42,6 +42,52 @@ const ANSWER_TRANSPORT_MARGIN_MS = 2_000;
 /** Textarea auto-grow cap; past this the box scrolls instead. */
 const INPUT_MAX_HEIGHT = 200;
 
+/** Fixed sample answer for the "렌더링 샘플 미리보기" command — a numbered
+ *  list with nested bullets and citations, so list rendering can be checked
+ *  deterministically without the model. */
+const SAMPLE_ANSWER = [
+  "5. 현재 운영 이슈",
+  "",
+  "2026년 7월 기준 설치 이후의 주된 과제는 다음과 같습니다. [S1]",
+  "",
+  "1. 일반 차량 불법주차",
+  "   - 지상 충전소 앞 일반차량 주차 단속을 계속하고 있습니다. [S2]",
+  "   - 전기차만 지상 충전소에 들어올 수 있도록 하는 방안이 검토됐습니다.",
+  "1. 후문 주변 주차관리",
+  "   - 후문 충전소 주변의 임시주차구역 설정을 검토 중입니다.",
+  "1. 공사 마무리",
+  "   - 2026년 7월 9일 기준 충전소 공사 관련 폐자재 정리 필요사항이 확인됐습니다.",
+  "1. 보험",
+  "   - 사고배상책임보험 가입을 확인했습니다. [S3]",
+].join("\n");
+
+const SAMPLE_CITATIONS: Citation[] = [
+  {
+    id: "S1",
+    file_path: "5_Wiki/issues/apt/전기차_충전소_운영_현황.md",
+    start_line: 12,
+    heading_path: ["요약"],
+    rank: 1,
+    score: 0.05,
+  },
+  {
+    id: "S2",
+    file_path: "5_Wiki/issues/apt/전기차_충전소_주차_관리.md",
+    start_line: 8,
+    heading_path: ["현재 상태"],
+    rank: 2,
+    score: 0.04,
+  },
+  {
+    id: "S3",
+    file_path: "5_Wiki/issues/apt/전기차_충전소_보험.md",
+    start_line: 5,
+    heading_path: ["보험"],
+    rank: 3,
+    score: 0.03,
+  },
+];
+
 export interface SearchItemViewOwner {
   app: ItemView["app"];
   settings: VaultSearchSettings;
@@ -690,6 +736,32 @@ export class VaultSearchItemView extends ItemView {
       session,
       settings.historyMaxEntries,
     );
+  }
+
+  /** Dev/diagnostic: render a fixed sample answer (mixed numbered list with
+   *  nested bullets and citations) so the panel's list rendering can be
+   *  checked deterministically without the model. Command:
+   *  "AI Vault Search: 목록 렌더링 샘플 미리보기". */
+  renderSample(): void {
+    this.clearPending();
+    this.answerEl.empty();
+    this.pendingEl = null;
+    this.transcript = [];
+    this.sessionCreated = "";
+    this.sessionTitle = "";
+    this.lastCitations = null;
+    this.lastQuery = "";
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant",
+    });
+    const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    meta.setText("렌더링 샘플 · 고정 텍스트 (모델 미사용)");
+    const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
+    const renderer = new AnswerRenderer(body, {
+      openCitation: (location) => this.owner.openSearchResult(location, true),
+    });
+    renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS);
+    this.scrollToBottom();
   }
 
   private renderBackendStatus(status: BackendStatus): void {

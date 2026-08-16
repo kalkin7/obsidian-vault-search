@@ -836,6 +836,11 @@ export default class VaultSearchPlugin extends Plugin {
       callback: () => void this.openAiSearchPanel(),
     });
     this.addCommand({
+      id: "ai-vault-search-sample-render",
+      name: "AI Vault Search: 목록 렌더링 샘플 미리보기",
+      callback: () => void this.renderSampleAnswer(),
+    });
+    this.addCommand({
       id: "search-selected-text",
       name: "Search selected text",
       editorCallback: (editor) => this.openSearch(selectedTextQuery(editor)),
@@ -1100,6 +1105,20 @@ export default class VaultSearchPlugin extends Plugin {
 
   registerAiView(view: VaultSearchItemView): void {
     this.aiSearchViews.add(view);
+  }
+
+  /** Command handler for "목록 렌더링 샘플 미리보기": open the panel and
+   *  render the fixed sample so list rendering can be checked without the
+   *  model (answers vary per question, so a fixed sample is the only way to
+   *  reproduce a rendering case). */
+  private async renderSampleAnswer(): Promise<void> {
+    await this.openAiSearchPanel();
+    const view = [...this.aiSearchViews][0];
+    if (!view) {
+      new Notice("AI Vault Search 패널을 먼저 열어 주세요.");
+      return;
+    }
+    view.renderSample();
   }
 
   unregisterAiView(view: VaultSearchItemView): void {

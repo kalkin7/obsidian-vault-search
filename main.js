@@ -6015,6 +6015,47 @@ async function pruneHistory(vault, folder, maxEntries) {
 // src/search-item-view.ts
 var ANSWER_TRANSPORT_MARGIN_MS = 2e3;
 var INPUT_MAX_HEIGHT = 200;
+var SAMPLE_ANSWER = [
+  "5. \uD604\uC7AC \uC6B4\uC601 \uC774\uC288",
+  "",
+  "2026\uB144 7\uC6D4 \uAE30\uC900 \uC124\uCE58 \uC774\uD6C4\uC758 \uC8FC\uB41C \uACFC\uC81C\uB294 \uB2E4\uC74C\uACFC \uAC19\uC2B5\uB2C8\uB2E4. [S1]",
+  "",
+  "1. \uC77C\uBC18 \uCC28\uB7C9 \uBD88\uBC95\uC8FC\uCC28",
+  "   - \uC9C0\uC0C1 \uCDA9\uC804\uC18C \uC55E \uC77C\uBC18\uCC28\uB7C9 \uC8FC\uCC28 \uB2E8\uC18D\uC744 \uACC4\uC18D\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. [S2]",
+  "   - \uC804\uAE30\uCC28\uB9CC \uC9C0\uC0C1 \uCDA9\uC804\uC18C\uC5D0 \uB4E4\uC5B4\uC62C \uC218 \uC788\uB3C4\uB85D \uD558\uB294 \uBC29\uC548\uC774 \uAC80\uD1A0\uB410\uC2B5\uB2C8\uB2E4.",
+  "1. \uD6C4\uBB38 \uC8FC\uBCC0 \uC8FC\uCC28\uAD00\uB9AC",
+  "   - \uD6C4\uBB38 \uCDA9\uC804\uC18C \uC8FC\uBCC0\uC758 \uC784\uC2DC\uC8FC\uCC28\uAD6C\uC5ED \uC124\uC815\uC744 \uAC80\uD1A0 \uC911\uC785\uB2C8\uB2E4.",
+  "1. \uACF5\uC0AC \uB9C8\uBB34\uB9AC",
+  "   - 2026\uB144 7\uC6D4 9\uC77C \uAE30\uC900 \uCDA9\uC804\uC18C \uACF5\uC0AC \uAD00\uB828 \uD3D0\uC790\uC7AC \uC815\uB9AC \uD544\uC694\uC0AC\uD56D\uC774 \uD655\uC778\uB410\uC2B5\uB2C8\uB2E4.",
+  "1. \uBCF4\uD5D8",
+  "   - \uC0AC\uACE0\uBC30\uC0C1\uCC45\uC784\uBCF4\uD5D8 \uAC00\uC785\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. [S3]"
+].join("\n");
+var SAMPLE_CITATIONS = [
+  {
+    id: "S1",
+    file_path: "5_Wiki/issues/apt/\uC804\uAE30\uCC28_\uCDA9\uC804\uC18C_\uC6B4\uC601_\uD604\uD669.md",
+    start_line: 12,
+    heading_path: ["\uC694\uC57D"],
+    rank: 1,
+    score: 0.05
+  },
+  {
+    id: "S2",
+    file_path: "5_Wiki/issues/apt/\uC804\uAE30\uCC28_\uCDA9\uC804\uC18C_\uC8FC\uCC28_\uAD00\uB9AC.md",
+    start_line: 8,
+    heading_path: ["\uD604\uC7AC \uC0C1\uD0DC"],
+    rank: 2,
+    score: 0.04
+  },
+  {
+    id: "S3",
+    file_path: "5_Wiki/issues/apt/\uC804\uAE30\uCC28_\uCDA9\uC804\uC18C_\uBCF4\uD5D8.md",
+    start_line: 5,
+    heading_path: ["\uBCF4\uD5D8"],
+    rank: 3,
+    score: 0.03
+  }
+];
 var VaultSearchItemView = class extends import_obsidian8.ItemView {
   constructor(viewLeaf, owner) {
     super(viewLeaf);
@@ -6565,6 +6606,31 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       session,
       settings.historyMaxEntries
     );
+  }
+  /** Dev/diagnostic: render a fixed sample answer (mixed numbered list with
+   *  nested bullets and citations) so the panel's list rendering can be
+   *  checked deterministically without the model. Command:
+   *  "AI Vault Search: 목록 렌더링 샘플 미리보기". */
+  renderSample() {
+    this.clearPending();
+    this.answerEl.empty();
+    this.pendingEl = null;
+    this.transcript = [];
+    this.sessionCreated = "";
+    this.sessionTitle = "";
+    this.lastCitations = null;
+    this.lastQuery = "";
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant"
+    });
+    const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    meta.setText("\uB80C\uB354\uB9C1 \uC0D8\uD50C \xB7 \uACE0\uC815 \uD14D\uC2A4\uD2B8 (\uBAA8\uB378 \uBBF8\uC0AC\uC6A9)");
+    const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
+    const renderer = new AnswerRenderer(body, {
+      openCitation: (location) => this.owner.openSearchResult(location, true)
+    });
+    renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS);
+    this.scrollToBottom();
   }
   renderBackendStatus(status) {
     if (status.state === "error") {
@@ -7253,6 +7319,11 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       callback: () => void this.openAiSearchPanel()
     });
     this.addCommand({
+      id: "ai-vault-search-sample-render",
+      name: "AI Vault Search: \uBAA9\uB85D \uB80C\uB354\uB9C1 \uC0D8\uD50C \uBBF8\uB9AC\uBCF4\uAE30",
+      callback: () => void this.renderSampleAnswer()
+    });
+    this.addCommand({
       id: "search-selected-text",
       name: "Search selected text",
       editorCallback: (editor) => this.openSearch(selectedTextQuery(editor))
@@ -7469,6 +7540,19 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   }
   registerAiView(view) {
     this.aiSearchViews.add(view);
+  }
+  /** Command handler for "목록 렌더링 샘플 미리보기": open the panel and
+   *  render the fixed sample so list rendering can be checked without the
+   *  model (answers vary per question, so a fixed sample is the only way to
+   *  reproduce a rendering case). */
+  async renderSampleAnswer() {
+    await this.openAiSearchPanel();
+    const view = [...this.aiSearchViews][0];
+    if (!view) {
+      new import_obsidian9.Notice("AI Vault Search \uD328\uB110\uC744 \uBA3C\uC800 \uC5F4\uC5B4 \uC8FC\uC138\uC694.");
+      return;
+    }
+    view.renderSample();
   }
   unregisterAiView(view) {
     this.aiSearchViews.delete(view);

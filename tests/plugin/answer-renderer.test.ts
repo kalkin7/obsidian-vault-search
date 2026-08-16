@@ -158,9 +158,9 @@ describe("AnswerRenderer", () => {
     renderer.render("1. a\n1. b\n1. c", []);
     const lists = find(container, (node) => node.tag === "ol");
     expect(lists).toHaveLength(1);
-    expect(
-      lists[0].children.filter((node) => node.tag === "li"),
-    ).toHaveLength(3);
+    expect(lists[0].children.filter((node) => node.tag === "li")).toHaveLength(
+      3,
+    );
   });
 
   it("renders 4+-hash headings (with or without a space) as h6", () => {
