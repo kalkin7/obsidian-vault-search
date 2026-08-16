@@ -159,7 +159,9 @@ describe("AnswerRenderer", () => {
     expect(note).not.toContain("②");
     expect(note).toContain("[S99]"); // unknown marker kept as-is
     expect(note).toContain("## 근거");
-    expect(note).toContain("- ① [[5_Wiki/law/지상_화단_전기차충전소_용도변경_요건]]");
+    expect(note).toContain(
+      "- ① [[5_Wiki/law/지상_화단_전기차충전소_용도변경_요건]]",
+    );
   });
 
   it("assigns distinct circled numbers to distinct source files", () => {

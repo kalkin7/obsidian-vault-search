@@ -299,8 +299,7 @@ export function toNoteMarkdown(answer: string, citations: Citation[]): string {
   });
   if (files.length === 0) return inline;
   const list = files.map(
-    (file, index) =>
-      `- ${marker(index + 1)} [[${file.replace(/\.md$/i, "")}]]`,
+    (file, index) => `- ${marker(index + 1)} [[${file.replace(/\.md$/i, "")}]]`,
   );
   return `${inline}\n\n## 근거\n${list.join("\n")}`;
 }
