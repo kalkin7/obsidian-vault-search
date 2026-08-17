@@ -84,6 +84,14 @@ export interface VaultSearchSettings {
   settingsVersion?: number;
 }
 
+/** Install state of the plugin-side Python backend folder (version match
+ *  against the plugin manifest). Drives the settings-tab status display. */
+export interface BackendInstallState {
+  installed: boolean;
+  version: string | null;
+  expected: string;
+}
+
 export interface BackendStatus {
   state: BackendState;
   error?: string | null;

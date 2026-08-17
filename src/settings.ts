@@ -157,3 +157,12 @@ export function migrateSettings(settings: VaultSearchSettings): boolean {
   settings.settingsVersion = SETTINGS_VERSION;
   return true;
 }
+
+/** Whether the stored pythonExecutable means "auto": an empty value or the
+ *  bare command "python". In auto mode the service prefers a managed venv
+ *  runtime (machine.json runtimes, cuda then cpu) and falls back to the PATH
+ *  python; an explicit path is used as-is. */
+export function isAutoPython(value: string | undefined): boolean {
+  const trimmed = (value || "").trim();
+  return trimmed === "" || trimmed === "python";
+}

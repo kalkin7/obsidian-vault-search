@@ -3423,6 +3423,16 @@ var BackendManager = class {
     const executable = (await this.readMachineConfig()).runtimes?.[kind];
     return executable ? this.inspectPython(executable) : null;
   }
+  /** Python to use when settings.pythonExecutable is empty / "python"
+   *  (auto mode): the managed venv runtime, cuda first then cpu. Returns null
+   *  when no managed runtime is registered. */
+  async resolveDefaultPython() {
+    for (const kind of ["cuda", "cpu"]) {
+      const runtime = await this.managedRuntime(kind);
+      if (runtime) return runtime.pythonExecutable;
+    }
+    return null;
+  }
   async installManagedRuntime(kind, basePython, progress) {
     if (this.runtimeInstall) return this.runtimeInstall;
     this.runtimeInstall = this.runRuntimeInstall(kind, basePython, progress);
@@ -3521,6 +3531,11 @@ var BackendManager = class {
     } catch {
       return null;
     }
+  }
+  /** Version of the installed plugin-side backend folder (null when the
+   *  backend is not provisioned). Exposed for the settings-tab status. */
+  async backendVersion() {
+    return this.readBackendVersion();
   }
   /** Ensure the Python backend folder exists in the plugin directory and matches
    *  the plugin version. BRAT only installs main.js/manifest/styles.css, so the
@@ -3666,6 +3681,8 @@ var BackendManager = class {
     await this.writeServiceConfig(lazyOverride);
     if (generation !== this.startGeneration || this.stopping) return;
     const settings = this.getSettings();
+    const explicit = settings.pythonExecutable?.trim();
+    const python = explicit && explicit !== "python" ? explicit : await this.resolveDefaultPython() ?? "python";
     const args = [
       "-X",
       "utf8",
@@ -3689,7 +3706,7 @@ var BackendManager = class {
     env.PYTHONUTF8 = "1";
     env.PYTHONPATH = this.backendRoot + (env.PYTHONPATH ? path3.delimiter + env.PYTHONPATH : "");
     env.HF_HUB_DISABLE_PROGRESS_BARS = "1";
-    const child = (0, import_child_process.spawn)(settings.pythonExecutable || "python", args, {
+    const child = (0, import_child_process.spawn)(python, args, {
       cwd: this.pluginDir,
       env,
       detached: false,
@@ -4264,6 +4281,10 @@ function migrateSettings(settings) {
   settings.settingsVersion = SETTINGS_VERSION;
   return true;
 }
+function isAutoPython(value) {
+  const trimmed = (value || "").trim();
+  return trimmed === "" || trimmed === "python";
+}
 
 // src/model-catalog.ts
 var OPENAI_NON_CHAT_MARKERS = [
@@ -4391,13 +4412,18 @@ var VaultSearchSettingTab = class extends import_obsidian3.PluginSettingTab {
         );
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc("\uC804\uC6A9 venv\uC758 python.exe\uB97C \uAD8C\uC7A5\uD569\uB2C8\uB2E4.").addText(
-      (text) => text.setValue(draft.pythonExecutable).setPlaceholder("python").onChange((value) => {
+    const autoPython = isAutoPython(draft.pythonExecutable);
+    new import_obsidian3.Setting(containerEl).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc(
+      "\uBE44\uC6CC\uB450\uBA74(\uB610\uB294 python) \uAD00\uB9AC\uD615 \uB7F0\uD0C0\uC784(venv)\uC744 \uC790\uB3D9\uC73C\uB85C \uCC3E\uC544 \uC124\uC815\uD569\uB2C8\uB2E4. \uC9C1\uC811 \uC785\uB825\uD558\uBA74 \uADF8 Python\uC744 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. " + (autoPython ? "\uD604\uC7AC: \uC790\uB3D9 \uC120\uD0DD" : `\uD604\uC7AC: ${draft.pythonExecutable}`)
+    ).addText(
+      (text) => text.setValue(autoPython ? "" : draft.pythonExecutable).setPlaceholder("\uC790\uB3D9 (\uAD00\uB9AC\uD615 venv \uC6B0\uC120)").onChange((value) => {
         draft.pythonExecutable = value.trim() || "python";
       })
     );
+    const install = this.owner.backendInstall;
+    const backendStateText = !install.expected ? "\uD655\uC778 \uC911\u2026" : !install.installed ? "\uBBF8\uC124\uCE58" : install.version === install.expected ? `\uC124\uCE58\uB428 (v${install.version}, \uCD5C\uC2E0)` : `\uC124\uCE58\uB428 (v${install.version}) \u2014 \uD50C\uB7EC\uADF8\uC778 v${install.expected}\uC640 \uBD88\uC77C\uCE58`;
     new import_obsidian3.Setting(containerEl).setName("Python \uBC31\uC5D4\uB4DC").setDesc(
-      "BRAT \uC124\uCE58\uB294 main.js/manifest/styles.css\uB9CC \uB123\uC73C\uBBC0\uB85C, \uBC31\uC5D4\uB4DC\uB294 GitHub \uB9B4\uB9AC\uC2A4\uC5D0\uC11C \uC790\uB3D9\uC73C\uB85C \uBC1B\uC2B5\uB2C8\uB2E4. \uC774 \uBC84\uD2BC\uC73C\uB85C \uB2E4\uC2DC \uBC1B\uAC70\uB098 \uBC84\uC804\uC744 \uB9DE\uCDA5\uB2C8\uB2E4."
+      `\uD604\uC7AC \uC0C1\uD0DC: ${backendStateText}. BRAT \uC124\uCE58\uB294 main.js/manifest/styles.css\uB9CC \uB123\uC73C\uBBC0\uB85C, \uBC31\uC5D4\uB4DC\uB294 GitHub \uB9B4\uB9AC\uC2A4\uC5D0\uC11C \uC790\uB3D9\uC73C\uB85C \uBC1B\uC2B5\uB2C8\uB2E4. \uC774 \uBC84\uD2BC\uC73C\uB85C \uB2E4\uC2DC \uBC1B\uAC70\uB098 \uBC84\uC804\uC744 \uB9DE\uCDA5\uB2C8\uB2E4.`
     ).addButton(
       (button) => button.setButtonText("\uBC31\uC5D4\uB4DC \uC124\uCE58/\uBCF5\uAD6C").onClick(async () => {
         try {
@@ -6751,6 +6777,13 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   providerModels = {};
   runtimeSummary = "\uB7F0\uD0C0\uC784: \uD655\uC778 \uC804";
   runtimeWarning = null;
+  /** Install state of the plugin-side Python backend folder, shown in the
+   *  settings tab. Refreshed on load and after (re)provisioning. */
+  backendInstall = {
+    installed: false,
+    version: null,
+    expected: ""
+  };
   /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
   agentIntegration = null;
   async onload() {
@@ -6781,6 +6814,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
+    await this.refreshBackendInstall();
     this.initDraft(this.settings);
     this.queue = new VaultEventQueue(
       () => this.settings.syncDebounceMs,
@@ -6911,6 +6945,23 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === void 0) {
       await this.saveSettings();
+    }
+  }
+  /** Refresh the settings-tab backend install state (installed / version
+   *  match). Called on load and after backend (re)provisioning. */
+  async refreshBackendInstall() {
+    this.backendInstall = {
+      installed: false,
+      version: null,
+      expected: this.manifest.version
+    };
+    const version = await this.backend.backendVersion();
+    if (version !== null) {
+      this.backendInstall = {
+        installed: true,
+        version,
+        expected: this.manifest.version
+      };
     }
   }
   async saveSettings() {
@@ -7304,6 +7355,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   async provisionBackend() {
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
+    await this.refreshBackendInstall();
     new import_obsidian9.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
@@ -7446,9 +7498,18 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   }
   async prepareRuntime(target, interactive) {
     await this.backend.ensureBackendProvisioned();
-    const current = await this.backend.inspectPython(target.pythonExecutable);
     const cpu = await this.backend.managedRuntime("cpu");
     const cuda = await this.backend.managedRuntime("cuda");
+    let current = null;
+    if (isAutoPython(target.pythonExecutable)) {
+      current = cuda || cpu;
+      if (!current) {
+        const system = await this.backend.inspectPython("python");
+        if (system) current = system;
+      }
+    } else {
+      current = await this.backend.inspectPython(target.pythonExecutable);
+    }
     const choose = (python, summary) => {
       target.pythonExecutable = python;
       this.runtimeSummary = summary;

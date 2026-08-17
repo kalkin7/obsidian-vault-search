@@ -1,7 +1,7 @@
 import { Notice, PluginSettingTab, Setting } from "obsidian";
 import type VaultSearchPlugin from "./main";
 import { LLM_PROVIDER_DEFAULTS, MODEL_PROFILES } from "./constants";
-import { defaultLoadPolicy } from "./settings";
+import { defaultLoadPolicy, isAutoPython } from "./settings";
 import { agentIntegrationNotice } from "./agent-integration";
 import type { AgentIntegrationStatus } from "./agent-integration";
 import { validateProviderApiKey } from "./llm-secrets";
@@ -128,21 +128,34 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }),
       );
 
+    const autoPython = isAutoPython(draft.pythonExecutable);
     new Setting(containerEl)
       .setName("Python 실행 파일")
-      .setDesc("전용 venv의 python.exe를 권장합니다.")
+      .setDesc(
+        "비워두면(또는 python) 관리형 런타임(venv)을 자동으로 찾아 설정합니다. 직접 입력하면 그 Python을 사용합니다. " +
+          (autoPython ? "현재: 자동 선택" : `현재: ${draft.pythonExecutable}`),
+      )
       .addText((text) =>
         text
-          .setValue(draft.pythonExecutable)
-          .setPlaceholder("python")
+          .setValue(autoPython ? "" : draft.pythonExecutable)
+          .setPlaceholder("자동 (관리형 venv 우선)")
           .onChange((value) => {
             draft.pythonExecutable = value.trim() || "python";
           }),
       );
+    const install = this.owner.backendInstall;
+    const backendStateText =
+      !install.expected
+        ? "확인 중…"
+        : !install.installed
+          ? "미설치"
+          : install.version === install.expected
+            ? `설치됨 (v${install.version}, 최신)`
+            : `설치됨 (v${install.version}) — 플러그인 v${install.expected}와 불일치`;
     new Setting(containerEl)
       .setName("Python 백엔드")
       .setDesc(
-        "BRAT 설치는 main.js/manifest/styles.css만 넣으므로, 백엔드는 GitHub 릴리스에서 자동으로 받습니다. 이 버튼으로 다시 받거나 버전을 맞춥니다.",
+        `현재 상태: ${backendStateText}. BRAT 설치는 main.js/manifest/styles.css만 넣으므로, 백엔드는 GitHub 릴리스에서 자동으로 받습니다. 이 버튼으로 다시 받거나 버전을 맞춥니다.`,
       )
       .addButton((button) =>
         button.setButtonText("백엔드 설치/복구").onClick(async () => {

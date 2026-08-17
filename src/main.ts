@@ -20,10 +20,16 @@ import {
   cloneSettings,
   defaultLoadPolicy,
   hotConfig,
+  isAutoPython,
   migrateSettings,
   settingsImpact,
 } from "./settings";
-import type { BackendStatus, VaultSearchSettings } from "./types";
+import type {
+  BackendInstallState,
+  BackendStatus,
+  PythonRuntimeInfo,
+  VaultSearchSettings,
+} from "./types";
 import { VaultEventQueue } from "./vault-event-queue";
 import { VaultSearchModal } from "./search-modal";
 import type { SearchResultLocation } from "./search-result-view";
@@ -98,6 +104,13 @@ export default class VaultSearchPlugin extends Plugin {
     {};
   runtimeSummary = "런타임: 확인 전";
   runtimeWarning: string | null = null;
+  /** Install state of the plugin-side Python backend folder, shown in the
+   *  settings tab. Refreshed on load and after (re)provisioning. */
+  backendInstall: BackendInstallState = {
+    installed: false,
+    version: null,
+    expected: "",
+  };
   /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
   agentIntegration: AgentIntegrationStatus | null = null;
 
@@ -129,6 +142,7 @@ export default class VaultSearchPlugin extends Plugin {
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
+    await this.refreshBackendInstall();
     this.initDraft(this.settings);
     this.queue = new VaultEventQueue(
       () => this.settings.syncDebounceMs,
@@ -283,6 +297,24 @@ export default class VaultSearchPlugin extends Plugin {
     this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === undefined) {
       await this.saveSettings();
+    }
+  }
+
+  /** Refresh the settings-tab backend install state (installed / version
+   *  match). Called on load and after backend (re)provisioning. */
+  async refreshBackendInstall(): Promise<void> {
+    this.backendInstall = {
+      installed: false,
+      version: null,
+      expected: this.manifest.version,
+    };
+    const version = await this.backend.backendVersion();
+    if (version !== null) {
+      this.backendInstall = {
+        installed: true,
+        version,
+        expected: this.manifest.version,
+      };
     }
   }
 
@@ -783,6 +815,7 @@ export default class VaultSearchPlugin extends Plugin {
   async provisionBackend(): Promise<void> {
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
+    await this.refreshBackendInstall();
     new Notice("Python 백엔드를 설치했습니다. 서비스를 재시작합니다.", 8000);
     await this.restartBackend();
   }
@@ -945,9 +978,22 @@ export default class VaultSearchPlugin extends Plugin {
     // inspectPython resolves vault_search via the backend folder, so a stale
     // (or not-yet-provisioned) folder would be read and every runtime rejected.
     await this.backend.ensureBackendProvisioned();
-    const current = await this.backend.inspectPython(target.pythonExecutable);
     const cpu = await this.backend.managedRuntime("cpu");
     const cuda = await this.backend.managedRuntime("cuda");
+    // Auto mode (empty or "python"): prefer a managed venv runtime so a
+    // machine.json drift to an arbitrary system python is ignored; fall back
+    // to the PATH python when no managed runtime exists yet. An explicit path
+    // is inspected as-is and used when valid.
+    let current: PythonRuntimeInfo | null = null;
+    if (isAutoPython(target.pythonExecutable)) {
+      current = cuda || cpu;
+      if (!current) {
+        const system = await this.backend.inspectPython("python");
+        if (system) current = system;
+      }
+    } else {
+      current = await this.backend.inspectPython(target.pythonExecutable);
+    }
     const choose = (python: string, summary: string) => {
       target.pythonExecutable = python;
       this.runtimeSummary = summary;

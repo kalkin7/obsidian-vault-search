@@ -210,6 +210,17 @@ export class BackendManager {
     return executable ? this.inspectPython(executable) : null;
   }
 
+  /** Python to use when settings.pythonExecutable is empty / "python"
+   *  (auto mode): the managed venv runtime, cuda first then cpu. Returns null
+   *  when no managed runtime is registered. */
+  async resolveDefaultPython(): Promise<string | null> {
+    for (const kind of ["cuda", "cpu"] as const) {
+      const runtime = await this.managedRuntime(kind);
+      if (runtime) return runtime.pythonExecutable;
+    }
+    return null;
+  }
+
   async installManagedRuntime(
     kind: "cpu" | "cuda",
     basePython: string,
@@ -324,6 +335,12 @@ export class BackendManager {
     } catch {
       return null;
     }
+  }
+
+  /** Version of the installed plugin-side backend folder (null when the
+   *  backend is not provisioned). Exposed for the settings-tab status. */
+  async backendVersion(): Promise<string | null> {
+    return this.readBackendVersion();
   }
 
   /** Ensure the Python backend folder exists in the plugin directory and matches
@@ -505,6 +522,14 @@ export class BackendManager {
     if (generation !== this.startGeneration || this.stopping) return;
 
     const settings = this.getSettings();
+    // Auto mode (empty or "python"): resolve the managed venv runtime first;
+    // prepareRuntime normally persists the resolved path, this is a safety
+    // net for direct start() calls.
+    const explicit = settings.pythonExecutable?.trim();
+    const python =
+      explicit && explicit !== "python"
+        ? explicit
+        : ((await this.resolveDefaultPython()) ?? "python");
     const args = [
       "-X",
       "utf8",
@@ -534,7 +559,7 @@ export class BackendManager {
       this.backendRoot +
       (env.PYTHONPATH ? path.delimiter + env.PYTHONPATH : "");
     env.HF_HUB_DISABLE_PROGRESS_BARS = "1";
-    const child = spawn(settings.pythonExecutable || "python", args, {
+    const child = spawn(python, args, {
       cwd: this.pluginDir,
       env,
       detached: false,

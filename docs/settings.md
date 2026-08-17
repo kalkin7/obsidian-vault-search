@@ -4,15 +4,32 @@ Portable settings are stored in plugin `data.json`. The Python executable is mac
 
 ## Runtime selection (P1)
 
+- **Python 실행 파일** defaults to empty = **auto**: the plugin prefers a
+  **managed venv runtime** (`machine.json` `runtimes`, CUDA first then CPU —
+  the self-contained environment installed by **CUDA 런타임 설치** /
+  `setup-backend.ps1`), falling back to the PATH `python` when no managed
+  runtime exists yet. Typing an explicit path disables auto mode and pins
+  that interpreter as-is.
 - The plugin inspects candidate Pythons with the plugin-side backend on
   `PYTHONPATH`. CUDA capability is judged by **onnxruntime providers**
   (`CUDAExecutionProvider` / `TensorrtExecutionProvider`), not torch alone — a
   CUDA torch with a CPU-only onnxruntime is not selected as a GPU runtime.
 - The selected executable is **resolved to its real interpreter path
-  (`sys.executable`)** and persisted to `machine.json`, so the choice survives
-  restarts instead of being re-derived from the default (`python`) every time.
-- Bare command names (e.g. `python`) are still accepted: the wrapper resolves
-  them via `Get-Command` and the CLI via `shutil.which`.
+  (`sys.executable`)** and persisted to `machine.json`, so a resolved auto
+  choice survives restarts. Clearing the field returns to auto mode, which
+  re-resolves against the managed runtimes and ignores a stale machine.json
+  `pythonExecutable` drift to an arbitrary system python (a once-chosen
+  system interpreter no longer sticks forever).
+- Bare command names (e.g. `python`) are still accepted as auto: the wrapper
+  resolves them via `Get-Command` and the CLI via `shutil.which`.
+
+## Backend install state
+
+The **Python 백엔드** setting row reports the plugin-side backend folder
+install state — `미설치`, `설치됨 (vX.Y.Z, 최신)`, or a version-mismatch
+warning — refreshed on plugin load and after **백엔드 설치/복구**, so a
+missing or stale backend is visible before the first service start instead of
+failing later.
 
 ## Service status
 
