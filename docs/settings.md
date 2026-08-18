@@ -141,16 +141,19 @@ unconditionally overwritten from the stored secrets).
   the exclude list.
 - **Panel rendering & note copy** — markdown headings of any level
   (`#`…`######`) render as h3–h6; numbered lists with nested bullets render
-  with continuous numbering (one `<ol>`, 1, 2, 3…), matching the note.
-  **답변 복사** produces note-ready markdown: `[S#]` citations become inline
-  wikilinks labeled with circled endnote numbers (`[[file|①]]`) that open the
-  source file directly, plus a deduplicated `## 근거` list mapping each number
-  to its file — pasting an answer into a note keeps every reference live and
+  with continuous numbering (one `<ol>`, 1, 2, 3…), matching the note —
+  including when items are separated by blank lines (blank lines never end
+  a markdown list). Task-list markers (`- [ ]` / `- [x]`) render as
+  read-only checkboxes (checked for `[x]`). **답변 복사** produces
+  note-ready markdown: `[S#]` citations become inline wikilinks labeled
+  with circled endnote numbers (`[[file|①]]`) that open the source file
+  directly, plus a deduplicated `## 근거` list mapping each number to its
+  file — pasting an answer into a note keeps every reference live and
   clearly annotated.
 - **Diagnostic command** — "AI Vault Search: 목록 렌더링 샘플 미리보기"
   (command palette) renders a fixed sample answer (numbered list with nested
-  bullets + citations) in the panel, so list rendering can be checked
-  deterministically without the model.
+  bullets, a task-list section, and citations) in the panel, so list and
+  checkbox rendering can be checked deterministically without the model.
 - **Restart persistence** — every settings save rewrites `service-config.json`
   alongside the hot in-memory apply, so a sidecar restart keeps the currently
   selected provider/model/reasoning effort instead of reloading a stale
