@@ -163,6 +163,70 @@ describe("AnswerRenderer", () => {
     );
   });
 
+  it("keeps numbered items together across blank-line separators", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
+    // Regression: an LLM answer that separates numbered items (each with
+    // indented sub-bullets) by blank lines previously split every item into
+    // its own <ol>, so the browser renumbered each item from 1 — the whole
+    // list showed "1." instead of 1, 2, 3, …
+    renderer.render(
+      [
+        "1. 신청서",
+        "   - 수수료 발생",
+        "",
+        "2. 위치도",
+        "   - 경계선 표시",
+        "",
+        "3. 원색사진",
+        "",
+        "4. 사업자등록증",
+      ].join("\n"),
+      [],
+    );
+    const lists = find(container, (node) => node.tag === "ol");
+    expect(lists).toHaveLength(1);
+    const topItems = lists[0].children.filter((node) => node.tag === "li");
+    // Fake elements don't aggregate child text, so read the inline spans.
+    const itemText = (item: FakeEl): string =>
+      item.children
+        .filter((node) => node.tag === "span")
+        .map((node) => node.textContent)
+        .join("");
+    expect(topItems.map(itemText)).toEqual([
+      "신청서",
+      "위치도",
+      "원색사진",
+      "사업자등록증",
+    ]);
+    // Each sub-bulleted item keeps its nested <ul>.
+    for (const item of topItems.slice(0, 2)) {
+      expect(item.children.filter((node) => node.tag === "ul")).toHaveLength(1);
+    }
+  });
+
+  it("ends a list at a blank line followed by a paragraph", () => {
+    const container = makeEl();
+    const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+      openCitation: async () => undefined,
+    });
+    renderer.render("1. a\n2. b\n\n다음 단락입니다.", []);
+    const lists = find(container, (node) => node.tag === "ol");
+    expect(lists).toHaveLength(1);
+    expect(lists[0].children.filter((node) => node.tag === "li")).toHaveLength(
+      2,
+    );
+    const paragraphs = find(
+      container,
+      (node) => node.cls === "vault-answer-paragraph",
+    );
+    expect(paragraphs.map((p) => p.children[0].textContent)).toEqual([
+      "다음 단락입니다.",
+    ]);
+  });
+
   it("renders 4+-hash headings (with or without a space) as h6", () => {
     const container = makeEl();
     const renderer = new AnswerRenderer(container as unknown as HTMLElement, {

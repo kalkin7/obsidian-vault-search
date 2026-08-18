@@ -147,7 +147,9 @@ export class AnswerRenderer {
    *  at the same nesting level share ONE <ol>, so the browser numbers them
    *  1, 2, 3… continuously instead of restarting at 1 per item; deeper
    *  indents nest inside the parent item, matching how the markdown renders
-   *  in an Obsidian note. */
+   *  in an Obsidian note. Blank lines between items keep the list going (a
+   *  markdown list only ends at a real non-list line): splitting there would
+   *  create one <ol> per item and every item would renumber from 1. */
   private renderList(
     container: HTMLElement,
     lines: string[],
@@ -163,7 +165,19 @@ export class AnswerRenderer {
     }
     const stack: Frame[] = [];
     while (index < lines.length) {
+      // Blank lines don't end a list — only a non-list line does. Peek past
+      // a blank run: if the next non-blank line is another list item, skip
+      // the blanks and continue this list; otherwise break out (paragraph,
+      // heading, table, … follows).
       const raw = lines[index];
+      if (!raw.trim()) {
+        let next = index;
+        while (next < lines.length && !lines[next].trim()) next++;
+        const nextLine = next < lines.length ? lines[next].trim() : "";
+        if (!BULLET_RE.test(nextLine) && !NUMBERED_RE.test(nextLine)) break;
+        index = next;
+        continue;
+      }
       const trimmed = raw.trim();
       const bullet = BULLET_RE.exec(trimmed);
       const numbered = NUMBERED_RE.exec(trimmed);
