@@ -621,6 +621,12 @@
 .vault-answer-list-item {
  margin-bottom: var(--size-4-1);
 }
+input.vault-answer-task-checkbox:disabled {
+ margin: 0 var(--size-4-2) 0 0;
+ vertical-align: middle;
+ opacity: 1;
+ accent-color: var(--interactive-accent);
+}
 .vault-answer-quote {
  margin: 0 0 var(--size-4-2);
  padding: var(--size-4-1) var(--size-4-2);

@@ -16,6 +16,7 @@ const HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"] as const;
  *  seventh hash (Obsidian renders 7+ hashes as literal text). */
 const HEADING_RE = /^(#{1,6})(?!#)[ \t]*(.+)$/;
 const BULLET_RE = /^\s*[-*]\s+(.+)$/;
+const TASK_RE = /^\s*[-*]\s+\[([ xX])\]\s+(.+)$/;
 const NUMBERED_RE = /^\s*(\d+)[.)]\s+(.+)$/;
 const QUOTE_RE = /^\s*>\s?(.+)$/;
 const HR_RE = /^\s*(?:---+|\*\*\*+)\s*$/;
@@ -149,7 +150,8 @@ export class AnswerRenderer {
    *  indents nest inside the parent item, matching how the markdown renders
    *  in an Obsidian note. Blank lines between items keep the list going (a
    *  markdown list only ends at a real non-list line): splitting there would
-   *  create one <ol> per item and every item would renumber from 1. */
+   *  create one <ol> per item and every item would renumber from 1. Task
+   *  items (- [ ] / - [x]) render as read-only checkboxes. */
   private renderList(
     container: HTMLElement,
     lines: string[],
@@ -183,7 +185,10 @@ export class AnswerRenderer {
       const numbered = NUMBERED_RE.exec(trimmed);
       if (!bullet && !numbered) break;
       const ordered = Boolean(numbered);
-      const content = ordered ? numbered![2] : bullet![1];
+      // Task-list markers (- [ ] / - [x]) are bullets with a checkbox; the
+      // marker is consumed here so renderInline never emits literal "[ ]".
+      const task = ordered ? null : TASK_RE.exec(trimmed);
+      const content = ordered ? numbered![2] : task ? task[2] : bullet![1];
       const indent = this.listIndent(raw);
       // Leave frames nested deeper than this line.
       while (stack.length > 0 && indent < stack[stack.length - 1].indent) {
@@ -199,27 +204,53 @@ export class AnswerRenderer {
       }
       if (stack.length > 0 && indent === stack[stack.length - 1].indent) {
         const frame = stack[stack.length - 1];
-        const item = frame.el.createEl("li", {
-          cls: "vault-answer-list-item",
-        });
-        this.renderInline(item, content, byId, counts);
-        frame.lastItem = item;
+        frame.lastItem = this.createListItem(
+          frame.el,
+          task,
+          content,
+          byId,
+          counts,
+        );
       } else {
         const parent =
           stack.length > 0 ? stack[stack.length - 1].lastItem : container;
         const el = parent.createEl(ordered ? "ol" : "ul", {
           cls: "vault-answer-list",
         });
-        const item = el.createEl("li", { cls: "vault-answer-list-item" });
-        this.renderInline(item, content, byId, counts);
+        const item = this.createListItem(el, task, content, byId, counts);
         stack.push({ el, indent, ordered, lastItem: item });
       }
       index++;
     }
-    return index;
-  }
+		return index;
+	}
 
-  private renderTable(
+	/** Create one list item. Task items (- [ ] / - [x]) render a read-only
+	 *  checkbox input before the text, so the literal "[ ]" marker never
+	 *  shows and the item looks like a real Obsidian task list. */
+	private createListItem(
+		list: HTMLElement,
+		task: RegExpExecArray | null,
+		content: string,
+		byId: Map<string, Citation>,
+		counts: Map<string, number>,
+	): HTMLElement {
+		const item = list.createEl("li", { cls: "vault-answer-list-item" });
+		if (task) {
+			item.createEl("input", {
+				cls: "vault-answer-task-checkbox",
+				attr: {
+					type: "checkbox",
+					disabled: "disabled",
+					...(task[1].toLowerCase() === "x" ? { checked: "checked" } : {}),
+				},
+			});
+		}
+		this.renderInline(item, content, byId, counts);
+		return item;
+	}
+
+	private renderTable(
     container: HTMLElement,
     lines: string[],
     index: number,

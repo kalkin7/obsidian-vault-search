@@ -60,8 +60,8 @@ function mergeCitations(
 }
 
 /** Fixed sample answer for the "렌더링 샘플 미리보기" command — a numbered
- *  list with nested bullets and citations, so list rendering can be checked
- *  deterministically without the model. */
+ *  list with nested bullets, a task-list section and citations, so list and
+ *  checkbox rendering can be checked deterministically without the model. */
 const SAMPLE_ANSWER = [
   "## 5. 현재 운영 이슈",
   "",
@@ -76,6 +76,12 @@ const SAMPLE_ANSWER = [
   "   - 2026년 7월 9일 기준 충전소 공사 관련 폐자재 정리 필요사항이 확인됐습니다.",
   "1. 보험",
   "   - 사고배상책임보험 가입을 확인했습니다. [S3]",
+  "",
+  "### 체크리스트",
+  "",
+  "- [ ] 정기 점검 일정 확정",
+  "- [x] 주민 공지 배포",
+  "- [ ] 보험 증권 재확인",
 ].join("\n");
 
 const SAMPLE_CITATIONS: Citation[] = [
