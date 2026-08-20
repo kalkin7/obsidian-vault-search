@@ -399,9 +399,11 @@ export class BackendManager {
     }
 
     const zip = new AdmZip(Buffer.from(response.arrayBuffer));
-    const backendEntries = zip
-      .getEntries()
-      .filter((e) => e.entryName.startsWith("backend/") && !e.isDirectory);
+    const entries = zip.getEntries();
+    const backendEntries = entries.filter((e) => {
+      const norm = e.entryName.replace(/\\/g, "/");
+      return norm.startsWith("backend/") && !e.isDirectory;
+    });
     if (backendEntries.length === 0) {
       throw new Error("릴리스 zip에 backend/ 폴더가 없습니다");
     }
@@ -409,9 +411,9 @@ export class BackendManager {
     // Integrity check: the downloaded backend must report the same version the
     // plugin expects. A stale or tampered zip (even from the same URL) would
     // otherwise install code that inspectPython then rejects — or worse.
-    const initEntry = zip
-      .getEntries()
-      .find((e) => e.entryName === "backend/vault_search/__init__.py");
+    const initEntry = entries.find(
+      (e) => e.entryName.replace(/\\/g, "/") === "backend/vault_search/__init__.py",
+    );
     const versionMatch = initEntry
       ? /__version__\s*=\s*["']([^"']+)["']/.exec(
           initEntry.getData().toString("utf8"),
@@ -431,7 +433,8 @@ export class BackendManager {
     const tempBackend = path.join(tempRoot, "backend");
     try {
       for (const entry of backendEntries) {
-        const rel = entry.entryName.slice("backend/".length);
+        const norm = entry.entryName.replace(/\\/g, "/");
+        const rel = norm.slice("backend/".length);
         const dest = path.resolve(tempBackend, rel);
         const inside = path.relative(tempBackend, dest);
         if (path.isAbsolute(rel) || inside === "" || inside.startsWith("..")) {

@@ -107,8 +107,29 @@ try {
     Get-ChildItem "backend/vault_search" -File | Copy-Item -Destination (Join-Path $Stage "backend/vault_search")
     $Zip = Join-Path $env:TEMP $ZipName
     if (Test-Path $Zip) { Remove-Item $Zip }
-    Add-Type -AssemblyName System.IO.Compression.FileSystem
-    [IO.Compression.ZipFile]::CreateFromDirectory($Stage, $Zip)
+    $nodeScript = @"
+const AdmZip = require('adm-zip');
+const fs = require('fs');
+const path = require('path');
+const zip = new AdmZip();
+const stage = process.argv[1];
+const zipPath = process.argv[2];
+
+function addDirectory(dir, base) {
+  for (const file of fs.readdirSync(dir)) {
+    const full = path.join(dir, file);
+    const rel = base ? (base + '/' + file) : file;
+    if (fs.statSync(full).isDirectory()) {
+      addDirectory(full, rel);
+    } else {
+      zip.addFile(rel, fs.readFileSync(full));
+    }
+  }
+}
+addDirectory(stage, '');
+zip.writeZip(zipPath);
+"@
+    node -e $nodeScript "$Stage" "$Zip"
     Write-Host "    zip: $Zip ($((Get-Item $Zip).Length) bytes)" -ForegroundColor Green
 
     if ($SkipPublish) {

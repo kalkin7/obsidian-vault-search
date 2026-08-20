@@ -194,4 +194,29 @@ describe("backend provisioning", () => {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
+
+  it("handles Windows backslash separators in zip entries gracefully", async () => {
+    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    try {
+      requestUrlMock.mockResolvedValue({
+        status: 200,
+        arrayBuffer: buildRawZip([
+          ["backend\\vault_search\\__init__.py", `__version__ = "${VERSION}"`],
+          ["backend\\vault_search\\cli.py", "# cli"],
+          ["backend\\setup-runtime.ps1", "# setup"],
+        ]),
+      });
+      const manager = await makeManager(tmp);
+
+      const ok = await manager.ensureBackendProvisioned();
+
+      expect(ok).toBe(true);
+      expect(await fs.readFile(path.join(pluginBackendRoot(tmp), "vault_search", "__init__.py"), "utf8"))
+        .toContain(VERSION);
+      expect(await fs.readFile(path.join(pluginBackendRoot(tmp), "vault_search", "cli.py"), "utf8"))
+        .toContain("# cli");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
 });

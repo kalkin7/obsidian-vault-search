@@ -3009,7 +3009,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.51";
+var BACKEND_VERSION = "0.1.52";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -3584,11 +3584,17 @@ var BackendManager = class {
       );
     }
     const zip = new import_adm_zip.default(Buffer.from(response.arrayBuffer));
-    const backendEntries = zip.getEntries().filter((e) => e.entryName.startsWith("backend/") && !e.isDirectory);
+    const entries = zip.getEntries();
+    const backendEntries = entries.filter((e) => {
+      const norm = e.entryName.replace(/\\/g, "/");
+      return norm.startsWith("backend/") && !e.isDirectory;
+    });
     if (backendEntries.length === 0) {
       throw new Error("\uB9B4\uB9AC\uC2A4 zip\uC5D0 backend/ \uD3F4\uB354\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4");
     }
-    const initEntry = zip.getEntries().find((e) => e.entryName === "backend/vault_search/__init__.py");
+    const initEntry = entries.find(
+      (e) => e.entryName.replace(/\\/g, "/") === "backend/vault_search/__init__.py"
+    );
     const versionMatch = initEntry ? /__version__\s*=\s*["']([^"']+)["']/.exec(
       initEntry.getData().toString("utf8")
     ) : null;
@@ -3604,7 +3610,8 @@ var BackendManager = class {
     const tempBackend = path3.join(tempRoot, "backend");
     try {
       for (const entry of backendEntries) {
-        const rel = entry.entryName.slice("backend/".length);
+        const norm = entry.entryName.replace(/\\/g, "/");
+        const rel = norm.slice("backend/".length);
         const dest = path3.resolve(tempBackend, rel);
         const inside = path3.relative(tempBackend, dest);
         if (path3.isAbsolute(rel) || inside === "" || inside.startsWith("..")) {
