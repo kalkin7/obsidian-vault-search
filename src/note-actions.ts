@@ -68,6 +68,70 @@ export function formatSearchResultsMarkdown(
 }
 
 /**
+ * Extract a clean note title:
+ * 1. If content contains a markdown H1 heading (# Title), extract that title.
+ * 2. Otherwise clean up the fallback title/query.
+ */
+export function extractCleanNoteTitle(fallbackTitle: string, content: string): string {
+  const headingMatch = /^#\s+(.+)$/m.exec(content);
+  if (headingMatch && headingMatch[1].trim()) {
+    return sanitizeNoteTitle(headingMatch[1].trim());
+  }
+  return sanitizeNoteTitle(fallbackTitle);
+}
+
+/**
+ * Ensure content has YAML frontmatter with created date and title.
+ */
+export function ensureNoteFrontmatter(content: string, title: string): string {
+  const trimmed = content.trim();
+  if (trimmed.startsWith("---")) {
+    return content;
+  }
+  const now = new Date();
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const createdStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(
+    now.getDate(),
+  )} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+
+  const frontmatter = [
+    "---",
+    `title: "${title.replace(/"/g, '\\"')}"`,
+    `created: "${createdStr}"`,
+    "---",
+    "",
+  ].join("\n");
+
+  return `${frontmatter}\n${content}`;
+}
+
+/**
+ * Generate a unique file path in the given folder without overwriting existing files.
+ * Example: Title.md -> Title 1.md -> Title 2.md
+ */
+export function getUniqueFilePath(
+  app: App,
+  folderPath: string,
+  baseTitle: string,
+): string {
+  const cleanFolder = folderPath.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  let fileName = `${baseTitle}.md`;
+  let fullPath = normalizePath(
+    cleanFolder ? `${cleanFolder}/${fileName}` : fileName,
+  );
+
+  let counter = 1;
+  while (app.vault.getAbstractFileByPath(fullPath)) {
+    fileName = `${baseTitle} ${counter}.md`;
+    fullPath = normalizePath(
+      cleanFolder ? `${cleanFolder}/${fileName}` : fileName,
+    );
+    counter++;
+  }
+  return fullPath;
+}
+
+/**
  * Options for creating a note from markdown content.
  */
 export interface CreateNoteOptions {
@@ -85,25 +149,21 @@ export async function createNoteFromMarkdown(
   options: CreateNoteOptions,
 ): Promise<TFile | null> {
   const { title, content, folder = "", openInNewTab = true } = options;
-  const safeTitle = sanitizeNoteTitle(title);
-  const timestamp = getFormattedTimestamp();
-  const fileName = `${safeTitle}@${timestamp}.md`;
-
-  const folderPath = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
-  const fullPath = normalizePath(
-    folderPath ? `${folderPath}/${fileName}` : fileName,
-  );
+  const cleanTitle = extractCleanNoteTitle(title, content);
+  const contentWithFrontmatter = ensureNoteFrontmatter(content, cleanTitle);
+  const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
 
   try {
     // Ensure parent folder exists if specified
-    if (folderPath) {
-      const folderEntry = app.vault.getAbstractFileByPath(folderPath);
+    if (cleanFolder) {
+      const folderEntry = app.vault.getAbstractFileByPath(cleanFolder);
       if (!folderEntry) {
-        await app.vault.createFolder(folderPath);
+        await app.vault.createFolder(cleanFolder);
       }
     }
 
-    const file = await app.vault.create(fullPath, content);
+    const fullPath = getUniqueFilePath(app, cleanFolder, cleanTitle);
+    const file = await app.vault.create(fullPath, contentWithFrontmatter);
     new Notice(`새 노트를 생성했습니다: ${file.basename}`);
 
     if (openInNewTab) {

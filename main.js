@@ -3009,7 +3009,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.52";
+var BACKEND_VERSION = "0.1.53";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -5912,12 +5912,6 @@ function sanitizeNoteTitle(title) {
   const cleaned = historyTitle(trimmed);
   return cleaned || "\uAC80\uC0C9 \uACB0\uACFC";
 }
-function getFormattedTimestamp(date = /* @__PURE__ */ new Date()) {
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
-    date.getDate()
-  )}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
-}
 function formatSearchResultsMarkdown(query, results) {
   const lines = [];
   const now = /* @__PURE__ */ new Date();
@@ -5946,23 +5940,63 @@ function formatSearchResultsMarkdown(query, results) {
   }
   return lines.join("\n");
 }
+function extractCleanNoteTitle(fallbackTitle, content) {
+  const headingMatch = /^#\s+(.+)$/m.exec(content);
+  if (headingMatch && headingMatch[1].trim()) {
+    return sanitizeNoteTitle(headingMatch[1].trim());
+  }
+  return sanitizeNoteTitle(fallbackTitle);
+}
+function ensureNoteFrontmatter(content, title) {
+  const trimmed = content.trim();
+  if (trimmed.startsWith("---")) {
+    return content;
+  }
+  const now = /* @__PURE__ */ new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const createdStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(
+    now.getDate()
+  )} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const frontmatter = [
+    "---",
+    `title: "${title.replace(/"/g, '\\"')}"`,
+    `created: "${createdStr}"`,
+    "---",
+    ""
+  ].join("\n");
+  return `${frontmatter}
+${content}`;
+}
+function getUniqueFilePath(app, folderPath, baseTitle) {
+  const cleanFolder = folderPath.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  let fileName = `${baseTitle}.md`;
+  let fullPath = (0, import_obsidian5.normalizePath)(
+    cleanFolder ? `${cleanFolder}/${fileName}` : fileName
+  );
+  let counter = 1;
+  while (app.vault.getAbstractFileByPath(fullPath)) {
+    fileName = `${baseTitle} ${counter}.md`;
+    fullPath = (0, import_obsidian5.normalizePath)(
+      cleanFolder ? `${cleanFolder}/${fileName}` : fileName
+    );
+    counter++;
+  }
+  return fullPath;
+}
 async function createNoteFromMarkdown(app, options) {
   const { title, content, folder = "", openInNewTab = true } = options;
-  const safeTitle = sanitizeNoteTitle(title);
-  const timestamp = getFormattedTimestamp();
-  const fileName = `${safeTitle}@${timestamp}.md`;
-  const folderPath = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
-  const fullPath = (0, import_obsidian5.normalizePath)(
-    folderPath ? `${folderPath}/${fileName}` : fileName
-  );
+  const cleanTitle = extractCleanNoteTitle(title, content);
+  const contentWithFrontmatter = ensureNoteFrontmatter(content, cleanTitle);
+  const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
   try {
-    if (folderPath) {
-      const folderEntry = app.vault.getAbstractFileByPath(folderPath);
+    if (cleanFolder) {
+      const folderEntry = app.vault.getAbstractFileByPath(cleanFolder);
       if (!folderEntry) {
-        await app.vault.createFolder(folderPath);
+        await app.vault.createFolder(cleanFolder);
       }
     }
-    const file = await app.vault.create(fullPath, content);
+    const fullPath = getUniqueFilePath(app, cleanFolder, cleanTitle);
+    const file = await app.vault.create(fullPath, contentWithFrontmatter);
     new import_obsidian5.Notice(`\uC0C8 \uB178\uD2B8\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4: ${file.basename}`);
     if (openInNewTab) {
       const leaf = app.workspace.getLeaf("tab");

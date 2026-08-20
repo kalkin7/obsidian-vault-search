@@ -80,8 +80,8 @@ describe("note-actions", () => {
     } as unknown as App;
 
     const file = await createNoteFromMarkdown(fakeApp, {
-      title: "테스트 노트",
-      content: "# 내용입니다",
+      title: "질문: 테스트 노트 정리해줘",
+      content: "# 실제 생성된 제목\n\n내용입니다",
       folder: "AI Vault Search/Notes",
       openInNewTab: true,
     });
@@ -91,8 +91,38 @@ describe("note-actions", () => {
     expect(fakeApp.vault.create).toHaveBeenCalled();
     expect(openedFile).toBe(file);
     const createdPath = Object.keys(createdFiles)[0];
-    expect(createdPath).toMatch(/^AI Vault Search\/Notes\/테스트 노트@\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.md$/);
-    expect(createdFiles[createdPath]).toBe("# 내용입니다");
+    expect(createdPath).toBe("AI Vault Search/Notes/실제 생성된 제목.md");
+    expect(createdFiles[createdPath]).toContain("---");
+    expect(createdFiles[createdPath]).toContain('title: "실제 생성된 제목"');
+    expect(createdFiles[createdPath]).toContain("created:");
+    expect(createdFiles[createdPath]).toContain("# 실제 생성된 제목\n\n내용입니다");
+  });
+
+  it("increments filename counter when a note with the same name exists", async () => {
+    const existing = new Set(["기존 노트.md", "기존 노트 1.md"]);
+    const fakeApp = {
+      vault: {
+        getAbstractFileByPath: vi.fn((path: string) => existing.has(path) ? {} : null),
+        createFolder: vi.fn(async () => undefined),
+        create: vi.fn(async (path: string, content: string) => ({ path, basename: path.replace(/\.md$/, "") } as TFile)),
+      },
+      workspace: {
+        getLeaf: vi.fn(() => ({
+          openFile: vi.fn(async () => undefined),
+        })),
+      },
+    } as unknown as App;
+
+    const file = await createNoteFromMarkdown(fakeApp, {
+      title: "기존 노트",
+      content: "새로운 내용",
+    });
+
+    expect(file).not.toBeNull();
+    expect(fakeApp.vault.create).toHaveBeenCalledWith(
+      "기존 노트 2.md",
+      expect.stringContaining("새로운 내용"),
+    );
   });
 
   it("inserts markdown into active editor replacing selection", () => {
