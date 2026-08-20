@@ -37,9 +37,9 @@ function isBlockStart(line: string): boolean {
  *  "+N" when the same file is cited several times). DOM-only — never assigns
  *  innerHTML. Answer text stays fully selectable. */
 export interface AnswerToolbarActions {
-  onCopy?: (text: string) => void;
-  onCreateNote?: (text: string) => void;
-  onInsertToActive?: (text: string) => void;
+  onCopy?: (text: string) => boolean | void | Promise<boolean | void>;
+  onCreateNote?: (text: string) => boolean | void | Promise<boolean | void>;
+  onInsertToActive?: (text: string) => boolean | void | Promise<boolean | void>;
 }
 
 export class AnswerRenderer {
@@ -71,9 +71,19 @@ export class AnswerRenderer {
         attr: { type: "button", "aria-label": "답변 전체 텍스트 복사" },
       });
       copy.addEventListener("click", () => {
-        onCopy(answer);
-        copy.setText("복사됨 ✓");
-        globalThis.setTimeout(() => copy.setText("복사"), 1500);
+        void (async () => {
+          try {
+            const result = await onCopy(answer);
+            if (result !== false) {
+              copy.setText("복사됨 ✓");
+              globalThis.setTimeout(() => copy.setText("복사"), 1500);
+            } else {
+              copy.setText("복사");
+            }
+          } catch {
+            copy.setText("복사");
+          }
+        })();
       });
     }
 
@@ -85,9 +95,19 @@ export class AnswerRenderer {
         attr: { type: "button", "aria-label": "답변을 새 마크다운 노트로 생성" },
       });
       newNote.addEventListener("click", () => {
-        onCreateNote(answer);
-        newNote.setText("생성됨 ✓");
-        globalThis.setTimeout(() => newNote.setText("새 노트"), 1500);
+        void (async () => {
+          try {
+            const result = await onCreateNote(answer);
+            if (result !== false) {
+              newNote.setText("생성됨 ✓");
+              globalThis.setTimeout(() => newNote.setText("새 노트"), 1500);
+            } else {
+              newNote.setText("새 노트");
+            }
+          } catch {
+            newNote.setText("새 노트");
+          }
+        })();
       });
     }
 
@@ -102,9 +122,19 @@ export class AnswerRenderer {
         },
       });
       insert.addEventListener("click", () => {
-        onInsertToActive(answer);
-        insert.setText("삽입됨 ✓");
-        globalThis.setTimeout(() => insert.setText("현재 노트에 삽입"), 1500);
+        void (async () => {
+          try {
+            const result = await onInsertToActive(answer);
+            if (result !== false) {
+              insert.setText("삽입됨 ✓");
+              globalThis.setTimeout(() => insert.setText("현재 노트에 삽입"), 1500);
+            } else {
+              insert.setText("현재 노트에 삽입");
+            }
+          } catch {
+            insert.setText("현재 노트에 삽입");
+          }
+        })();
       });
     }
 

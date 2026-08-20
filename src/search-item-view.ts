@@ -13,6 +13,7 @@ import {
   type AnswerConversationMessage,
 } from "./answer-session";
 import {
+  copyMarkdownToClipboard,
   createNoteFromMarkdown,
   insertMarkdownToActiveNote,
 } from "./note-actions";
@@ -602,7 +603,7 @@ export class VaultSearchItemView extends ItemView {
     renderer.render(result.answer, result.citations, {
       onCopy: () => this.copyAnswer(noteMarkdown),
       onCreateNote: () =>
-        void this.createAnswerNote(
+        this.createAnswerNote(
           this.lastQuery || "AI 검색 답변",
           noteMarkdown,
         ),
@@ -749,7 +750,7 @@ export class VaultSearchItemView extends ItemView {
         renderer.render(message.content, session.citations, {
           onCopy: () => this.copyAnswer(noteMarkdown),
           onCreateNote: () =>
-            void this.createAnswerNote(
+            this.createAnswerNote(
               session.title || "AI 검색 답변",
               noteMarkdown,
             ),
@@ -836,7 +837,7 @@ export class VaultSearchItemView extends ItemView {
     renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS, {
       onCopy: () => this.copyAnswer(sampleMarkdown),
       onCreateNote: () =>
-        void this.createAnswerNote("AI 검색 샘플", sampleMarkdown),
+        this.createAnswerNote("AI 검색 샘플", sampleMarkdown),
       onInsertToActive: () => this.insertAnswerToActive(sampleMarkdown),
     });
     this.scrollToBottom();
@@ -858,50 +859,24 @@ export class VaultSearchItemView extends ItemView {
     }
   }
 
-  private copyAnswer(text: string): void {
-    const notify = (ok: boolean) =>
-      new Notice(ok ? "답변을 복사했습니다." : "답변 복사에 실패했습니다.");
-    if (navigator.clipboard && window.isSecureContext) {
-      void navigator.clipboard
-        .writeText(text)
-        .then(() => notify(true))
-        .catch(() => this.copyAnswerFallback(text, notify));
-    } else {
-      this.copyAnswerFallback(text, notify);
-    }
-  }
-
-  private copyAnswerFallback(
-    text: string,
-    notify: (ok: boolean) => void,
-  ): void {
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.style.position = "fixed";
-    area.style.opacity = "0";
-    document.body.append(area);
-    area.select();
-    let ok = false;
-    try {
-      ok = document.execCommand("copy");
-    } catch {
-      ok = false;
-    }
-    area.remove();
-    notify(ok);
+  private copyAnswer(text: string): Promise<boolean> {
+    return copyMarkdownToClipboard(text, (ok) =>
+      new Notice(ok ? "답변을 복사했습니다." : "답변 복사에 실패했습니다."),
+    );
   }
 
   private async createAnswerNote(
     title: string,
     markdown: string,
-  ): Promise<void> {
-    await createNoteFromMarkdown(this.app, {
+  ): Promise<boolean> {
+    const file = await createNoteFromMarkdown(this.app, {
       title,
       content: markdown,
     });
+    return Boolean(file);
   }
 
-  private insertAnswerToActive(markdown: string): void {
-    insertMarkdownToActiveNote(this.app, markdown);
+  private insertAnswerToActive(markdown: string): boolean {
+    return insertMarkdownToActiveNote(this.app, markdown);
   }
 }

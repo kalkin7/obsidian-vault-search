@@ -131,13 +131,19 @@ describe("note-actions", () => {
     expect(createdFiles[createdPath]).toContain('title: "인박스 내용"');
   });
 
-  it("inserts markdown into active editor replacing selection", () => {
-    let replacedText = "";
+  it("preserves selection and inserts markdown at selection end without overwriting", () => {
+    let rangeInserted = "";
+    let insertedPos = null;
     const fakeEditor = {
-      getSelection: vi.fn(() => "선택된 영역"),
+      getSelection: vi.fn(() => "선택된 원본 텍스트"),
       somethingSelected: vi.fn(() => true),
-      replaceSelection: vi.fn((text: string) => {
-        replacedText = text;
+      getCursor: vi.fn((pos?: string) => pos === "to" ? { line: 1, ch: 10 } : { line: 0, ch: 0 }),
+      getValue: vi.fn(() => "줄1\n선택된 원본 텍스트\n줄3"),
+      getLine: vi.fn(() => "선택된 원본 텍스트"),
+      replaceSelection: vi.fn(),
+      replaceRange: vi.fn((text: string, pos: unknown) => {
+        rangeInserted = text;
+        insertedPos = pos;
       }),
     } as unknown as Editor;
 
@@ -151,8 +157,10 @@ describe("note-actions", () => {
 
     const result = insertMarkdownToActiveNote(fakeApp, "새로운 내용");
     expect(result).toBe(true);
-    expect(fakeEditor.replaceSelection).toHaveBeenCalledWith("새로운 내용");
-    expect(replacedText).toBe("새로운 내용");
+    expect(fakeEditor.replaceSelection).not.toHaveBeenCalled();
+    expect(fakeEditor.replaceRange).toHaveBeenCalled();
+    expect(insertedPos).toEqual({ line: 1, ch: 10 });
+    expect(rangeInserted).toContain("새로운 내용");
   });
 
   it("inserts markdown at cursor when nothing is selected", () => {
@@ -193,7 +201,7 @@ describe("note-actions", () => {
     expect(result).toBe(false);
   });
 
-  it("copies markdown to clipboard using navigator.clipboard", async () => {
+  it("copies markdown to clipboard using navigator.clipboard on success", async () => {
     let clipboardText = "";
     Object.assign(navigator, {
       clipboard: {
@@ -203,7 +211,7 @@ describe("note-actions", () => {
       },
     });
 
-    let notifiedOk = false;
+    let notifiedOk: boolean | null = null;
     const ok = await copyMarkdownToClipboard("복사 내용", (status) => {
       notifiedOk = status;
     });
@@ -211,5 +219,83 @@ describe("note-actions", () => {
     expect(ok).toBe(true);
     expect(clipboardText).toBe("복사 내용");
     expect(notifiedOk).toBe(true);
+  });
+
+  it("falls back to execCommand when navigator.clipboard fails and succeeds", async () => {
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn(async () => {
+          throw new Error("Clipboard write permission denied");
+        }),
+      },
+    });
+
+    const fakeArea = {
+      value: "",
+      style: {} as Record<string, string>,
+      select: vi.fn(),
+      remove: vi.fn(),
+    };
+    const prevDoc = (globalThis as unknown as { document: unknown }).document;
+    (globalThis as unknown as { document: unknown }).document = {
+      createElement: vi.fn(() => fakeArea),
+      body: {
+        append: vi.fn(),
+      },
+      execCommand: vi.fn(() => true),
+    };
+
+    try {
+      let notifiedOk: boolean | null = null;
+      const ok = await copyMarkdownToClipboard("폴백 복사 내용", (status) => {
+        notifiedOk = status;
+      });
+
+      expect(ok).toBe(true);
+      expect(fakeArea.select).toHaveBeenCalled();
+      expect(fakeArea.remove).toHaveBeenCalled();
+      expect(notifiedOk).toBe(true);
+    } finally {
+      (globalThis as unknown as { document: unknown }).document = prevDoc;
+    }
+  });
+
+  it("returns false and notifies failure when both navigator and fallback fail", async () => {
+    Object.assign(navigator, {
+      clipboard: {
+        writeText: vi.fn(async () => {
+          throw new Error("Clipboard error");
+        }),
+      },
+    });
+
+    const fakeArea = {
+      value: "",
+      style: {} as Record<string, string>,
+      select: vi.fn(),
+      remove: vi.fn(),
+    };
+    const prevDoc = (globalThis as unknown as { document: unknown }).document;
+    (globalThis as unknown as { document: unknown }).document = {
+      createElement: vi.fn(() => fakeArea),
+      body: {
+        append: vi.fn(),
+      },
+      execCommand: vi.fn(() => false),
+    };
+
+    try {
+      let notifiedOk: boolean | null = null;
+      const ok = await copyMarkdownToClipboard("실패 내용", (status) => {
+        notifiedOk = status;
+      });
+
+      expect(ok).toBe(false);
+      expect(fakeArea.select).toHaveBeenCalled();
+      expect(fakeArea.remove).toHaveBeenCalled();
+      expect(notifiedOk).toBe(false);
+    } finally {
+      (globalThis as unknown as { document: unknown }).document = prevDoc;
+    }
   });
 });

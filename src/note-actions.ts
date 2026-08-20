@@ -217,28 +217,24 @@ export function insertMarkdownToActiveNote(
   }
 
   const editor = activeView.editor;
-  const selection = editor.getSelection();
+  const docLength = editor.getValue().length;
 
-  if (selection || editor.somethingSelected()) {
-    // If there is an active selection, replace it with the content
-    editor.replaceSelection(content);
+  if (docLength === 0) {
+    // Empty document
+    editor.setValue(content);
   } else {
-    // Check cursor position
-    const cursor = editor.getCursor();
-    const docLength = editor.getValue().length;
+    // If there is an active selection, insert after the selection without overwriting it.
+    // Otherwise insert at the current cursor position.
+    const pos = editor.somethingSelected()
+      ? (editor.getCursor?.("to") ?? editor.getCursor?.() ?? { line: 0, ch: 0 })
+      : (editor.getCursor?.() ?? { line: 0, ch: 0 });
 
-    if (docLength === 0) {
-      // Empty document
-      editor.setValue(content);
+    const lineText = editor.getLine(pos.line) ?? "";
+    if (lineText.trim().length > 0) {
+      // Insert with newlines so we don't break existing line
+      editor.replaceRange(`\n\n${content}\n`, pos);
     } else {
-      // If cursor is at start or middle of document with no selection, insert at cursor with spacing
-      const lineText = editor.getLine(cursor.line);
-      if (lineText.trim().length > 0) {
-        // Insert with newlines so we don't break existing line
-        editor.replaceRange(`\n\n${content}\n`, cursor);
-      } else {
-        editor.replaceRange(`${content}\n`, cursor);
-      }
+      editor.replaceRange(`${content}\n`, pos);
     }
   }
 
@@ -278,6 +274,10 @@ function fallbackCopyText(
   text: string,
   notify: (ok: boolean) => void,
 ): boolean {
+  if (typeof document === "undefined" || !document.createElement) {
+    notify(false);
+    return false;
+  }
   const area = document.createElement("textarea");
   area.value = text;
   area.style.position = "fixed";

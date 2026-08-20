@@ -131,11 +131,13 @@ export class VaultSearchModal extends Modal {
       void (async () => {
         const query = this.inputEl.value.trim() || "검색 결과";
         const md = formatSearchResultsMarkdown(query, results);
-        await createNoteFromMarkdown(this.owner.app, {
+        const file = await createNoteFromMarkdown(this.owner.app, {
           title: `검색 - ${query}`,
           content: md,
         });
-        this.close();
+        if (file) {
+          this.close();
+        }
       })();
     });
 

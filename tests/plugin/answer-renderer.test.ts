@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AnswerRenderer, toNoteMarkdown } from "../../src/answer-renderer";
 import type { Citation } from "../../src/types";
 
@@ -434,9 +434,11 @@ describe("AnswerRenderer", () => {
 			},
 			onCreateNote: (text) => {
 				created = text;
+				return true;
 			},
 			onInsertToActive: (text) => {
 				inserted = text;
+				return true;
 			},
 		});
 
@@ -467,5 +469,131 @@ describe("AnswerRenderer", () => {
 
 		insertBtn[0].handlers.click?.();
 		expect(inserted).toBe(answer);
+	});
+
+	it("shows '생성됨 ✓' on note creation success and reverts after timeout", async () => {
+		vi.useFakeTimers();
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		renderer.render("테스트 답변", [], {
+			onCreateNote: async () => true,
+		});
+
+		const newNoteBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-new-note"),
+		)[0];
+
+		newNoteBtn.handlers.click?.();
+		await Promise.resolve(); // flush microtasks
+
+		expect(newNoteBtn.textContent).toBe("생성됨 ✓");
+		vi.advanceTimersByTime(1500);
+		expect(newNoteBtn.textContent).toBe("새 노트");
+		vi.useRealTimers();
+	});
+
+	it("does not show '생성됨 ✓' when note creation fails", async () => {
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		renderer.render("테스트 답변", [], {
+			onCreateNote: async () => false,
+		});
+
+		const newNoteBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-new-note"),
+		)[0];
+
+		newNoteBtn.handlers.click?.();
+		await Promise.resolve(); // flush microtasks
+
+		expect(newNoteBtn.textContent).toBe("새 노트");
+	});
+
+	it("restores button text when onCreateNote throws an error", async () => {
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		renderer.render("테스트 답변", [], {
+			onCreateNote: async () => {
+				throw new Error("저장 실패");
+			},
+		});
+
+		const newNoteBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-new-note"),
+		)[0];
+
+		newNoteBtn.handlers.click?.();
+		await Promise.resolve();
+
+		expect(newNoteBtn.textContent).toBe("새 노트");
+	});
+
+	it("shows '복사됨 ✓' on copy success and reverts after timeout", async () => {
+		vi.useFakeTimers();
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		renderer.render("테스트 답변", [], {
+			onCopy: async () => true,
+		});
+
+		const copyBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-copy"),
+		)[0];
+
+		copyBtn.handlers.click?.();
+		await Promise.resolve();
+
+		expect(copyBtn.textContent).toBe("복사됨 ✓");
+		vi.advanceTimersByTime(1500);
+		expect(copyBtn.textContent).toBe("복사");
+		vi.useRealTimers();
+	});
+
+	it("does not show '복사됨 ✓' when onCopy returns false", async () => {
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		renderer.render("테스트 답변", [], {
+			onCopy: async () => false,
+		});
+
+		const copyBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-copy"),
+		)[0];
+
+		copyBtn.handlers.click?.();
+		await Promise.resolve();
+
+		expect(copyBtn.textContent).toBe("복사");
+	});
+
+	it("restores button text when onCopy throws an error", async () => {
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		renderer.render("테스트 답변", [], {
+			onCopy: async () => {
+				throw new Error("클립보드 실패");
+			},
+		});
+
+		const copyBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-copy"),
+		)[0];
+
+		copyBtn.handlers.click?.();
+		await Promise.resolve();
+
+		expect(copyBtn.textContent).toBe("복사");
 	});
 });

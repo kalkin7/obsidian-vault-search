@@ -151,7 +151,8 @@ unconditionally overwritten from the stored secrets).
   - **새 노트** — creates a new standalone markdown note (inheriting Obsidian's
     "Default location for new notes" folder setting, with frontmatter `created`/`title`
     and intelligent H1 title extraction) and opens it in a new tab immediately.
-  - **현재 노트에 삽입** — inserts the note-ready markdown at the cursor location (or document end)
+  - **현재 노트에 삽입** — inserts the note-ready markdown at the cursor location (or after
+    the active selection without overwriting existing text, or at document end)
     of the currently active markdown note.
   The search modal provides the same action bar (복사, 새 노트, 현재 노트에 삽입) for vault search results.
 - **Diagnostic command** — "AI Vault Search: 목록 렌더링 샘플 미리보기"

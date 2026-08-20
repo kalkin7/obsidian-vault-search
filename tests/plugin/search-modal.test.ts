@@ -84,4 +84,29 @@ describe("Vault search modal", () => {
     const md = results.map(r => r.file_path);
     expect(md).toHaveLength(2);
   });
+
+  it("closes modal on successful note creation and stays open on failure", async () => {
+    let modalClosed = false;
+    const closeModal = () => {
+      modalClosed = true;
+    };
+
+    // Simulate creation handler
+    const handleNewNote = async (createFn: () => Promise<unknown>) => {
+      const file = await createFn();
+      if (file) {
+        closeModal();
+      }
+    };
+
+    // Failure case: null returned
+    modalClosed = false;
+    await handleNewNote(async () => null);
+    expect(modalClosed).toBe(false);
+
+    // Success case: TFile object returned
+    modalClosed = false;
+    await handleNewNote(async () => ({ path: "0_Inbox/검색.md" }));
+    expect(modalClosed).toBe(true);
+  });
 });

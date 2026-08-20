@@ -3009,7 +3009,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.54";
+var BACKEND_VERSION = "0.1.55";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -5329,9 +5329,19 @@ var AnswerRenderer = class {
         attr: { type: "button", "aria-label": "\uB2F5\uBCC0 \uC804\uCCB4 \uD14D\uC2A4\uD2B8 \uBCF5\uC0AC" }
       });
       copy.addEventListener("click", () => {
-        onCopy(answer);
-        copy.setText("\uBCF5\uC0AC\uB428 \u2713");
-        globalThis.setTimeout(() => copy.setText("\uBCF5\uC0AC"), 1500);
+        void (async () => {
+          try {
+            const result = await onCopy(answer);
+            if (result !== false) {
+              copy.setText("\uBCF5\uC0AC\uB428 \u2713");
+              globalThis.setTimeout(() => copy.setText("\uBCF5\uC0AC"), 1500);
+            } else {
+              copy.setText("\uBCF5\uC0AC");
+            }
+          } catch {
+            copy.setText("\uBCF5\uC0AC");
+          }
+        })();
       });
     }
     if (toolbarActions.onCreateNote) {
@@ -5342,9 +5352,19 @@ var AnswerRenderer = class {
         attr: { type: "button", "aria-label": "\uB2F5\uBCC0\uC744 \uC0C8 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC0DD\uC131" }
       });
       newNote.addEventListener("click", () => {
-        onCreateNote(answer);
-        newNote.setText("\uC0DD\uC131\uB428 \u2713");
-        globalThis.setTimeout(() => newNote.setText("\uC0C8 \uB178\uD2B8"), 1500);
+        void (async () => {
+          try {
+            const result = await onCreateNote(answer);
+            if (result !== false) {
+              newNote.setText("\uC0DD\uC131\uB428 \u2713");
+              globalThis.setTimeout(() => newNote.setText("\uC0C8 \uB178\uD2B8"), 1500);
+            } else {
+              newNote.setText("\uC0C8 \uB178\uD2B8");
+            }
+          } catch {
+            newNote.setText("\uC0C8 \uB178\uD2B8");
+          }
+        })();
       });
     }
     if (toolbarActions.onInsertToActive) {
@@ -5358,9 +5378,19 @@ var AnswerRenderer = class {
         }
       });
       insert.addEventListener("click", () => {
-        onInsertToActive(answer);
-        insert.setText("\uC0BD\uC785\uB428 \u2713");
-        globalThis.setTimeout(() => insert.setText("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785"), 1500);
+        void (async () => {
+          try {
+            const result = await onInsertToActive(answer);
+            if (result !== false) {
+              insert.setText("\uC0BD\uC785\uB428 \u2713");
+              globalThis.setTimeout(() => insert.setText("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785"), 1500);
+            } else {
+              insert.setText("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785");
+            }
+          } catch {
+            insert.setText("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785");
+          }
+        })();
       });
     }
     const body = this.containerEl.createDiv({ cls: "vault-answer-body" });
@@ -6030,25 +6060,20 @@ function insertMarkdownToActiveNote(app, content) {
     return false;
   }
   const editor = activeView.editor;
-  const selection = editor.getSelection();
-  if (selection || editor.somethingSelected()) {
-    editor.replaceSelection(content);
+  const docLength = editor.getValue().length;
+  if (docLength === 0) {
+    editor.setValue(content);
   } else {
-    const cursor = editor.getCursor();
-    const docLength = editor.getValue().length;
-    if (docLength === 0) {
-      editor.setValue(content);
-    } else {
-      const lineText = editor.getLine(cursor.line);
-      if (lineText.trim().length > 0) {
-        editor.replaceRange(`
+    const pos = editor.somethingSelected() ? editor.getCursor?.("to") ?? editor.getCursor?.() ?? { line: 0, ch: 0 } : editor.getCursor?.() ?? { line: 0, ch: 0 };
+    const lineText = editor.getLine(pos.line) ?? "";
+    if (lineText.trim().length > 0) {
+      editor.replaceRange(`
 
 ${content}
-`, cursor);
-      } else {
-        editor.replaceRange(`${content}
-`, cursor);
-      }
+`, pos);
+    } else {
+      editor.replaceRange(`${content}
+`, pos);
     }
   }
   new import_obsidian5.Notice("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uB0B4\uC6A9\uC744 \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4.");
@@ -6071,6 +6096,10 @@ async function copyMarkdownToClipboard(text, onNotify) {
   }
 }
 function fallbackCopyText(text, notify) {
+  if (typeof document === "undefined" || !document.createElement) {
+    notify(false);
+    return false;
+  }
   const area = document.createElement("textarea");
   area.value = text;
   area.style.position = "fixed";
@@ -6191,11 +6220,13 @@ var VaultSearchModal = class extends import_obsidian6.Modal {
       void (async () => {
         const query = this.inputEl.value.trim() || "\uAC80\uC0C9 \uACB0\uACFC";
         const md = formatSearchResultsMarkdown(query, results);
-        await createNoteFromMarkdown(this.owner.app, {
+        const file = await createNoteFromMarkdown(this.owner.app, {
           title: `\uAC80\uC0C9 - ${query}`,
           content: md
         });
-        this.close();
+        if (file) {
+          this.close();
+        }
       })();
     });
     const insertBtn = buttons.createEl("button", {
@@ -6815,7 +6846,7 @@ var VaultSearchItemView = class extends import_obsidian9.ItemView {
     const noteMarkdown = toNoteMarkdown(result.answer, result.citations);
     renderer.render(result.answer, result.citations, {
       onCopy: () => this.copyAnswer(noteMarkdown),
-      onCreateNote: () => void this.createAnswerNote(
+      onCreateNote: () => this.createAnswerNote(
         this.lastQuery || "AI \uAC80\uC0C9 \uB2F5\uBCC0",
         noteMarkdown
       ),
@@ -6947,7 +6978,7 @@ var VaultSearchItemView = class extends import_obsidian9.ItemView {
         const noteMarkdown = toNoteMarkdown(message.content, session.citations);
         renderer.render(message.content, session.citations, {
           onCopy: () => this.copyAnswer(noteMarkdown),
-          onCreateNote: () => void this.createAnswerNote(
+          onCreateNote: () => this.createAnswerNote(
             session.title || "AI \uAC80\uC0C9 \uB2F5\uBCC0",
             noteMarkdown
           ),
@@ -7024,7 +7055,7 @@ var VaultSearchItemView = class extends import_obsidian9.ItemView {
     const sampleMarkdown = toNoteMarkdown(SAMPLE_ANSWER, SAMPLE_CITATIONS);
     renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS, {
       onCopy: () => this.copyAnswer(sampleMarkdown),
-      onCreateNote: () => void this.createAnswerNote("AI \uAC80\uC0C9 \uC0D8\uD50C", sampleMarkdown),
+      onCreateNote: () => this.createAnswerNote("AI \uAC80\uC0C9 \uC0D8\uD50C", sampleMarkdown),
       onInsertToActive: () => this.insertAnswerToActive(sampleMarkdown)
     });
     this.scrollToBottom();
@@ -7042,37 +7073,20 @@ var VaultSearchItemView = class extends import_obsidian9.ItemView {
     }
   }
   copyAnswer(text) {
-    const notify = (ok) => new import_obsidian9.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
-    if (navigator.clipboard && window.isSecureContext) {
-      void navigator.clipboard.writeText(text).then(() => notify(true)).catch(() => this.copyAnswerFallback(text, notify));
-    } else {
-      this.copyAnswerFallback(text, notify);
-    }
-  }
-  copyAnswerFallback(text, notify) {
-    const area = document.createElement("textarea");
-    area.value = text;
-    area.style.position = "fixed";
-    area.style.opacity = "0";
-    document.body.append(area);
-    area.select();
-    let ok = false;
-    try {
-      ok = document.execCommand("copy");
-    } catch {
-      ok = false;
-    }
-    area.remove();
-    notify(ok);
+    return copyMarkdownToClipboard(
+      text,
+      (ok) => new import_obsidian9.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.")
+    );
   }
   async createAnswerNote(title, markdown) {
-    await createNoteFromMarkdown(this.app, {
+    const file = await createNoteFromMarkdown(this.app, {
       title,
       content: markdown
     });
+    return Boolean(file);
   }
   insertAnswerToActive(markdown) {
-    insertMarkdownToActiveNote(this.app, markdown);
+    return insertMarkdownToActiveNote(this.app, markdown);
   }
 };
 
