@@ -3,6 +3,7 @@ import type { App, Editor, MarkdownView, TFile } from "obsidian";
 import {
   copyMarkdownToClipboard,
   createNoteFromMarkdown,
+  extractCleanNoteTitleAndBody,
   formatSearchResultsMarkdown,
   getFormattedTimestamp,
   insertMarkdownToActiveNote,
@@ -11,6 +12,20 @@ import {
 import type { SearchResult } from "../../src/types";
 
 describe("note-actions", () => {
+  it("extracts clean title from H1 and strips H1 line from body", () => {
+    const input = "# 전기직무고시 점검 및 최근 변경사항 정리\n\n## 1. 핵심 결론\n내용입니다.";
+    const result = extractCleanNoteTitleAndBody("기본 제목", input);
+    expect(result.title).toBe("전기직무고시 점검 및 최근 변경사항 정리");
+    expect(result.body).toBe("## 1. 핵심 결론\n내용입니다.");
+  });
+
+  it("uses fallback title when no H1 heading exists", () => {
+    const input = "## 1. 섹션\n내용입니다.";
+    const result = extractCleanNoteTitleAndBody("검색 결과: 테스트", input);
+    expect(result.title).toBe("검색 결과 테스트");
+    expect(result.body).toBe(input);
+  });
+
   it("sanitizes note titles safely", () => {
     expect(sanitizeNoteTitle("질문: 이것은 무엇인가요?")).toBe("질문 이것은 무엇인가요");
     expect(sanitizeNoteTitle("   ")).toBe("검색 결과");
@@ -93,9 +108,10 @@ describe("note-actions", () => {
     const createdPath = Object.keys(createdFiles)[0];
     expect(createdPath).toBe("AI Vault Search/Notes/실제 생성된 제목.md");
     expect(createdFiles[createdPath]).toContain("---");
-    expect(createdFiles[createdPath]).toContain('title: "실제 생성된 제목"');
     expect(createdFiles[createdPath]).toContain("created:");
-    expect(createdFiles[createdPath]).toContain("# 실제 생성된 제목\n\n내용입니다");
+    expect(createdFiles[createdPath]).not.toContain('title: "실제 생성된 제목"');
+    expect(createdFiles[createdPath]).not.toContain("# 실제 생성된 제목");
+    expect(createdFiles[createdPath]).toContain("내용입니다");
   });
 
   it("uses Obsidian's configured new note folder from fileManager.getNewFileParent", async () => {
@@ -128,7 +144,9 @@ describe("note-actions", () => {
     expect(file).not.toBeNull();
     const createdPath = Object.keys(createdFiles)[0];
     expect(createdPath).toBe("0_Inbox/인박스 내용.md");
-    expect(createdFiles[createdPath]).toContain('title: "인박스 내용"');
+    expect(createdFiles[createdPath]).toContain("created:");
+    expect(createdFiles[createdPath]).not.toContain("# 인박스 내용");
+    expect(createdFiles[createdPath]).toContain("본문입니다.");
   });
 
   it("preserves selection and inserts markdown at selection end without overwriting", () => {

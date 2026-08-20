@@ -3009,7 +3009,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.55";
+var BACKEND_VERSION = "0.1.56";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -5970,14 +5970,35 @@ function formatSearchResultsMarkdown(query, results) {
   }
   return lines.join("\n");
 }
-function extractCleanNoteTitle(fallbackTitle, content) {
-  const headingMatch = /^#\s+(.+)$/m.exec(content);
-  if (headingMatch && headingMatch[1].trim()) {
-    return sanitizeNoteTitle(headingMatch[1].trim());
+function extractCleanNoteTitleAndBody(fallbackTitle, content) {
+  const lines = content.split(/\r?\n/);
+  let title = "";
+  let headingIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const match = /^#\s+(.+)$/.exec(line);
+    if (match && match[1].trim()) {
+      title = sanitizeNoteTitle(match[1].trim());
+      headingIndex = i;
+      break;
+    }
+    break;
   }
-  return sanitizeNoteTitle(fallbackTitle);
+  if (headingIndex >= 0 && title) {
+    let nextIndex = headingIndex + 1;
+    while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+      nextIndex++;
+    }
+    const remainingLines = lines.slice(nextIndex);
+    return { title, body: remainingLines.join("\n").trimStart() };
+  }
+  return {
+    title: sanitizeNoteTitle(fallbackTitle),
+    body: content
+  };
 }
-function ensureNoteFrontmatter(content, title) {
+function ensureNoteFrontmatter(content) {
   const trimmed = content.trim();
   if (trimmed.startsWith("---")) {
     return content;
@@ -5989,7 +6010,6 @@ function ensureNoteFrontmatter(content, title) {
   )} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
   const frontmatter = [
     "---",
-    `title: "${title.replace(/"/g, '\\"')}"`,
     `created: "${createdStr}"`,
     "---",
     ""
@@ -6029,8 +6049,11 @@ function resolveTargetFolder(app, explicitFolder) {
 }
 async function createNoteFromMarkdown(app, options) {
   const { title, content, folder, openInNewTab = true } = options;
-  const cleanTitle = extractCleanNoteTitle(title, content);
-  const contentWithFrontmatter = ensureNoteFrontmatter(content, cleanTitle);
+  const { title: cleanTitle, body: cleanBody } = extractCleanNoteTitleAndBody(
+    title,
+    content
+  );
+  const contentWithFrontmatter = ensureNoteFrontmatter(cleanBody);
   const cleanFolder = resolveTargetFolder(app, folder);
   try {
     if (cleanFolder) {

@@ -68,22 +68,60 @@ export function formatSearchResultsMarkdown(
 }
 
 /**
- * Extract a clean note title:
- * 1. If content contains a markdown H1 heading (# Title), extract that title.
- * 2. Otherwise clean up the fallback title/query.
+ * Extract clean note title and remaining body content:
+ * 1. If content contains a markdown H1 heading (# Title), extract that title
+ *    and strip the H1 line from the body so Obsidian doesn't duplicate the title.
+ * 2. Otherwise clean up the fallback title/query and keep the content as-is.
  */
-export function extractCleanNoteTitle(fallbackTitle: string, content: string): string {
-  const headingMatch = /^#\s+(.+)$/m.exec(content);
-  if (headingMatch && headingMatch[1].trim()) {
-    return sanitizeNoteTitle(headingMatch[1].trim());
+export function extractCleanNoteTitleAndBody(
+  fallbackTitle: string,
+  content: string,
+): { title: string; body: string } {
+  const lines = content.split(/\r?\n/);
+  let title = "";
+  let headingIndex = -1;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const match = /^#\s+(.+)$/.exec(line);
+    if (match && match[1].trim()) {
+      title = sanitizeNoteTitle(match[1].trim());
+      headingIndex = i;
+      break;
+    }
+    // If first non-empty line isn't an H1, stop searching
+    break;
   }
-  return sanitizeNoteTitle(fallbackTitle);
+
+  if (headingIndex >= 0 && title) {
+    // Strip the H1 line and any immediately following blank lines
+    let nextIndex = headingIndex + 1;
+    while (nextIndex < lines.length && !lines[nextIndex].trim()) {
+      nextIndex++;
+    }
+    const remainingLines = lines.slice(nextIndex);
+    return { title, body: remainingLines.join("\n").trimStart() };
+  }
+
+  return {
+    title: sanitizeNoteTitle(fallbackTitle),
+    body: content,
+  };
 }
 
 /**
- * Ensure content has YAML frontmatter with created date and title.
+ * Backward-compatible helper to extract note title.
  */
-export function ensureNoteFrontmatter(content: string, title: string): string {
+export function extractCleanNoteTitle(fallbackTitle: string, content: string): string {
+  return extractCleanNoteTitleAndBody(fallbackTitle, content).title;
+}
+
+/**
+ * Ensure content has YAML frontmatter with created date.
+ * Obsidian uses the file basename as the title, so we only record created timestamp.
+ */
+export function ensureNoteFrontmatter(content: string): string {
   const trimmed = content.trim();
   if (trimmed.startsWith("---")) {
     return content;
@@ -96,7 +134,6 @@ export function ensureNoteFrontmatter(content: string, title: string): string {
 
   const frontmatter = [
     "---",
-    `title: "${title.replace(/"/g, '\\"')}"`,
     `created: "${createdStr}"`,
     "---",
     "",
@@ -173,8 +210,11 @@ export async function createNoteFromMarkdown(
   options: CreateNoteOptions,
 ): Promise<TFile | null> {
   const { title, content, folder, openInNewTab = true } = options;
-  const cleanTitle = extractCleanNoteTitle(title, content);
-  const contentWithFrontmatter = ensureNoteFrontmatter(content, cleanTitle);
+  const { title: cleanTitle, body: cleanBody } = extractCleanNoteTitleAndBody(
+    title,
+    content,
+  );
+  const contentWithFrontmatter = ensureNoteFrontmatter(cleanBody);
   const cleanFolder = resolveTargetFolder(app, folder);
 
   try {
