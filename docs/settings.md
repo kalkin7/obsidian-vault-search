@@ -149,8 +149,8 @@ unconditionally overwritten from the stored secrets).
     with circled endnote numbers (`[[file|①]]`) that open the source file
     directly, plus a deduplicated `## 근거` list mapping each number to its file.
   - **새 노트** — creates a new standalone markdown note (inheriting Obsidian's
-    "Default location for new notes" folder setting, with frontmatter `created`/`title`
-    and intelligent H1 title extraction) and opens it in a new tab immediately.
+    "Default location for new notes" folder setting, with frontmatter `created` timestamp,
+    intelligent H1 title extraction, and body heading deduplication) and opens it in a new tab immediately.
   - **현재 노트에 삽입** — inserts the note-ready markdown at the cursor location (or after
     the active selection without overwriting existing text, or at document end)
     of the currently active markdown note.
