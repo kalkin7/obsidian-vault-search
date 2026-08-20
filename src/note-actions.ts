@@ -121,7 +121,7 @@ export function getUniqueFilePath(
   );
 
   let counter = 1;
-  while (app.vault.getAbstractFileByPath(fullPath)) {
+  while (app.vault.getAbstractFileByPath(fullPath) && counter <= 1000) {
     fileName = `${baseTitle} ${counter}.md`;
     fullPath = normalizePath(
       cleanFolder ? `${cleanFolder}/${fileName}` : fileName,
@@ -129,6 +129,30 @@ export function getUniqueFilePath(
     counter++;
   }
   return fullPath;
+}
+
+/**
+ * Resolve target folder for new notes:
+ * 1. Explicit folder from options if provided.
+ * 2. Obsidian's configured default location via app.fileManager.getNewFileParent.
+ * 3. Fallback to vault root ("").
+ */
+export function resolveTargetFolder(app: App, explicitFolder?: string): string {
+  if (explicitFolder && explicitFolder.trim()) {
+    return explicitFolder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  }
+
+  try {
+    const activeFile = app.workspace?.getActiveFile?.();
+    const parent = app.fileManager?.getNewFileParent?.(activeFile?.path || "");
+    if (parent && parent.path && parent.path !== "/" && parent.path !== ".") {
+      return normalizePath(parent.path);
+    }
+  } catch {
+    // Fallback if fileManager API is not available
+  }
+
+  return "";
 }
 
 /**
@@ -148,10 +172,10 @@ export async function createNoteFromMarkdown(
   app: App,
   options: CreateNoteOptions,
 ): Promise<TFile | null> {
-  const { title, content, folder = "", openInNewTab = true } = options;
+  const { title, content, folder, openInNewTab = true } = options;
   const cleanTitle = extractCleanNoteTitle(title, content);
   const contentWithFrontmatter = ensureNoteFrontmatter(content, cleanTitle);
-  const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  const cleanFolder = resolveTargetFolder(app, folder);
 
   try {
     // Ensure parent folder exists if specified

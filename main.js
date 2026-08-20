@@ -3009,7 +3009,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.53";
+var BACKEND_VERSION = "0.1.54";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -5974,7 +5974,7 @@ function getUniqueFilePath(app, folderPath, baseTitle) {
     cleanFolder ? `${cleanFolder}/${fileName}` : fileName
   );
   let counter = 1;
-  while (app.vault.getAbstractFileByPath(fullPath)) {
+  while (app.vault.getAbstractFileByPath(fullPath) && counter <= 1e3) {
     fileName = `${baseTitle} ${counter}.md`;
     fullPath = (0, import_obsidian5.normalizePath)(
       cleanFolder ? `${cleanFolder}/${fileName}` : fileName
@@ -5983,11 +5983,25 @@ function getUniqueFilePath(app, folderPath, baseTitle) {
   }
   return fullPath;
 }
+function resolveTargetFolder(app, explicitFolder) {
+  if (explicitFolder && explicitFolder.trim()) {
+    return explicitFolder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  }
+  try {
+    const activeFile = app.workspace?.getActiveFile?.();
+    const parent = app.fileManager?.getNewFileParent?.(activeFile?.path || "");
+    if (parent && parent.path && parent.path !== "/" && parent.path !== ".") {
+      return (0, import_obsidian5.normalizePath)(parent.path);
+    }
+  } catch {
+  }
+  return "";
+}
 async function createNoteFromMarkdown(app, options) {
-  const { title, content, folder = "", openInNewTab = true } = options;
+  const { title, content, folder, openInNewTab = true } = options;
   const cleanTitle = extractCleanNoteTitle(title, content);
   const contentWithFrontmatter = ensureNoteFrontmatter(content, cleanTitle);
-  const cleanFolder = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  const cleanFolder = resolveTargetFolder(app, folder);
   try {
     if (cleanFolder) {
       const folderEntry = app.vault.getAbstractFileByPath(cleanFolder);

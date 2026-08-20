@@ -98,15 +98,22 @@ describe("note-actions", () => {
     expect(createdFiles[createdPath]).toContain("# 실제 생성된 제목\n\n내용입니다");
   });
 
-  it("increments filename counter when a note with the same name exists", async () => {
-    const existing = new Set(["기존 노트.md", "기존 노트 1.md"]);
+  it("uses Obsidian's configured new note folder from fileManager.getNewFileParent", async () => {
+    const createdFiles: Record<string, string> = {};
     const fakeApp = {
       vault: {
-        getAbstractFileByPath: vi.fn((path: string) => existing.has(path) ? {} : null),
+        getAbstractFileByPath: vi.fn((p: string) => p === "0_Inbox" ? {} : null),
         createFolder: vi.fn(async () => undefined),
-        create: vi.fn(async (path: string, content: string) => ({ path, basename: path.replace(/\.md$/, "") } as TFile)),
+        create: vi.fn(async (path: string, content: string) => {
+          createdFiles[path] = content;
+          return { path, basename: path.split("/").pop()?.replace(/\.md$/, "") } as TFile;
+        }),
+      },
+      fileManager: {
+        getNewFileParent: vi.fn(() => ({ path: "0_Inbox" })),
       },
       workspace: {
+        getActiveFile: vi.fn(() => null),
         getLeaf: vi.fn(() => ({
           openFile: vi.fn(async () => undefined),
         })),
@@ -114,15 +121,14 @@ describe("note-actions", () => {
     } as unknown as App;
 
     const file = await createNoteFromMarkdown(fakeApp, {
-      title: "기존 노트",
-      content: "새로운 내용",
+      title: "인박스 노트",
+      content: "# 인박스 내용\n\n본문입니다.",
     });
 
     expect(file).not.toBeNull();
-    expect(fakeApp.vault.create).toHaveBeenCalledWith(
-      "기존 노트 2.md",
-      expect.stringContaining("새로운 내용"),
-    );
+    const createdPath = Object.keys(createdFiles)[0];
+    expect(createdPath).toBe("0_Inbox/인박스 내용.md");
+    expect(createdFiles[createdPath]).toContain('title: "인박스 내용"');
   });
 
   it("inserts markdown into active editor replacing selection", () => {
