@@ -36,6 +36,12 @@ function isBlockStart(line: string): boolean {
  *  bold, inline code, quotes) with clickable citation pills (source name,
  *  "+N" when the same file is cited several times). DOM-only — never assigns
  *  innerHTML. Answer text stays fully selectable. */
+export interface AnswerToolbarActions {
+  onCopy?: (text: string) => void;
+  onCreateNote?: (text: string) => void;
+  onInsertToActive?: (text: string) => void;
+}
+
 export class AnswerRenderer {
   constructor(
     private readonly containerEl: HTMLElement,
@@ -45,7 +51,7 @@ export class AnswerRenderer {
   render(
     answer: string,
     citations: Citation[],
-    onCopy?: (text: string) => void,
+    actions?: ((text: string) => void) | AnswerToolbarActions,
   ): void {
     this.containerEl.empty();
     const byId = new Map(citations.map((citation) => [citation.id, citation]));
@@ -53,18 +59,55 @@ export class AnswerRenderer {
     const toolbar = this.containerEl.createDiv({
       cls: "vault-answer-toolbar",
     });
-    if (onCopy) {
+
+    const toolbarActions: AnswerToolbarActions =
+      typeof actions === "function" ? { onCopy: actions } : actions || {};
+
+    if (toolbarActions.onCopy) {
+      const onCopy = toolbarActions.onCopy;
       const copy = toolbar.createEl("button", {
-        text: "답변 복사",
-        cls: "vault-answer-copy",
+        text: "복사",
+        cls: "vault-answer-btn vault-answer-copy",
         attr: { type: "button", "aria-label": "답변 전체 텍스트 복사" },
       });
       copy.addEventListener("click", () => {
         onCopy(answer);
         copy.setText("복사됨 ✓");
-        globalThis.setTimeout(() => copy.setText("답변 복사"), 1500);
+        globalThis.setTimeout(() => copy.setText("복사"), 1500);
       });
     }
+
+    if (toolbarActions.onCreateNote) {
+      const onCreateNote = toolbarActions.onCreateNote;
+      const newNote = toolbar.createEl("button", {
+        text: "새 노트",
+        cls: "vault-answer-btn vault-answer-new-note",
+        attr: { type: "button", "aria-label": "답변을 새 마크다운 노트로 생성" },
+      });
+      newNote.addEventListener("click", () => {
+        onCreateNote(answer);
+        newNote.setText("생성됨 ✓");
+        globalThis.setTimeout(() => newNote.setText("새 노트"), 1500);
+      });
+    }
+
+    if (toolbarActions.onInsertToActive) {
+      const onInsertToActive = toolbarActions.onInsertToActive;
+      const insert = toolbar.createEl("button", {
+        text: "현재 노트에 삽입",
+        cls: "vault-answer-btn vault-answer-insert",
+        attr: {
+          type: "button",
+          "aria-label": "현재 열려 있는 노트에 답변 내용 추가",
+        },
+      });
+      insert.addEventListener("click", () => {
+        onInsertToActive(answer);
+        insert.setText("삽입됨 ✓");
+        globalThis.setTimeout(() => insert.setText("현재 노트에 삽입"), 1500);
+      });
+    }
+
     const body = this.containerEl.createDiv({ cls: "vault-answer-body" });
     this.renderBlocks(body, answer, byId, counts);
   }

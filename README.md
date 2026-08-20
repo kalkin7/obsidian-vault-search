@@ -85,7 +85,7 @@ user-authored search guidance: if the vault already instructs agents about
 conflict and leaves the file untouched (K_Notes' hand-tuned AGENTS.md is
 preserved this way). See [Agent integration](docs/agent-integration.md).
 
-## AI Vault Search panel (우측 패널)
+## AI Vault Search panel (우측 패널) & 빠른 검색 모달
 
 Open the panel from the left ribbon. It answers questions directly from the
 vault using the configured provider (`openai` / `opencode-go` / `deepseek`),
@@ -97,9 +97,14 @@ only ones offered in the model picker, and changes apply immediately. API keys
 are validated against the real endpoint when saved or tested. Conversations
 are autosaved to the vault as notes (default `AI Vault Search/history` —
 clock icon in the panel header to browse/load/delete, folder and retention
-configurable in settings); **답변 복사** pastes the answer as note-ready
-markdown with clickable ① source links and a `## 근거` list. The command
-palette offers "AI Vault Search: 목록 렌더링 샘플 미리보기" for checking
+configurable in settings).
+
+각 답변 블록과 검색 모달에서 Smart Composer 스타일의 **액션 툴바**를 제공합니다:
+- **복사** — 클릭 가능한 ① 소스 링크와 `## 근거` 목록이 포함된 노트용 마크다운으로 클립보드에 복사.
+- **새 노트** — 질문/검색어 기반의 새로운 마크다운 노트를 생성하고 새 탭으로 즉시 열기.
+- **현재 노트에 삽입** — 현재 활성화되어 있는 마크다운 노트의 커서 위치(또는 끝)에 결과 내용을 직접 삽입.
+
+The command palette offers "AI Vault Search: 목록 렌더링 샘플 미리보기" for checking
 list rendering without the model. See
 [Settings](docs/settings.md#ai-vault-답변) for the full behavior.
 

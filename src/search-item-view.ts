@@ -13,6 +13,10 @@ import {
   type AnswerConversationMessage,
 } from "./answer-session";
 import {
+  createNoteFromMarkdown,
+  insertMarkdownToActiveNote,
+} from "./note-actions";
+import {
   SearchResultView,
   type SearchResultLocation,
 } from "./search-result-view";
@@ -592,12 +596,18 @@ export class VaultSearchItemView extends ItemView {
     const renderer = new AnswerRenderer(body, {
       openCitation: (location) => this.owner.openSearchResult(location, true),
     });
-    // Copy a note-ready version: [S#] citations become working wikilinks to
-    // the vault files and a 근거 list is appended, so pasting the answer into
-    // a note keeps every reference live.
-    renderer.render(result.answer, result.citations, (text) =>
-      this.copyAnswer(toNoteMarkdown(text, result.citations)),
-    );
+    // Toolbar actions for the note-ready version: [S#] citations become
+    // working wikilinks to the vault files and a 근거 list is appended.
+    const noteMarkdown = toNoteMarkdown(result.answer, result.citations);
+    renderer.render(result.answer, result.citations, {
+      onCopy: () => this.copyAnswer(noteMarkdown),
+      onCreateNote: () =>
+        void this.createAnswerNote(
+          this.lastQuery || "AI 검색 답변",
+          noteMarkdown,
+        ),
+      onInsertToActive: () => this.insertAnswerToActive(noteMarkdown),
+    });
     if (result.evidence.length) {
       this.renderMessageEvidence(block, result.evidence);
     }
@@ -735,9 +745,16 @@ export class VaultSearchItemView extends ItemView {
           openCitation: (location) =>
             this.owner.openSearchResult(location, true),
         });
-        renderer.render(message.content, session.citations, (text) =>
-          this.copyAnswer(toNoteMarkdown(text, session.citations)),
-        );
+        const noteMarkdown = toNoteMarkdown(message.content, session.citations);
+        renderer.render(message.content, session.citations, {
+          onCopy: () => this.copyAnswer(noteMarkdown),
+          onCreateNote: () =>
+            void this.createAnswerNote(
+              session.title || "AI 검색 답변",
+              noteMarkdown,
+            ),
+          onInsertToActive: () => this.insertAnswerToActive(noteMarkdown),
+        });
       }
     }
     this.session.restore(messages);
@@ -815,7 +832,13 @@ export class VaultSearchItemView extends ItemView {
     const renderer = new AnswerRenderer(body, {
       openCitation: (location) => this.owner.openSearchResult(location, true),
     });
-    renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS);
+    const sampleMarkdown = toNoteMarkdown(SAMPLE_ANSWER, SAMPLE_CITATIONS);
+    renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS, {
+      onCopy: () => this.copyAnswer(sampleMarkdown),
+      onCreateNote: () =>
+        void this.createAnswerNote("AI 검색 샘플", sampleMarkdown),
+      onInsertToActive: () => this.insertAnswerToActive(sampleMarkdown),
+    });
     this.scrollToBottom();
   }
 
@@ -866,5 +889,19 @@ export class VaultSearchItemView extends ItemView {
     }
     area.remove();
     notify(ok);
+  }
+
+  private async createAnswerNote(
+    title: string,
+    markdown: string,
+  ): Promise<void> {
+    await createNoteFromMarkdown(this.app, {
+      title,
+      content: markdown,
+    });
+  }
+
+  private insertAnswerToActive(markdown: string): void {
+    insertMarkdownToActiveNote(this.app, markdown);
   }
 }

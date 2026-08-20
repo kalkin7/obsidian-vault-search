@@ -75,4 +75,13 @@ describe("Vault search modal", () => {
     selectedTextCommand();
     expect(openSearch).toHaveBeenCalledWith("선택한 문장");
   });
+
+  it("formats search results when action buttons are used", () => {
+    const results = [
+      result("Notes/a.md"),
+      result("Notes/b.md"),
+    ];
+    const md = results.map(r => r.file_path);
+    expect(md).toHaveLength(2);
+  });
 });

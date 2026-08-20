@@ -411,10 +411,61 @@ describe("AnswerRenderer", () => {
 		});
 		const copyButton = find(
 			container,
-			(node) => node.cls === "vault-answer-copy",
+			(node) => node.cls.includes("vault-answer-copy"),
 		);
 		expect(copyButton).toHaveLength(1);
 		copyButton[0].handlers.click?.();
 		expect(copied).toBe(answer);
+	});
+
+	it("renders action buttons when AnswerToolbarActions are provided", () => {
+		const container = makeEl();
+		const renderer = new AnswerRenderer(container as unknown as HTMLElement, {
+			openCitation: async () => undefined,
+		});
+		const answer = "테스트 답변";
+		let copied = "";
+		let created = "";
+		let inserted = "";
+
+		renderer.render(answer, [], {
+			onCopy: (text) => {
+				copied = text;
+			},
+			onCreateNote: (text) => {
+				created = text;
+			},
+			onInsertToActive: (text) => {
+				inserted = text;
+			},
+		});
+
+		const buttons = find(container, (node) =>
+			node.cls.includes("vault-answer-btn"),
+		);
+		expect(buttons).toHaveLength(3);
+
+		const copyBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-copy"),
+		);
+		const newNoteBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-new-note"),
+		);
+		const insertBtn = find(container, (node) =>
+			node.cls.includes("vault-answer-insert"),
+		);
+
+		expect(copyBtn).toHaveLength(1);
+		expect(newNoteBtn).toHaveLength(1);
+		expect(insertBtn).toHaveLength(1);
+
+		copyBtn[0].handlers.click?.();
+		expect(copied).toBe(answer);
+
+		newNoteBtn[0].handlers.click?.();
+		expect(created).toBe(answer);
+
+		insertBtn[0].handlers.click?.();
+		expect(inserted).toBe(answer);
 	});
 });

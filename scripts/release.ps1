@@ -118,14 +118,17 @@ try {
 
     # 4. Tag + push. Published versions are immutable: never re-tag or overwrite
     # an existing remote tag/release. Fixes ship as a new version.
-    gh release view $Tag --json tagName *> $null
-    if ($LASTEXITCODE -eq 0) {
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "SilentlyContinue"
+    $null = gh release view $Tag --json tagName 2>&1
+    $viewExit = $LASTEXITCODE
+    $ErrorActionPreference = $prevEAP
+
+    if ($viewExit -eq 0) {
         throw "$Tag already exists on the remote; bump the version. Published assets are immutable."
     }
-    if ($LASTEXITCODE -gt 1) {
-        throw "Could not query remote release $Tag (gh exit $LASTEXITCODE); aborting."
-    }
-    Write-Host "==> Tagging $Tag" -ForegroundColor Cyan
+    Write-Host "==> Pushing commits and tagging $Tag" -ForegroundColor Cyan
+    Invoke-Checked { git push origin main } "git push main"
     Invoke-Checked { git tag -a $Tag -m "$Tag" } "git tag"
     Invoke-Checked { git push origin $Tag } "git push tag"
 

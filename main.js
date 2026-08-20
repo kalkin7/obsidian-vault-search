@@ -2736,7 +2736,7 @@ __export(main_exports, {
   default: () => VaultSearchPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 var path4 = __toESM(require("path"));
 
 // src/agent-integration.ts
@@ -3009,7 +3009,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.50";
+var BACKEND_VERSION = "0.1.51";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MODEL_PROFILES = {
   "multilingual-e5-base": {
@@ -5173,7 +5173,7 @@ var VaultEventQueue = class {
 };
 
 // src/search-modal.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/search-session.ts
 function selectedTextQuery(editor) {
@@ -5284,147 +5284,11 @@ var SearchApi = class {
   }
 };
 
-// src/search-modal.ts
-var VaultSearchModal = class extends import_obsidian4.Modal {
-  constructor(owner, initialQuery = "") {
-    super(owner.app);
-    this.owner = owner;
-    this.initialQuery = initialQuery;
-  }
-  inputEl;
-  statusEl;
-  resultsEl;
-  resultView;
-  session;
-  searchApi;
-  onOpen() {
-    this.modalEl.addClass("vault-search-modal");
-    this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: "Vault Search" });
-    this.inputEl = this.contentEl.createEl("input", {
-      cls: "vault-search-input",
-      attr: { type: "search", placeholder: "\uBCFC\uD2B8 \uAC80\uC0C9", "aria-label": "Vault Search query" }
-    });
-    this.statusEl = this.contentEl.createDiv({ cls: "vault-search-modal-status" });
-    this.resultsEl = this.contentEl.createDiv({ cls: "vault-search-results" });
-    this.resultView = new SearchResultView(
-      this.resultsEl,
-      (location) => this.owner.openSearchResult(location)
-    );
-    this.searchApi = new SearchApi(this.owner);
-    this.session = new SearchSession((query) => this.searchApi.search(query), (state) => this.renderState(state));
-    this.inputEl.addEventListener("input", () => this.session.setQuery(this.inputEl.value));
-    this.inputEl.value = this.initialQuery;
-    this.renderBackendStatus(this.owner.backend.status);
-    this.session.setQuery(this.initialQuery);
-    this.inputEl.focus();
-    this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
-  }
-  onClose() {
-    this.session?.dispose();
-    this.contentEl.empty();
-    this.owner.searchModalClosed(this);
-  }
-  updateBackendStatus(status) {
-    if (this.statusEl) this.renderBackendStatus(status);
-  }
-  renderState(state) {
-    if (state.kind === "idle") {
-      this.resultsEl.empty();
-      return;
-    }
-    if (state.kind === "loading") {
-      this.resultsEl.empty();
-      this.resultsEl.createDiv({ cls: "vault-search-empty", text: "\uAC80\uC0C9 \uC911\u2026" });
-      return;
-    }
-    if (state.kind === "results") {
-      this.resultView.render(state.results);
-      return;
-    }
-    this.resultsEl.empty();
-    const unavailable = this.resultsEl.createDiv({ cls: "vault-search-unavailable" });
-    unavailable.createDiv({ text: `\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${state.message}` });
-    const button = unavailable.createEl("button", { text: "\uC124\uC815 \uC5F4\uAE30" });
-    button.addEventListener("click", () => this.owner.openSearchSettings());
-  }
-  renderBackendStatus(status) {
-    this.statusEl.removeClass("vault-search-error");
-    if (status.state === "idle") {
-      this.statusEl.setText("\uBAA8\uB378 \uB300\uAE30 \uC911 \xB7 \uAC80\uC0C9 \uC2DC \uBAA8\uB378\uC744 \uB85C\uB4DC\uD569\uB2C8\uB2E4.");
-    } else if (status.state === "loading_model" || status.state === "starting") {
-      this.statusEl.setText("\uAC80\uC0C9 \uBAA8\uB378\uC744 \uB85C\uB4DC\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
-    } else if (status.state === "error") {
-      this.statusEl.setText(status.error || "\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
-      this.statusEl.addClass("vault-search-error");
-    } else if (status.state === "stopped") {
-      this.statusEl.setText("\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uAC00 \uC911\uC9C0\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
-    } else {
-      this.statusEl.setText("");
-    }
-  }
-};
-
-// src/runtime-install-modal.ts
+// src/note-actions.ts
 var import_obsidian5 = require("obsidian");
-var RuntimeInstallModal = class extends import_obsidian5.Modal {
-  constructor(app, explicitCuda, resolveChoice) {
-    super(app);
-    this.explicitCuda = explicitCuda;
-    this.resolveChoice = resolveChoice;
-  }
-  settled = false;
-  onOpen() {
-    this.titleEl.setText("CUDA \uAC80\uC0C9 \uB7F0\uD0C0\uC784 \uC124\uCE58");
-    this.contentEl.createEl("p", { text: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA\uC6A9 PyTorch \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4." });
-    this.contentEl.createEl("p", { text: "\uCD5C\uCD08 \uC124\uCE58\uB294 \uC218 GB\uB97C \uB2E4\uC6B4\uB85C\uB4DC\uD558\uBBC0\uB85C \uB124\uD2B8\uC6CC\uD06C\uC640 PC \uC131\uB2A5\uC5D0 \uB530\uB77C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uCE58 \uD6C4 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uB2E4\uC2DC \uAD6C\uCD95\uD569\uB2C8\uB2E4." });
-    if (this.explicitCuda) this.contentEl.createEl("p", { text: "CUDA\uB97C \uBA85\uC2DC\uC801\uC73C\uB85C \uC120\uD0DD\uD588\uC73C\uBBC0\uB85C \uC124\uCE58\uD558\uC9C0 \uC54A\uC73C\uBA74 \uC124\uC815\uC744 \uC801\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
-    new import_obsidian5.Setting(this.contentEl).addButton((button) => button.setButtonText("\uB098\uC911\uC5D0").onClick(() => this.finish(false))).addButton((button) => button.setButtonText("\uC124\uCE58").setCta().onClick(() => this.finish(true)));
-  }
-  onClose() {
-    this.contentEl.empty();
-    if (!this.settled) {
-      this.settled = true;
-      this.resolveChoice(false);
-    }
-  }
-  finish(install) {
-    if (this.settled) return;
-    this.settled = true;
-    this.close();
-    this.resolveChoice(install);
-  }
-};
-function confirmRuntimeInstall(app, explicitCuda) {
-  return new Promise((resolve3) => new RuntimeInstallModal(app, explicitCuda, resolve3).open());
-}
 
-// src/runtime-selection.ts
-function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
-  if (device === "cpu") {
-    const selected2 = cpu || current;
-    return selected2 ? { kind: "selected", runtime: selected2 } : { kind: "error", message: "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." };
-  }
-  if (current?.cudaAvailable) return { kind: "selected", runtime: current };
-  if (cuda?.cudaAvailable) return { kind: "selected", runtime: cuda };
-  if (!hasNvidiaGpu) {
-    if (device === "cuda") {
-      return { kind: "error", message: "NVIDIA GPU \uB610\uB294 \uB4DC\uB77C\uC774\uBC84\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." };
-    }
-    const selected2 = cpu || current;
-    return selected2 ? { kind: "selected", runtime: selected2 } : { kind: "error", message: "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." };
-  }
-  if (device === "cuda") return { kind: "install-cuda" };
-  const selected = cpu || current;
-  return selected ? {
-    kind: "cpu-fallback",
-    runtime: selected,
-    warning: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC9C0 \uC54A\uC544 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4."
-  } : { kind: "install-cuda" };
-}
-
-// src/search-item-view.ts
-var import_obsidian8 = require("obsidian");
+// src/history.ts
+var import_obsidian4 = require("obsidian");
 
 // src/answer-renderer.ts
 var HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"];
@@ -5442,23 +5306,54 @@ var AnswerRenderer = class {
     this.containerEl = containerEl;
     this.options = options;
   }
-  render(answer, citations, onCopy) {
+  render(answer, citations, actions) {
     this.containerEl.empty();
     const byId = new Map(citations.map((citation) => [citation.id, citation]));
     const counts = this.fileCounts(citations);
     const toolbar = this.containerEl.createDiv({
       cls: "vault-answer-toolbar"
     });
-    if (onCopy) {
+    const toolbarActions = typeof actions === "function" ? { onCopy: actions } : actions || {};
+    if (toolbarActions.onCopy) {
+      const onCopy = toolbarActions.onCopy;
       const copy = toolbar.createEl("button", {
-        text: "\uB2F5\uBCC0 \uBCF5\uC0AC",
-        cls: "vault-answer-copy",
+        text: "\uBCF5\uC0AC",
+        cls: "vault-answer-btn vault-answer-copy",
         attr: { type: "button", "aria-label": "\uB2F5\uBCC0 \uC804\uCCB4 \uD14D\uC2A4\uD2B8 \uBCF5\uC0AC" }
       });
       copy.addEventListener("click", () => {
         onCopy(answer);
         copy.setText("\uBCF5\uC0AC\uB428 \u2713");
-        globalThis.setTimeout(() => copy.setText("\uB2F5\uBCC0 \uBCF5\uC0AC"), 1500);
+        globalThis.setTimeout(() => copy.setText("\uBCF5\uC0AC"), 1500);
+      });
+    }
+    if (toolbarActions.onCreateNote) {
+      const onCreateNote = toolbarActions.onCreateNote;
+      const newNote = toolbar.createEl("button", {
+        text: "\uC0C8 \uB178\uD2B8",
+        cls: "vault-answer-btn vault-answer-new-note",
+        attr: { type: "button", "aria-label": "\uB2F5\uBCC0\uC744 \uC0C8 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC0DD\uC131" }
+      });
+      newNote.addEventListener("click", () => {
+        onCreateNote(answer);
+        newNote.setText("\uC0DD\uC131\uB428 \u2713");
+        globalThis.setTimeout(() => newNote.setText("\uC0C8 \uB178\uD2B8"), 1500);
+      });
+    }
+    if (toolbarActions.onInsertToActive) {
+      const onInsertToActive = toolbarActions.onInsertToActive;
+      const insert = toolbar.createEl("button", {
+        text: "\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785",
+        cls: "vault-answer-btn vault-answer-insert",
+        attr: {
+          type: "button",
+          "aria-label": "\uD604\uC7AC \uC5F4\uB824 \uC788\uB294 \uB178\uD2B8\uC5D0 \uB2F5\uBCC0 \uB0B4\uC6A9 \uCD94\uAC00"
+        }
+      });
+      insert.addEventListener("click", () => {
+        onInsertToActive(answer);
+        insert.setText("\uC0BD\uC785\uB428 \u2713");
+        globalThis.setTimeout(() => insert.setText("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785"), 1500);
       });
     }
     const body = this.containerEl.createDiv({ cls: "vault-answer-body" });
@@ -5751,83 +5646,7 @@ function toNoteMarkdown(answer, citations) {
 ${list.join("\n")}`;
 }
 
-// src/answer-session.ts
-var AnswerSession = class {
-  constructor(answer, stateChanged) {
-    this.answer = answer;
-    this.stateChanged = stateChanged;
-  }
-  generation = 0;
-  disposed = false;
-  history = [];
-  get conversation() {
-    return this.history.map((message) => ({ ...message }));
-  }
-  /** Replace the conversation with a previously saved transcript (loaded from
-   *  history). Follow-up questions keep this as their context. Invalidates any
-   *  in-flight answer so it cannot append into the restored conversation. */
-  restore(messages) {
-    this.generation++;
-    this.history = messages.map((message) => ({ ...message }));
-    if (!this.disposed) this.stateChanged({ kind: "idle" });
-  }
-  submit(value) {
-    const query = value.trim();
-    if (query.length < 2 || this.disposed) {
-      if (!this.disposed) this.stateChanged({ kind: "idle" });
-      return;
-    }
-    const generation = ++this.generation;
-    const conversation = this.history.slice(-8).map((message) => ({ ...message }));
-    this.stateChanged({ kind: "retrieving" });
-    const pending = this.answer(query, conversation);
-    this.stateChanged({ kind: "answering" });
-    void this.resolve(pending, query, generation);
-  }
-  clear() {
-    this.generation++;
-    this.history = [];
-    if (!this.disposed) this.stateChanged({ kind: "idle" });
-  }
-  dispose() {
-    this.disposed = true;
-    this.generation++;
-  }
-  async resolve(pending, query, generation) {
-    try {
-      const result = await pending;
-      if (this.disposed || generation !== this.generation) return;
-      this.history.push({ role: "user", content: query });
-      this.history.push({ role: "assistant", content: result.answer });
-      this.stateChanged({ kind: "answer", result });
-    } catch (error) {
-      if (this.disposed || generation !== this.generation) return;
-      const backendError = error instanceof BackendCallError ? error : void 0;
-      const details = backendError?.details;
-      const evidence = details && typeof details === "object" && "evidence" in details && Array.isArray(details.evidence) ? details.evidence : void 0;
-      this.stateChanged({
-        kind: "unavailable",
-        code: backendError?.code,
-        message: error instanceof Error ? error.message : String(error),
-        evidence
-      });
-    }
-  }
-};
-
-// src/icons.ts
-var import_obsidian6 = require("obsidian");
-var ICON_LIGHTNING = "vault-search-lightning";
-var ICON_HISTORY = "vault-search-history";
-var LIGHTNING_BOLT = '<polygon points="54.2 8.3 12.5 58.3 50 58.3 45.8 91.7 87.5 41.7 50 41.7 54.2 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
-var HISTORY_CLOCK = '<path d="M12.5 50a37.5 37.5 0 1 0 37.5-37.5 40.6 40.6 0 0 0-28.1 11.4L12.5 33.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 12.5v20.8h20.8" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M50 29.2v20.8l16.7 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
-function registerLightningIcon() {
-  (0, import_obsidian6.addIcon)(ICON_LIGHTNING, LIGHTNING_BOLT);
-  (0, import_obsidian6.addIcon)(ICON_HISTORY, HISTORY_CLOCK);
-}
-
 // src/history.ts
-var import_obsidian7 = require("obsidian");
 var DEFAULT_HISTORY_FOLDER = "AI Vault Search/history";
 var HISTORY_SCHEMA = 1;
 function historyTitle(query) {
@@ -5844,7 +5663,7 @@ function normalizeHistoryFolder(folder) {
   if (cleaned === "" || cleaned === "." || cleaned === ".." || cleaned.startsWith("../") || cleaned.includes("/../")) {
     return DEFAULT_HISTORY_FOLDER;
   }
-  return (0, import_obsidian7.normalizePath)(cleaned || DEFAULT_HISTORY_FOLDER);
+  return (0, import_obsidian4.normalizePath)(cleaned || DEFAULT_HISTORY_FOLDER);
 }
 function historyFileName(query, created) {
   const date = new Date(created);
@@ -6040,7 +5859,7 @@ async function listHistory(vault, folder) {
 }
 async function saveHistory(vault, folder, session, maxEntries = 0) {
   const dir = normalizeHistoryFolder(folder);
-  const filePath = (0, import_obsidian7.normalizePath)(
+  const filePath = (0, import_obsidian4.normalizePath)(
     `${dir}/${historyFileName(session.title, session.created)}`
   );
   const content = buildHistoryNote(session);
@@ -6077,6 +5896,418 @@ async function pruneHistory(vault, folder, maxEntries) {
   for (const stale of metas.slice(maxEntries)) {
     await deleteHistory(vault, stale.file);
   }
+}
+
+// src/note-actions.ts
+function sanitizeNoteTitle(title) {
+  const trimmed = title.trim();
+  if (!trimmed) return "\uAC80\uC0C9 \uACB0\uACFC";
+  const cleaned = historyTitle(trimmed);
+  return cleaned || "\uAC80\uC0C9 \uACB0\uACFC";
+}
+function getFormattedTimestamp(date = /* @__PURE__ */ new Date()) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(
+    date.getDate()
+  )}_${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+}
+function formatSearchResultsMarkdown(query, results) {
+  const lines = [];
+  const now = /* @__PURE__ */ new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const timeStr = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(
+    now.getDate()
+  )} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  lines.push(`## \u{1F50D} \uBCFC\uD2B8 \uAC80\uC0C9: ${query}`);
+  lines.push(`> \uAC80\uC0C9 \uC2DC\uAC01: ${timeStr} \xB7 \uCD1D ${results.length}\uAC1C \uACB0\uACFC`);
+  lines.push("");
+  if (results.length === 0) {
+    lines.push("\uAC80\uC0C9 \uACB0\uACFC\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+    return lines.join("\n");
+  }
+  for (const result of results) {
+    const fileStem = result.file_path.split("/").pop()?.replace(/\.md$/i, "") || result.file_path;
+    const cleanPath = result.file_path.replace(/\.md$/i, "");
+    const headings = result.heading_path?.filter(Boolean) ?? [];
+    const headingSuffix = headings.length > 0 ? `#${headings.join("#")}` : "";
+    const displayTitle = headings.length > 0 ? `${fileStem} \u203A ${headings.join(" \u203A ")}` : fileStem;
+    lines.push(`- [[${cleanPath}${headingSuffix}|${displayTitle}]]`);
+    if (result.content) {
+      const snippet = result.content.replace(/\s+/g, " ").trim();
+      lines.push(`  > ${snippet}`);
+    }
+  }
+  return lines.join("\n");
+}
+async function createNoteFromMarkdown(app, options) {
+  const { title, content, folder = "", openInNewTab = true } = options;
+  const safeTitle = sanitizeNoteTitle(title);
+  const timestamp = getFormattedTimestamp();
+  const fileName = `${safeTitle}@${timestamp}.md`;
+  const folderPath = folder.trim().replace(/^[/\\]+|[/\\]+$/g, "");
+  const fullPath = (0, import_obsidian5.normalizePath)(
+    folderPath ? `${folderPath}/${fileName}` : fileName
+  );
+  try {
+    if (folderPath) {
+      const folderEntry = app.vault.getAbstractFileByPath(folderPath);
+      if (!folderEntry) {
+        await app.vault.createFolder(folderPath);
+      }
+    }
+    const file = await app.vault.create(fullPath, content);
+    new import_obsidian5.Notice(`\uC0C8 \uB178\uD2B8\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4: ${file.basename}`);
+    if (openInNewTab) {
+      const leaf = app.workspace.getLeaf("tab");
+      await leaf.openFile(file, { active: true });
+    }
+    return file;
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    new import_obsidian5.Notice(`\uC0C8 \uB178\uD2B8 \uC0DD\uC131 \uC2E4\uD328: ${msg}`, 8e3);
+    return null;
+  }
+}
+function insertMarkdownToActiveNote(app, content) {
+  const activeView = app.workspace.getActiveViewOfType(import_obsidian5.MarkdownView);
+  if (!activeView || !activeView.editor) {
+    new import_obsidian5.Notice("\uD604\uC7AC \uC5F4\uB824 \uC788\uB294 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+    return false;
+  }
+  const editor = activeView.editor;
+  const selection = editor.getSelection();
+  if (selection || editor.somethingSelected()) {
+    editor.replaceSelection(content);
+  } else {
+    const cursor = editor.getCursor();
+    const docLength = editor.getValue().length;
+    if (docLength === 0) {
+      editor.setValue(content);
+    } else {
+      const lineText = editor.getLine(cursor.line);
+      if (lineText.trim().length > 0) {
+        editor.replaceRange(`
+
+${content}
+`, cursor);
+      } else {
+        editor.replaceRange(`${content}
+`, cursor);
+      }
+    }
+  }
+  new import_obsidian5.Notice("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uB0B4\uC6A9\uC744 \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4.");
+  return true;
+}
+async function copyMarkdownToClipboard(text, onNotify) {
+  const notify = onNotify ?? ((ok) => new import_obsidian5.Notice(ok ? "\uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4."));
+  const hasNavigator = typeof navigator !== "undefined" && Boolean(navigator.clipboard);
+  const isSecure = typeof window === "undefined" || window.isSecureContext;
+  if (hasNavigator && isSecure) {
+    try {
+      await navigator.clipboard.writeText(text);
+      notify(true);
+      return true;
+    } catch {
+      return fallbackCopyText(text, notify);
+    }
+  } else {
+    return fallbackCopyText(text, notify);
+  }
+}
+function fallbackCopyText(text, notify) {
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.append(area);
+  area.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  area.remove();
+  notify(ok);
+  return ok;
+}
+
+// src/search-modal.ts
+var VaultSearchModal = class extends import_obsidian6.Modal {
+  constructor(owner, initialQuery = "") {
+    super(owner.app);
+    this.owner = owner;
+    this.initialQuery = initialQuery;
+  }
+  inputEl;
+  statusEl;
+  actionsBarEl;
+  resultsEl;
+  resultView;
+  session;
+  searchApi;
+  onOpen() {
+    this.modalEl.addClass("vault-search-modal");
+    this.contentEl.empty();
+    this.contentEl.createEl("h2", { text: "Vault Search" });
+    this.inputEl = this.contentEl.createEl("input", {
+      cls: "vault-search-input",
+      attr: { type: "search", placeholder: "\uBCFC\uD2B8 \uAC80\uC0C9", "aria-label": "Vault Search query" }
+    });
+    this.statusEl = this.contentEl.createDiv({ cls: "vault-search-modal-status" });
+    this.actionsBarEl = this.contentEl.createDiv({ cls: "vault-search-modal-actions" });
+    this.resultsEl = this.contentEl.createDiv({ cls: "vault-search-results" });
+    this.resultView = new SearchResultView(
+      this.resultsEl,
+      (location) => this.owner.openSearchResult(location)
+    );
+    this.searchApi = new SearchApi(this.owner);
+    this.session = new SearchSession((query) => this.searchApi.search(query), (state) => this.renderState(state));
+    this.inputEl.addEventListener("input", () => this.session.setQuery(this.inputEl.value));
+    this.inputEl.value = this.initialQuery;
+    this.renderBackendStatus(this.owner.backend.status);
+    this.session.setQuery(this.initialQuery);
+    this.inputEl.focus();
+    this.inputEl.setSelectionRange(this.inputEl.value.length, this.inputEl.value.length);
+  }
+  onClose() {
+    this.session?.dispose();
+    this.contentEl.empty();
+    this.owner.searchModalClosed(this);
+  }
+  updateBackendStatus(status) {
+    if (this.statusEl) this.renderBackendStatus(status);
+  }
+  renderState(state) {
+    if (state.kind === "idle") {
+      this.actionsBarEl.empty();
+      this.resultsEl.empty();
+      return;
+    }
+    if (state.kind === "loading") {
+      this.actionsBarEl.empty();
+      this.resultsEl.empty();
+      this.resultsEl.createDiv({ cls: "vault-search-empty", text: "\uAC80\uC0C9 \uC911\u2026" });
+      return;
+    }
+    if (state.kind === "results") {
+      this.renderActionsBar(state.results);
+      this.resultView.render(state.results);
+      return;
+    }
+    this.actionsBarEl.empty();
+    this.resultsEl.empty();
+    const unavailable = this.resultsEl.createDiv({ cls: "vault-search-unavailable" });
+    unavailable.createDiv({ text: `\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${state.message}` });
+    const button = unavailable.createEl("button", { text: "\uC124\uC815 \uC5F4\uAE30" });
+    button.addEventListener("click", () => this.owner.openSearchSettings());
+  }
+  renderActionsBar(results) {
+    this.actionsBarEl.empty();
+    if (results.length === 0) return;
+    const countSpan = this.actionsBarEl.createSpan({
+      cls: "vault-search-modal-count",
+      text: `${results.length}\uAC1C \uACB0\uACFC`
+    });
+    void countSpan;
+    const buttons = this.actionsBarEl.createDiv({
+      cls: "vault-search-modal-action-buttons"
+    });
+    const copyBtn = buttons.createEl("button", {
+      text: "\uBCF5\uC0AC",
+      cls: "vault-search-action-btn vault-search-action-copy",
+      attr: { type: "button", "aria-label": "\uAC80\uC0C9 \uACB0\uACFC \uB9C8\uD06C\uB2E4\uC6B4 \uBCF5\uC0AC" }
+    });
+    copyBtn.addEventListener("click", () => {
+      const query = this.inputEl.value.trim() || "\uAC80\uC0C9 \uACB0\uACFC";
+      const md = formatSearchResultsMarkdown(query, results);
+      void copyMarkdownToClipboard(md, (ok) => {
+        copyBtn.setText(ok ? "\uBCF5\uC0AC\uB428 \u2713" : "\uBCF5\uC0AC \uC2E4\uD328");
+        globalThis.setTimeout(() => copyBtn.setText("\uBCF5\uC0AC"), 1500);
+      });
+    });
+    const newNoteBtn = buttons.createEl("button", {
+      text: "\uC0C8 \uB178\uD2B8",
+      cls: "vault-search-action-btn vault-search-action-new-note",
+      attr: { type: "button", "aria-label": "\uAC80\uC0C9 \uACB0\uACFC\uB97C \uC0C8 \uB178\uD2B8\uB85C \uC0DD\uC131" }
+    });
+    newNoteBtn.addEventListener("click", () => {
+      void (async () => {
+        const query = this.inputEl.value.trim() || "\uAC80\uC0C9 \uACB0\uACFC";
+        const md = formatSearchResultsMarkdown(query, results);
+        await createNoteFromMarkdown(this.owner.app, {
+          title: `\uAC80\uC0C9 - ${query}`,
+          content: md
+        });
+        this.close();
+      })();
+    });
+    const insertBtn = buttons.createEl("button", {
+      text: "\uD604\uC7AC \uB178\uD2B8\uC5D0 \uC0BD\uC785",
+      cls: "vault-search-action-btn vault-search-action-insert",
+      attr: { type: "button", "aria-label": "\uD604\uC7AC \uC5F4\uB824 \uC788\uB294 \uB178\uD2B8\uC5D0 \uACB0\uACFC \uBAA9\uB85D \uCD94\uAC00" }
+    });
+    insertBtn.addEventListener("click", () => {
+      const query = this.inputEl.value.trim() || "\uAC80\uC0C9 \uACB0\uACFC";
+      const md = formatSearchResultsMarkdown(query, results);
+      const inserted = insertMarkdownToActiveNote(this.owner.app, md);
+      if (inserted) {
+        this.close();
+      }
+    });
+  }
+  renderBackendStatus(status) {
+    this.statusEl.removeClass("vault-search-error");
+    if (status.state === "idle") {
+      this.statusEl.setText("\uBAA8\uB378 \uB300\uAE30 \uC911 \xB7 \uAC80\uC0C9 \uC2DC \uBAA8\uB378\uC744 \uB85C\uB4DC\uD569\uB2C8\uB2E4.");
+    } else if (status.state === "loading_model" || status.state === "starting") {
+      this.statusEl.setText("\uAC80\uC0C9 \uBAA8\uB378\uC744 \uB85C\uB4DC\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4\u2026");
+    } else if (status.state === "error") {
+      this.statusEl.setText(status.error || "\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uB97C \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      this.statusEl.addClass("vault-search-error");
+    } else if (status.state === "stopped") {
+      this.statusEl.setText("\uAC80\uC0C9 \uC11C\uBE44\uC2A4\uAC00 \uC911\uC9C0\uB418\uC5B4 \uC788\uC2B5\uB2C8\uB2E4.");
+    } else {
+      this.statusEl.setText("");
+    }
+  }
+};
+
+// src/runtime-install-modal.ts
+var import_obsidian7 = require("obsidian");
+var RuntimeInstallModal = class extends import_obsidian7.Modal {
+  constructor(app, explicitCuda, resolveChoice) {
+    super(app);
+    this.explicitCuda = explicitCuda;
+    this.resolveChoice = resolveChoice;
+  }
+  settled = false;
+  onOpen() {
+    this.titleEl.setText("CUDA \uAC80\uC0C9 \uB7F0\uD0C0\uC784 \uC124\uCE58");
+    this.contentEl.createEl("p", { text: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA\uC6A9 PyTorch \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4." });
+    this.contentEl.createEl("p", { text: "\uCD5C\uCD08 \uC124\uCE58\uB294 \uC218 GB\uB97C \uB2E4\uC6B4\uB85C\uB4DC\uD558\uBBC0\uB85C \uB124\uD2B8\uC6CC\uD06C\uC640 PC \uC131\uB2A5\uC5D0 \uB530\uB77C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uCE58 \uD6C4 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uB2E4\uC2DC \uAD6C\uCD95\uD569\uB2C8\uB2E4." });
+    if (this.explicitCuda) this.contentEl.createEl("p", { text: "CUDA\uB97C \uBA85\uC2DC\uC801\uC73C\uB85C \uC120\uD0DD\uD588\uC73C\uBBC0\uB85C \uC124\uCE58\uD558\uC9C0 \uC54A\uC73C\uBA74 \uC124\uC815\uC744 \uC801\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
+    new import_obsidian7.Setting(this.contentEl).addButton((button) => button.setButtonText("\uB098\uC911\uC5D0").onClick(() => this.finish(false))).addButton((button) => button.setButtonText("\uC124\uCE58").setCta().onClick(() => this.finish(true)));
+  }
+  onClose() {
+    this.contentEl.empty();
+    if (!this.settled) {
+      this.settled = true;
+      this.resolveChoice(false);
+    }
+  }
+  finish(install) {
+    if (this.settled) return;
+    this.settled = true;
+    this.close();
+    this.resolveChoice(install);
+  }
+};
+function confirmRuntimeInstall(app, explicitCuda) {
+  return new Promise((resolve3) => new RuntimeInstallModal(app, explicitCuda, resolve3).open());
+}
+
+// src/runtime-selection.ts
+function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
+  if (device === "cpu") {
+    const selected2 = cpu || current;
+    return selected2 ? { kind: "selected", runtime: selected2 } : { kind: "error", message: "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." };
+  }
+  if (current?.cudaAvailable) return { kind: "selected", runtime: current };
+  if (cuda?.cudaAvailable) return { kind: "selected", runtime: cuda };
+  if (!hasNvidiaGpu) {
+    if (device === "cuda") {
+      return { kind: "error", message: "NVIDIA GPU \uB610\uB294 \uB4DC\uB77C\uC774\uBC84\uB97C \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." };
+    }
+    const selected2 = cpu || current;
+    return selected2 ? { kind: "selected", runtime: selected2 } : { kind: "error", message: "\uC0AC\uC6A9 \uAC00\uB2A5\uD55C CPU \uAC80\uC0C9 \uB7F0\uD0C0\uC784\uC774 \uC5C6\uC2B5\uB2C8\uB2E4." };
+  }
+  if (device === "cuda") return { kind: "install-cuda" };
+  const selected = cpu || current;
+  return selected ? {
+    kind: "cpu-fallback",
+    runtime: selected,
+    warning: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC9C0 \uC54A\uC544 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4."
+  } : { kind: "install-cuda" };
+}
+
+// src/search-item-view.ts
+var import_obsidian9 = require("obsidian");
+
+// src/answer-session.ts
+var AnswerSession = class {
+  constructor(answer, stateChanged) {
+    this.answer = answer;
+    this.stateChanged = stateChanged;
+  }
+  generation = 0;
+  disposed = false;
+  history = [];
+  get conversation() {
+    return this.history.map((message) => ({ ...message }));
+  }
+  /** Replace the conversation with a previously saved transcript (loaded from
+   *  history). Follow-up questions keep this as their context. Invalidates any
+   *  in-flight answer so it cannot append into the restored conversation. */
+  restore(messages) {
+    this.generation++;
+    this.history = messages.map((message) => ({ ...message }));
+    if (!this.disposed) this.stateChanged({ kind: "idle" });
+  }
+  submit(value) {
+    const query = value.trim();
+    if (query.length < 2 || this.disposed) {
+      if (!this.disposed) this.stateChanged({ kind: "idle" });
+      return;
+    }
+    const generation = ++this.generation;
+    const conversation = this.history.slice(-8).map((message) => ({ ...message }));
+    this.stateChanged({ kind: "retrieving" });
+    const pending = this.answer(query, conversation);
+    this.stateChanged({ kind: "answering" });
+    void this.resolve(pending, query, generation);
+  }
+  clear() {
+    this.generation++;
+    this.history = [];
+    if (!this.disposed) this.stateChanged({ kind: "idle" });
+  }
+  dispose() {
+    this.disposed = true;
+    this.generation++;
+  }
+  async resolve(pending, query, generation) {
+    try {
+      const result = await pending;
+      if (this.disposed || generation !== this.generation) return;
+      this.history.push({ role: "user", content: query });
+      this.history.push({ role: "assistant", content: result.answer });
+      this.stateChanged({ kind: "answer", result });
+    } catch (error) {
+      if (this.disposed || generation !== this.generation) return;
+      const backendError = error instanceof BackendCallError ? error : void 0;
+      const details = backendError?.details;
+      const evidence = details && typeof details === "object" && "evidence" in details && Array.isArray(details.evidence) ? details.evidence : void 0;
+      this.stateChanged({
+        kind: "unavailable",
+        code: backendError?.code,
+        message: error instanceof Error ? error.message : String(error),
+        evidence
+      });
+    }
+  }
+};
+
+// src/icons.ts
+var import_obsidian8 = require("obsidian");
+var ICON_LIGHTNING = "vault-search-lightning";
+var ICON_HISTORY = "vault-search-history";
+var LIGHTNING_BOLT = '<polygon points="54.2 8.3 12.5 58.3 50 58.3 45.8 91.7 87.5 41.7 50 41.7 54.2 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
+var HISTORY_CLOCK = '<path d="M12.5 50a37.5 37.5 0 1 0 37.5-37.5 40.6 40.6 0 0 0-28.1 11.4L12.5 33.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 12.5v20.8h20.8" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M50 29.2v20.8l16.7 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
+function registerLightningIcon() {
+  (0, import_obsidian8.addIcon)(ICON_LIGHTNING, LIGHTNING_BOLT);
+  (0, import_obsidian8.addIcon)(ICON_HISTORY, HISTORY_CLOCK);
 }
 
 // src/search-item-view.ts
@@ -6137,7 +6368,7 @@ var SAMPLE_CITATIONS = [
     score: 0.03
   }
 ];
-var VaultSearchItemView = class extends import_obsidian8.ItemView {
+var VaultSearchItemView = class extends import_obsidian9.ItemView {
   constructor(viewLeaf, owner) {
     super(viewLeaf);
     this.owner = owner;
@@ -6194,7 +6425,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       cls: "vault-ai-search-history-button",
       attr: { type: "button", "aria-label": "AI Vault Search \uD788\uC2A4\uD1A0\uB9AC" }
     });
-    (0, import_obsidian8.setIcon)(this.historyButton, ICON_HISTORY);
+    (0, import_obsidian9.setIcon)(this.historyButton, ICON_HISTORY);
     this.historyButton.addEventListener("click", () => {
       void this.toggleHistoryPopover();
     });
@@ -6262,7 +6493,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
       const query = this.inputEl.value;
       if (query.trim().length < 2) return;
       if (!this.owner.settings.answerModel) {
-        new import_obsidian8.Notice("\uB2F5\uBCC0 \uBAA8\uB378\uC744 \uBA3C\uC800 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694. (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815)");
+        new import_obsidian9.Notice("\uB2F5\uBCC0 \uBAA8\uB378\uC744 \uBA3C\uC800 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694. (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815)");
         return;
       }
       this.lastQuery = query;
@@ -6526,17 +6757,21 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     const renderer = new AnswerRenderer(body, {
       openCitation: (location) => this.owner.openSearchResult(location, true)
     });
-    renderer.render(
-      result.answer,
-      result.citations,
-      (text) => this.copyAnswer(toNoteMarkdown(text, result.citations))
-    );
+    const noteMarkdown = toNoteMarkdown(result.answer, result.citations);
+    renderer.render(result.answer, result.citations, {
+      onCopy: () => this.copyAnswer(noteMarkdown),
+      onCreateNote: () => void this.createAnswerNote(
+        this.lastQuery || "AI \uAC80\uC0C9 \uB2F5\uBCC0",
+        noteMarkdown
+      ),
+      onInsertToActive: () => this.insertAnswerToActive(noteMarkdown)
+    });
     if (result.evidence.length) {
       this.renderMessageEvidence(block, result.evidence);
     }
     if (this.owner.settings.historyAutosave) {
       void this.saveCurrentSession().catch((error) => {
-        new import_obsidian8.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
+        new import_obsidian9.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
       });
     }
     this.scrollToBottom();
@@ -6574,9 +6809,9 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
         try {
           const saved = await this.saveCurrentSession(true);
           this.hideHistoryPopover();
-          if (saved) new import_obsidian8.Notice("\uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.");
+          if (saved) new import_obsidian9.Notice("\uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.");
         } catch (error) {
-          new import_obsidian8.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
+          new import_obsidian9.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
         }
       })();
     });
@@ -6627,7 +6862,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
   async loadSessionFromHistory(meta) {
     const session = await loadHistory(this.app.vault, meta.file);
     if (!session) {
-      new import_obsidian8.Notice("\uD788\uC2A4\uD1A0\uB9AC\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian9.Notice("\uD788\uC2A4\uD1A0\uB9AC\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return;
     }
     this.restoreSession(session);
@@ -6654,11 +6889,15 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
         const renderer = new AnswerRenderer(body, {
           openCitation: (location) => this.owner.openSearchResult(location, true)
         });
-        renderer.render(
-          message.content,
-          session.citations,
-          (text) => this.copyAnswer(toNoteMarkdown(text, session.citations))
-        );
+        const noteMarkdown = toNoteMarkdown(message.content, session.citations);
+        renderer.render(message.content, session.citations, {
+          onCopy: () => this.copyAnswer(noteMarkdown),
+          onCreateNote: () => void this.createAnswerNote(
+            session.title || "AI \uAC80\uC0C9 \uB2F5\uBCC0",
+            noteMarkdown
+          ),
+          onInsertToActive: () => this.insertAnswerToActive(noteMarkdown)
+        });
       }
     }
     this.session.restore(messages);
@@ -6676,7 +6915,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
   async saveCurrentSession(manual = false) {
     const messages = this.transcript.at(-1)?.role === "user" ? this.transcript.slice(0, -1) : this.transcript;
     if (messages.length === 0) {
-      if (manual) new import_obsidian8.Notice("\uC800\uC7A5\uD560 \uB300\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      if (manual) new import_obsidian9.Notice("\uC800\uC7A5\uD560 \uB300\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return false;
     }
     if (!this.sessionCreated) {
@@ -6727,7 +6966,12 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     const renderer = new AnswerRenderer(body, {
       openCitation: (location) => this.owner.openSearchResult(location, true)
     });
-    renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS);
+    const sampleMarkdown = toNoteMarkdown(SAMPLE_ANSWER, SAMPLE_CITATIONS);
+    renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS, {
+      onCopy: () => this.copyAnswer(sampleMarkdown),
+      onCreateNote: () => void this.createAnswerNote("AI \uAC80\uC0C9 \uC0D8\uD50C", sampleMarkdown),
+      onInsertToActive: () => this.insertAnswerToActive(sampleMarkdown)
+    });
     this.scrollToBottom();
   }
   renderBackendStatus(status) {
@@ -6743,7 +6987,7 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     }
   }
   copyAnswer(text) {
-    const notify = (ok) => new import_obsidian8.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
+    const notify = (ok) => new import_obsidian9.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
     if (navigator.clipboard && window.isSecureContext) {
       void navigator.clipboard.writeText(text).then(() => notify(true)).catch(() => this.copyAnswerFallback(text, notify));
     } else {
@@ -6765,6 +7009,15 @@ var VaultSearchItemView = class extends import_obsidian8.ItemView {
     }
     area.remove();
     notify(ok);
+  }
+  async createAnswerNote(title, markdown) {
+    await createNoteFromMarkdown(this.app, {
+      title,
+      content: markdown
+    });
+  }
+  insertAnswerToActive(markdown) {
+    insertMarkdownToActiveNote(this.app, markdown);
   }
 };
 
@@ -6794,7 +7047,7 @@ function normalizeFavoriteModels(raw, fallbackProvider) {
   }
   return out;
 }
-var VaultSearchPlugin = class extends import_obsidian9.Plugin {
+var VaultSearchPlugin = class extends import_obsidian10.Plugin {
   draftSettings;
   backend;
   queue;
@@ -6828,8 +7081,8 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     registerLightningIcon();
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian9.FileSystemAdapter)) {
-      new import_obsidian9.Notice(
+    if (!(adapter instanceof import_obsidian10.FileSystemAdapter)) {
+      new import_obsidian10.Notice(
         "Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4."
       );
       return;
@@ -6865,22 +7118,22 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian9.TFile) this.queue.markChanged(file.path);
+        if (file instanceof import_obsidian10.TFile) this.queue.markChanged(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian9.TFile) this.queue.markChanged(file.path);
+        if (file instanceof import_obsidian10.TFile) this.queue.markChanged(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian9.TFile) this.queue.markDeleted(file.path);
+        if (file instanceof import_obsidian10.TFile) this.queue.markDeleted(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian9.TFile) {
+        if (file instanceof import_obsidian10.TFile) {
           this.queue.markDeleted(oldPath);
           this.queue.markChanged(file.path);
         }
@@ -6905,14 +7158,14 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.loadPolicy === "vault-open") {
         void this.startBackend().catch(
-          (error) => new import_obsidian9.Notice(
+          (error) => new import_obsidian10.Notice(
             `Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
             1e4
           )
         );
       } else if (this.settings.loadPolicy === "first-search") {
         void this.startLazyBackend().catch(
-          (error) => new import_obsidian9.Notice(
+          (error) => new import_obsidian10.Notice(
             `Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
             1e4
           )
@@ -7037,7 +7290,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   async fetchProviderModels(provider) {
     const apiKey = getProviderSecret(this.app, provider);
     if (!apiKey) throw new Error("\uBA3C\uC800 \uC774 provider\uC758 API \uD0A4\uB97C \uC800\uC7A5\uD574 \uC8FC\uC138\uC694.");
-    const response = await (0, import_obsidian9.requestUrl)({
+    const response = await (0, import_obsidian10.requestUrl)({
       url: LLM_MODEL_ENDPOINTS[provider],
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` }
@@ -7121,7 +7374,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
     if (options?.notify ?? true) {
-      new import_obsidian9.Notice(
+      new import_obsidian10.Notice(
         provider === previousProvider ? `\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.` : `\uB2F5\uBCC0 provider\uB97C ${provider}\uB85C \uC804\uD658\uD558\uACE0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`
       );
     }
@@ -7207,7 +7460,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     this.draftApplyTimer = window.setTimeout(() => {
       this.draftApplyTimer = null;
       void this.applyDraftSettings().catch((error) => {
-        new import_obsidian9.Notice(`\uC124\uC815 \uC801\uC6A9 \uC2E4\uD328: ${this.errorMessage(error)}`, 8e3);
+        new import_obsidian10.Notice(`\uC124\uC815 \uC801\uC6A9 \uC2E4\uD328: ${this.errorMessage(error)}`, 8e3);
       });
     }, 700);
   }
@@ -7262,7 +7515,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
         this.syncDraftTo(this.settings);
       }
       if (impact === "all" || impact === "vectors" || impact === "restart") {
-        new import_obsidian9.Notice(
+        new import_obsidian10.Notice(
           impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4."
         );
       }
@@ -7301,7 +7554,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     );
     const cuda = await this.backend.managedRuntime("cuda");
     if (current?.cudaAvailable || cuda?.cudaAvailable) {
-      new import_obsidian9.Notice(
+      new import_obsidian10.Notice(
         current?.cudaAvailable ? "\uD604\uC7AC \uB7F0\uD0C0\uC784\uC774 \uC774\uBBF8 CUDA\uB97C \uC0AC\uC6A9 \uC911\uC785\uB2C8\uB2E4." : "\uC124\uCE58\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC774\uBBF8 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4.",
         8e3
       );
@@ -7314,7 +7567,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     if (!await confirmRuntimeInstall(this.app, true)) return;
     const cpu = await this.backend.managedRuntime("cpu");
     const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
-    new import_obsidian9.Notice(
+    new import_obsidian10.Notice(
       "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
       1e4
     );
@@ -7331,7 +7584,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     if (this.settings.device === "cpu") {
       const active = current || cpu;
       this.runtimeSummary = active ? `\uB7F0\uD0C0\uC784: CPU / PyTorch ${active.torchVersion} (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)` : "\uB7F0\uD0C0\uC784: CPU (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)";
-      new import_obsidian9.Notice(
+      new import_obsidian10.Notice(
         "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uD604\uC7AC CPU \uBA85\uC2DC \uC124\uC815\uC740 \uC720\uC9C0\uB429\uB2C8\uB2E4.",
         1e4
       );
@@ -7361,7 +7614,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       }
       throw error;
     }
-    new import_obsidian9.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
+    new import_obsidian10.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
     this.settingTab?.display();
   }
   async startLazyBackend() {
@@ -7387,14 +7640,14 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }
     const result = await this.backend.call("provision_onnx", {}, 6e5);
     if (!result.provisioned) throw new Error("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131 \uC2E4\uD328");
-    new import_obsidian9.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    new import_obsidian10.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
   async provisionBackend() {
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
     await this.refreshBackendInstall();
-    new import_obsidian9.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    new import_obsidian10.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
   async stopBackend() {
@@ -7408,7 +7661,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     await this.backend.restart();
     await this.completeStartup();
     this.settingTab?.display();
-    new import_obsidian9.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
+    new import_obsidian10.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
   }
   async previewScope() {
     await this.ensureSearchStarted();
@@ -7421,7 +7674,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       { mode },
       6e5
     );
-    new import_obsidian9.Notice(
+    new import_obsidian10.Notice(
       result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.",
       8e3
     );
@@ -7429,13 +7682,13 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   }
   async rebuildAll() {
     await this.ensureSearchStarted();
-    new import_obsidian9.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
+    new import_obsidian10.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
     const result = await this.backend.call(
       "rebuild_all",
       {},
       36e5
     );
-    new import_obsidian9.Notice(
+    new import_obsidian10.Notice(
       `\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`,
       1e4
     );
@@ -7443,13 +7696,13 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   }
   async rebuildVectors() {
     await this.ensureSearchStarted();
-    new import_obsidian9.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
+    new import_obsidian10.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
     const result = await this.backend.call(
       "rebuild_vectors",
       {},
       36e5
     );
-    new import_obsidian9.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian10.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   registerCommands() {
@@ -7508,10 +7761,10 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
       name: "Install agent integration (AGENTS.md + wrapper + skill)",
       callback: () => {
         void this.runAgentIntegrationInstall().then((result) => {
-          new import_obsidian9.Notice(agentIntegrationNotice(result), 8e3);
+          new import_obsidian10.Notice(agentIntegrationNotice(result), 8e3);
           this.settingTab?.display();
         }).catch(
-          (error) => new import_obsidian9.Notice(
+          (error) => new import_obsidian10.Notice(
             `Vault Search \uC624\uB958: ${this.errorMessage(error)}`,
             8e3
           )
@@ -7589,7 +7842,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     }
     const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
     try {
-      new import_obsidian9.Notice(
+      new import_obsidian10.Notice(
         "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
         1e4
       );
@@ -7639,7 +7892,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
         if (result.rebuild_required) {
           const status = this.backend.status;
           const action = status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95";
-          new import_obsidian9.Notice(
+          new import_obsidian10.Notice(
             `Vault Search \uC778\uB371\uC2A4\uC5D0 \uD638\uD658\uC131 \uBB38\uC81C\uAC00 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C ${action}\uC744 \uC2E4\uD589\uD558\uC138\uC694.`,
             8e3
           );
@@ -7665,8 +7918,8 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   }
   async openSearchResult(location, keepPanel = false) {
     const file = this.app.vault.getAbstractFileByPath(location.path);
-    if (!(file instanceof import_obsidian9.TFile)) {
-      new import_obsidian9.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
+    if (!(file instanceof import_obsidian10.TFile)) {
+      new import_obsidian10.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
       return;
     }
     await this.app.workspace.getLeaf(keepPanel ? "tab" : false).openFile(file, {
@@ -7678,7 +7931,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
   async openAiSearchPanel(initialQuery = "") {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_VAULT_AI_SEARCH)[0] ?? this.app.workspace.getRightLeaf(false);
     if (!leaf) {
-      new import_obsidian9.Notice("AI Vault Search \uD328\uB110\uC744 \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian10.Notice("AI Vault Search \uD328\uB110\uC744 \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return;
     }
     const currentState = leaf.getViewState();
@@ -7703,7 +7956,7 @@ var VaultSearchPlugin = class extends import_obsidian9.Plugin {
     await this.openAiSearchPanel();
     const view = [...this.aiSearchViews][0];
     if (!view) {
-      new import_obsidian9.Notice("AI Vault Search \uD328\uB110\uC744 \uBA3C\uC800 \uC5F4\uC5B4 \uC8FC\uC138\uC694.");
+      new import_obsidian10.Notice("AI Vault Search \uD328\uB110\uC744 \uBA3C\uC800 \uC5F4\uC5B4 \uC8FC\uC138\uC694.");
       return;
     }
     view.renderSample();

@@ -139,17 +139,20 @@ unconditionally overwritten from the stored secrets).
   notes are ordinary vault files and are indexed like any other note — to
   keep AI-generated answers out of search evidence, add the history folder to
   the exclude list.
-- **Panel rendering & note copy** — markdown headings of any level
+- **Panel rendering & note actions** — markdown headings of any level
   (`#`…`######`) render as h3–h6; numbered lists with nested bullets render
   with continuous numbering (one `<ol>`, 1, 2, 3…), matching the note —
   including when items are separated by blank lines (blank lines never end
   a markdown list). Task-list markers (`- [ ]` / `- [x]`) render as
-  read-only checkboxes (checked for `[x]`). **답변 복사** produces
-  note-ready markdown: `[S#]` citations become inline wikilinks labeled
-  with circled endnote numbers (`[[file|①]]`) that open the source file
-  directly, plus a deduplicated `## 근거` list mapping each number to its
-  file — pasting an answer into a note keeps every reference live and
-  clearly annotated.
+  read-only checkboxes (checked for `[x]`). **액션 툴바** offers:
+  - **복사** — produces note-ready markdown: `[S#]` citations become inline wikilinks labeled
+    with circled endnote numbers (`[[file|①]]`) that open the source file
+    directly, plus a deduplicated `## 근거` list mapping each number to its file.
+  - **새 노트** — creates a new standalone markdown note with the note-ready content
+    and opens it in a new tab immediately.
+  - **현재 노트에 삽입** — inserts the note-ready markdown at the cursor location (or document end)
+    of the currently active markdown note.
+  The search modal provides the same action bar (복사, 새 노트, 현재 노트에 삽입) for vault search results.
 - **Diagnostic command** — "AI Vault Search: 목록 렌더링 샘플 미리보기"
   (command palette) renders a fixed sample answer (numbered list with nested
   bullets, a task-list section, and citations) in the panel, so list and
