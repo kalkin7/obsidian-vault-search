@@ -148,8 +148,9 @@ unconditionally overwritten from the stored secrets).
   - **복사** — produces note-ready markdown: `[S#]` citations become inline wikilinks labeled
     with circled endnote numbers (`[[file|①]]`) that open the source file
     directly, plus a deduplicated `## 근거` list mapping each number to its file.
-  - **새 노트** — creates a new standalone markdown note with the note-ready content
-    and opens it in a new tab immediately.
+  - **새 노트** — creates a new standalone markdown note (inheriting Obsidian's
+    "Default location for new notes" folder setting, with frontmatter `created`/`title`
+    and intelligent H1 title extraction) and opens it in a new tab immediately.
   - **현재 노트에 삽입** — inserts the note-ready markdown at the cursor location (or document end)
     of the currently active markdown note.
   The search modal provides the same action bar (복사, 새 노트, 현재 노트에 삽입) for vault search results.
