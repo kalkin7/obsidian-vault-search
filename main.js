@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.58";
+var BACKEND_VERSION = "0.1.59";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
