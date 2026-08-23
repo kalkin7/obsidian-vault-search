@@ -220,3 +220,70 @@ describe("backend provisioning", () => {
     }
   });
 });
+
+describe("ensureMcpSdk auto-install and probe", () => {
+  it("skips pip install when probe succeeds", async () => {
+    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    try {
+      const manager = await makeManager(tmp);
+      const execCalls: string[][] = [];
+      (manager as unknown as { execFileText: (cmd: string, args: string[]) => Promise<string> }).execFileText = async (cmd, args) => {
+        execCalls.push(args);
+        return "";
+      };
+
+      await (manager as unknown as { ensureMcpSdk: (python: string) => Promise<void> }).ensureMcpSdk("python");
+
+      // Probe executed once, no pip install
+      expect(execCalls.length).toBe(1);
+      expect(execCalls[0][3]).toContain("importlib.metadata.version('mcp') == '1.28.1'");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("runs pip install with --force-reinstall when probe fails, then re-probes", async () => {
+    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    try {
+      const manager = await makeManager(tmp);
+      const execCalls: string[][] = [];
+      let probeCount = 0;
+      (manager as unknown as { execFileText: (cmd: string, args: string[]) => Promise<string> }).execFileText = async (cmd, args) => {
+        execCalls.push(args);
+        if (args.includes("-c")) {
+          probeCount++;
+          if (probeCount === 1) throw new Error("Probe failed: wrong version");
+          return "";
+        }
+        return "Successfully installed mcp-1.28.1";
+      };
+
+      await (manager as unknown as { ensureMcpSdk: (python: string) => Promise<void> }).ensureMcpSdk("python");
+
+      // Calls: 1. probe (failed), 2. pip install --force-reinstall, 3. probe (succeeded)
+      expect(execCalls.length).toBe(3);
+      expect(execCalls[1]).toContain("--force-reinstall");
+      expect(execCalls[1]).toContain("mcp==1.28.1");
+      expect(execCalls[2][3]).toContain("importlib.metadata.version('mcp') == '1.28.1'");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("handles final probe failure safely without throwing and logs coded warning", async () => {
+    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    try {
+      const manager = await makeManager(tmp);
+      (manager as unknown as { execFileText: (cmd: string, args: string[]) => Promise<string> }).execFileText = async () => {
+        throw new Error("SDK probe failed permanently");
+      };
+
+      // Must not throw — allows search sidecar to continue operating
+      await expect(
+        (manager as unknown as { ensureMcpSdk: (python: string) => Promise<void> }).ensureMcpSdk("python"),
+      ).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+});

@@ -117,18 +117,87 @@ def test_service_build_search_auth_and_shutdown(tmp_path: Path):
     assert not runtime_path.exists()
 
 
+def pid_alive(pid: int) -> bool:
+    """Windows-safe process liveness probe."""
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+    import ctypes
+    from ctypes import wintypes
+
+    k32 = ctypes.windll.kernel32
+    handle = k32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    exit_code = wintypes.DWORD()
+    ok = k32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+    k32.CloseHandle(handle)
+    return bool(ok) and exit_code.value == 259  # STILL_ACTIVE
+
+
 def test_lazy_model_and_parent_eof(tmp_path: Path):
     process, runtime, runtime_path = _start(tmp_path, lazy=True)
-    status = request(runtime["host"], runtime["port"], runtime["token"], "status")
-    assert status["data"]["state"] == "idle"
-    assert status["data"]["index_validation_state"] == "pending"
-    first = request(runtime["host"], runtime["port"], runtime["token"], "search", {"query": "전기차"})
-    assert first["error"]["code"] == "MODEL_LOADING"
-    _wait_ready(runtime)
-    assert process.stdin is not None
-    process.stdin.close()
-    process.wait(timeout=5)
-    assert not runtime_path.exists()
+    try:
+        status = request(runtime["host"], runtime["port"], runtime["token"], "status")
+        assert status["data"]["state"] == "idle"
+        assert status["data"]["index_validation_state"] == "pending"
+        first = request(runtime["host"], runtime["port"], runtime["token"], "search", {"query": "전기차"})
+        error_code = first["error"]["code"]
+        assert error_code in {"MODEL_LOADING", "INDEX_REBUILD_REQUIRED"}
+
+        # Validate invariants specific to the returned branch
+        final_status = _wait_ready(runtime)
+        if error_code == "MODEL_LOADING":
+            # Model loading started on first search: wait for resolution to ready
+            assert final_status["state"] in {"ready", "ready_no_index"}
+            assert final_status["index_validation_state"] in {"pending", "compatible", "incompatible"}
+            if final_status["index_validation_state"] == "incompatible":
+                assert final_status["index_rebuild_required"] is True
+                assert final_status["recommended_action"] in {"rebuild_all", "rebuild_vectors"}
+            else:
+                assert final_status["index_rebuild_required"] is False
+        elif error_code == "INDEX_REBUILD_REQUIRED":
+            # Initialization completed before first search returned and index was incompatible
+            assert final_status["state"] == "ready_no_index"
+            assert final_status["index_validation_state"] == "incompatible"
+            assert final_status["index_rebuild_required"] is True
+            assert final_status["recommended_action"] == first["error"]["details"]["recommended_action"]
+            assert final_status["recommended_action"] in {"rebuild_all", "rebuild_vectors"}
+    finally:
+        assert process.stdin is not None
+        process.stdin.close()
+        process.wait(timeout=5)
+        assert not runtime_path.exists()
+        assert not pid_alive(process.pid)
+
+
+def test_answer_cancel_retry_idempotency_and_non_retry_methods(tmp_path: Path):
+    from vault_search.protocol import _IDEMPOTENT_METHODS
+
+    # Non-idempotent methods must never be in retry set
+    assert "answer_start" not in _IDEMPOTENT_METHODS
+    assert "answer_continue" not in _IDEMPOTENT_METHODS
+    # Safe idempotent cancel must be present
+    assert "answer_cancel" in _IDEMPOTENT_METHODS
+
+    process, runtime, runtime_path = _start(tmp_path)
+    try:
+        _wait_ready(runtime)
+        # Calling cancel on non-existent or completed run is idempotent and safe
+        res1 = request(runtime["host"], runtime["port"], runtime["token"], "answer_cancel", {"run_id": "nonexistent_run_12345"})
+        assert res1["ok"] is True
+        assert res1["data"]["cancelled"] is False
+
+        # Repeating cancel produces no errors or corrupted state
+        res2 = request(runtime["host"], runtime["port"], runtime["token"], "answer_cancel", {"run_id": "nonexistent_run_12345"})
+        assert res2["ok"] is True
+        assert res2["data"]["cancelled"] is False
+    finally:
+        request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
+        process.wait(timeout=5)
 
 
 def test_lazy_first_search_builds_index_and_retries_success(tmp_path: Path):
@@ -136,7 +205,7 @@ def test_lazy_first_search_builds_index_and_retries_success(tmp_path: Path):
     try:
         first = request(runtime["host"], runtime["port"], runtime["token"], "search",
                         {"query": "전기차"})
-        assert first["error"]["code"] == "MODEL_LOADING"
+        assert first["error"]["code"] in {"MODEL_LOADING", "INDEX_REBUILD_REQUIRED"}
         _wait_ready(runtime)
         rebuilt = request(runtime["host"], runtime["port"], runtime["token"],
                           "rebuild_all", timeout=10)

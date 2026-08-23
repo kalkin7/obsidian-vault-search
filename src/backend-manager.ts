@@ -27,11 +27,12 @@ import type {
   VaultSearchSettings,
 } from "./types";
 import { BACKEND_VERSION, GITHUB_REPO, MCP_SDK_SPEC, PROTOCOL_VERSION } from "./constants";
-/** Deeper than a bare import: the pinned SDK must expose the streamable-HTTP
- *  client the McpHost drives. Catches wrong-distro installs (e.g. "mcp" 2.x).
- *  Must stay in sync with mcp_host.py's guarded imports (plan §12.3). */
+import { toSafeOrigin } from "./mcp-server-form";
+/** Deeper than a bare import: the pinned SDK must match exact version 1.28.1
+ *  and expose all symbols used by mcp_host.py (ClientSession, StdioServerParameters,
+ *  stdio_client, streamablehttp_client). Catches wrong-distro or partial installs. */
 const MCP_SDK_IMPORT_PROBE =
-  "from mcp.client.streamable_http import streamablehttp_client";
+  "import importlib.metadata; assert importlib.metadata.version('mcp') == '1.28.1'; from mcp import ClientSession, StdioServerParameters; from mcp.client.stdio import stdio_client; from mcp.client.streamable_http import streamablehttp_client";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
 import { mergeProviderEnvironment } from "./llm-secrets";
@@ -70,9 +71,9 @@ export class BackendManager {
     private readonly getEnvironment: () => Record<string, string> = () => ({}),
     /** Builds the one-shot MCP secret handoff; invoked right after the
      *  sidecar starts listening so servers waiting for env values connect. */
-    private readonly getMcpSecretPayload:
-      | (() => McpSecretPayloadResult | null)
-      | null = null,
+    private readonly getMcpSecretPayload?: (options?: {
+      strict?: boolean;
+    }) => McpSecretPayloadResult | null,
   ) {}
 
   get dataDir(): string {
@@ -315,19 +316,19 @@ export class BackendManager {
   }
 
   /** Ensure the pinned mcp SDK is importable in the runtime interpreter.
-   *  Probe-first so healthy venvs pay one ~100ms import; install failures
+   *  Probe-first with full symbol + version check; install failures
    *  must never block a plain search session — the MCP server simply keeps
    *  its error state and the status surface explains why. */
   private async ensureMcpSdk(python: string): Promise<void> {
     try {
       await this.execFileText(
         python,
-        ["-X", "utf8", "-c", "import mcp"],
+        ["-X", "utf8", "-c", MCP_SDK_IMPORT_PROBE],
         15_000,
       );
       return;
     } catch {
-      /* missing or broken SDK: fall through to the targeted install */
+      /* missing, wrong version, or broken SDK: fall through to the targeted install */
     }
     try {
       await this.execFileText(
@@ -339,18 +340,19 @@ export class BackendManager {
           "pip",
           "install",
           "--disable-pip-version-check",
+          "--force-reinstall",
           MCP_SDK_SPEC,
         ],
         300_000,
       );
       await this.execFileText(
         python,
-        ["-X", "utf8", "-c", `import mcp; ${MCP_SDK_IMPORT_PROBE}`],
+        ["-X", "utf8", "-c", MCP_SDK_IMPORT_PROBE],
         15_000,
       );
     } catch (error) {
       console.warn(
-        `[vault-search] MCP SDK auto-install failed: ${
+        `[vault-search] MCP SDK auto-install failed (MCP_SDK_UNAVAILABLE_OR_INCOMPATIBLE): ${
           error instanceof Error ? error.message : String(error)
         }`,
       );
@@ -362,7 +364,8 @@ export class BackendManager {
     args: string[],
     timeout: number,
     extraEnv?: Record<string, string>,
-  ): Promise<string> {    return new Promise((resolve, reject) => {
+  ): Promise<string> {
+    return new Promise((resolve, reject) => {
       execFile(
         executable,
         args,
@@ -574,7 +577,15 @@ export class BackendManager {
     ) {
       throw new Error(`Python backend is missing: ${this.backendRoot}`);
     }
-    await this.writeServiceConfig(lazyOverride);
+    try {
+      await this.writeServiceConfig(lazyOverride);
+    } catch {
+      this.setStatus({
+        state: "error",
+        error: "SERVICE_CONFIG_WRITE_FAILED",
+      });
+      throw new Error("SERVICE_CONFIG_WRITE_FAILED");
+    }
     if (generation !== this.startGeneration || this.stopping) return;
 
     const settings = this.getSettings();
@@ -808,10 +819,10 @@ export class BackendManager {
    *  a FULL snapshot of every enabled server (possibly with empty maps) so
    *  rotations AND deletions propagate; the sidecar replaces each listed
    *  server's stored mapping wholesale and reconnects only changed ones. */
-  async sendMcpSecrets(): Promise<void> {
+  async sendMcpSecrets(options?: { strict?: boolean }): Promise<void> {
     if (!this.getMcpSecretPayload || !this.runtime) return;
     if (!this.getSettings().mcpEnabled) return;
-    const built = this.getMcpSecretPayload();
+    const built = this.getMcpSecretPayload(options);
     if (!built) return;
     await this.call("set_mcp_secrets", built.payload, 10_000);
   }
@@ -882,12 +893,19 @@ export class BackendManager {
     // The fetched-model cache is plugin-side bookkeeping; keep it out of the
     // sidecar config file.
     const { fetchedProviderModels: _fetched, ...configSettings } = settings;
+    const sanitizedMcpServers = (configSettings.mcpServers || []).map(
+      (server) => ({
+        ...server,
+        url: server.transport === "http" ? toSafeOrigin(server.url) : "",
+      }),
+    );
     const payload = {
       vaultPath: this.vaultPath,
       dataDir: this.dataDir,
       // Resolved for MCP servers configured with cwd="plugin" (plan §6.1).
       pluginPath: this.pluginDir,
       ...configSettings,
+      mcpServers: sanitizedMcpServers,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search",
     };
     // Unique temp name: concurrent writers can't clobber each other's file.

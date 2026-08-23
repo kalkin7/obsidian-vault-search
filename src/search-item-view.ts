@@ -150,7 +150,11 @@ export interface SearchItemViewOwner {
   ): Promise<void>;
   getAnswerReasoningEffortOptions(): string[];
   setAnswerReasoningEffort(effort: string): Promise<void>;
-  toggleFavoriteModel(provider: LLMProviderId, model: string): Promise<void>;
+  toggleFavoriteModel(
+    provider: LLMProviderId,
+    model: string,
+    desiredFavorite?: boolean,
+  ): Promise<void>;
   registerAiView(view: VaultSearchItemView): void;
   unregisterAiView(view: VaultSearchItemView): void;
 }
@@ -268,9 +272,22 @@ export class VaultSearchItemView extends ItemView {
       cls: "vault-ai-search-model-select vault-ai-search-effort-select",
       attr: { "aria-label": "추론 강도 (reasoning effort)" },
     });
-    const onEffortChange = () => {
+    const onEffortChange = async () => {
       const value = this.effortSelect.value;
-      if (value) void this.owner.setAnswerReasoningEffort(value);
+      if (value) {
+        this.effortSelect.disabled = true;
+        try {
+          await this.owner.setAnswerReasoningEffort(value);
+        } catch (error) {
+          new Notice(
+            `추론 강도 설정 실패: ${error instanceof Error ? error.message : String(error)}`,
+            8000,
+          );
+          this.refreshModelSelector();
+        } finally {
+          this.effortSelect.disabled = false;
+        }
+      }
     };
     this.effortSelect.addEventListener("change", onEffortChange);
     this.listeners.push(() =>
@@ -347,10 +364,21 @@ export class VaultSearchItemView extends ItemView {
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
     void spacer;
-    const onModelChange = () => {
+    const onModelChange = async () => {
       const [provider, model] = this.modelSelect.value.split("::", 2);
       if (provider && model) {
-        void this.owner.setAnswerModel(provider as LLMProviderId, model);
+        this.modelSelect.disabled = true;
+        try {
+          await this.owner.setAnswerModel(provider as LLMProviderId, model);
+        } catch (error) {
+          new Notice(
+            `모델 변경 실패: ${error instanceof Error ? error.message : String(error)}`,
+            8000,
+          );
+          this.refreshModelSelector();
+        } finally {
+          this.modelSelect.disabled = false;
+        }
       }
     };
     this.modelSelect.addEventListener("change", onModelChange);

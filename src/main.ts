@@ -19,6 +19,10 @@ import {
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
 import { McpServerEditorModal } from "./mcp-server-modal";
+import {
+  cloneMcpServers,
+  McpTransactionCoordinator,
+} from "./mcp-transaction-coordinator";
 import { VaultSearchSettingTab } from "./settings-tab";
 import {
   cloneSettings,
@@ -31,6 +35,7 @@ import {
 import type {
   BackendInstallState,
   BackendStatus,
+  McpServerSettings,
   PythonRuntimeInfo,
   VaultSearchSettings,
 } from "./types";
@@ -50,11 +55,18 @@ import {
 } from "./llm-secrets";
 import {
   buildMcpSecretPayload,
+  deleteMcpHttpUrl,
   deleteMcpSecret,
   deleteServerSecrets,
+  getMcpHttpUrl,
   getMcpSecret,
+  hasMcpEnvSecret,
+  hasMcpHttpUrl,
+  migrateMcpHttpUrls,
+  setMcpHttpUrl,
   setMcpSecret,
 } from "./mcp-secrets";
+import { toSafeOrigin } from "./mcp-server-form";
 import type {
   FavoriteAnswerModel,
   LLMProviderId,
@@ -106,9 +118,11 @@ export default class VaultSearchPlugin extends Plugin {
   settingTab!: VaultSearchSettingTab;
   private startupPrepared = false;
   private startupInProgress = false;
+  private startupConfigSanitized = false;
   private searchModal: VaultSearchModal | null = null;
   private readonly aiSearchViews = new Set<VaultSearchItemView>();
-  private runtimeChangePromise: Promise<void> | null = null;
+  /** Unified FIFO serialization boundary for debounced settings applies, manual applies, and transactions. */
+  private settingsQueue: Promise<void> = Promise.resolve();
   /** Debounce handle for auto-applying settings-tab edits. */
   private draftApplyTimer: number | null = null;
   /** Backing state of the stable draft proxy (identity never changes, so
@@ -155,8 +169,23 @@ export default class VaultSearchPlugin extends Plugin {
       (status) => this.handleStatus(status),
       this.manifest.version,
       () => providerEnvironment(this.app),
-      () => buildMcpSecretPayload(this.app, this.settings.mcpServers || []),
+      (options) =>
+        buildMcpSecretPayload(this.app, this.settings.mcpServers || [], options),
     );
+    // Atomically ensure service-config.json exists in sanitized form (safe origins only)
+    try {
+      await this.backend.persistServiceConfig();
+      this.startupConfigSanitized = true;
+    } catch {
+      this.startupConfigSanitized = false;
+      console.warn(
+        "[vault-search] Failed to write sanitized service-config during startup (SERVICE_CONFIG_WRITE_FAILED)",
+      );
+      new Notice(
+        "Vault Search 초기화 실패: SERVICE_CONFIG_WRITE_FAILED",
+        10000,
+      );
+    }
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
@@ -214,6 +243,9 @@ export default class VaultSearchPlugin extends Plugin {
     void this.refreshAgentIntegration();
 
     this.app.workspace.onLayoutReady(() => {
+      if (!this.startupConfigSanitized) {
+        return;
+      }
       if (this.settings.loadPolicy === "vault-open") {
         void this.startBackend().catch(
           (error) =>
@@ -308,11 +340,29 @@ export default class VaultSearchPlugin extends Plugin {
           DEFAULT_SETTINGS.answerTimeoutSeconds,
       ),
     );
-    const migrated = migrateSettings(this.settings);
+    const mcpMigration = migrateMcpHttpUrls(
+      this.app,
+      this.settings,
+    );
+    const failedIds = new Set(mcpMigration.failedServers.map((s) => s.id));
+    if (mcpMigration.failedServers.length > 0) {
+      new Notice(
+        `일부 원격 MCP 서버(${mcpMigration.failedServers.length}개)의 URL 보안 저장소 이전에 실패하여 해당 서버가 비활성화되었습니다. 설정을 확인해 주세요.`,
+        8000,
+      );
+    }
+    if (mcpMigration.migratedCount > 0) {
+      new Notice(
+        "원격 MCP 서버 URL이 보안 저장소로 안전하게 이전되었습니다. 보안을 위해 원격 서비스의 토큰을 재발급(회전)하는 것을 권장합니다.",
+        8000,
+      );
+    }
+    const migrated =
+      migrateSettings(this.settings) || mcpMigration.changed;
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
-    this.normalizeAgentSettings();
+    this.normalizeAgentSettings(failedIds);
     this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === undefined) {
       await this.saveSettings();
@@ -354,6 +404,15 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async saveProviderApiKey(
+    provider: LLMProviderId,
+    value: string,
+  ): Promise<void> {
+    return this.enqueueSettingsLock(() =>
+      this.saveProviderApiKeyUnlocked(provider, value),
+    );
+  }
+
+  private async saveProviderApiKeyUnlocked(
     provider: LLMProviderId,
     value: string,
   ): Promise<void> {
@@ -404,13 +463,44 @@ export default class VaultSearchPlugin extends Plugin {
 
   /** Cache of fetched model lists per provider (shared by settings + view).
    *  Persists to data.json so restarts keep the list and its stars. */
-  setProviderModels(provider: LLMProviderId, models: string[]): void {
+  async setProviderModels(
+    provider: LLMProviderId,
+    models: string[],
+  ): Promise<void> {
+    return this.enqueueSettingsLock(() =>
+      this.setProviderModelsUnlocked(provider, models),
+    );
+  }
+
+  private async setProviderModelsUnlocked(
+    provider: LLMProviderId,
+    models: string[],
+  ): Promise<void> {
+    const previousMemory = this.providerModels[provider];
+    const previousSettings = this.settings.fetchedProviderModels;
+    const previousDraft = this.draftSettings.fetchedProviderModels;
+
     this.providerModels[provider] = models;
     this.settings.fetchedProviderModels = {
       ...this.settings.fetchedProviderModels,
       [provider]: models,
     };
-    void this.saveSettings().catch(() => undefined);
+    this.draftSettings.fetchedProviderModels = {
+      ...this.draftSettings.fetchedProviderModels,
+      [provider]: models,
+    };
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      if (previousMemory !== undefined) {
+        this.providerModels[provider] = previousMemory;
+      } else {
+        delete this.providerModels[provider];
+      }
+      this.settings.fetchedProviderModels = previousSettings;
+      this.draftSettings.fetchedProviderModels = previousDraft;
+      throw err;
+    }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
 
@@ -464,9 +554,24 @@ export default class VaultSearchPlugin extends Plugin {
     model: string,
     options?: { notify?: boolean },
   ): Promise<void> {
+    return this.enqueueSettingsLock(() =>
+      this.setAnswerModelUnlocked(provider, model, options),
+    );
+  }
+
+  private async setAnswerModelUnlocked(
+    provider: LLMProviderId,
+    model: string,
+    options?: { notify?: boolean },
+  ): Promise<void> {
     const value = model.trim();
     const previous = this.settings.answerModel;
     const previousProvider = this.settings.answerProvider;
+    const previousReasoning = this.settings.answerReasoningEffort;
+    const previousDraftModel = this.draftSettings.answerModel;
+    const previousDraftProvider = this.draftSettings.answerProvider;
+    const previousDraftReasoning = this.draftSettings.answerReasoningEffort;
+
     if (!value || (value === previous && provider === previousProvider)) return;
     this.settings.answerProvider = provider;
     this.settings.answerModel = value;
@@ -486,7 +591,17 @@ export default class VaultSearchPlugin extends Plugin {
     // overwrite this hot change with a stale draft value.
     this.draftSettings.answerProvider = provider;
     this.draftSettings.answerModel = value;
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings.answerProvider = previousProvider;
+      this.settings.answerModel = previous;
+      this.settings.answerReasoningEffort = previousReasoning;
+      this.draftSettings.answerProvider = previousDraftProvider;
+      this.draftSettings.answerModel = previousDraftModel;
+      this.draftSettings.answerReasoningEffort = previousDraftReasoning;
+      throw err;
+    }
     if (this.backend.status.state !== "stopped") {
       await this.backend
         .call("apply_search_config", hotConfig(this.settings), 30_000)
@@ -515,6 +630,12 @@ export default class VaultSearchPlugin extends Plugin {
 
   /** Change the reasoning effort from the panel composer (hot, persists). */
   async setAnswerReasoningEffort(effort: string): Promise<void> {
+    return this.enqueueSettingsLock(() =>
+      this.setAnswerReasoningEffortUnlocked(effort),
+    );
+  }
+
+  private async setAnswerReasoningEffortUnlocked(effort: string): Promise<void> {
     const value = effort.trim();
     const valid = [
       "auto",
@@ -526,11 +647,20 @@ export default class VaultSearchPlugin extends Plugin {
       "max",
     ].includes(value);
     if (!valid || value === this.settings.answerReasoningEffort) return;
+    const previousSettings = this.settings.answerReasoningEffort;
+    const previousDraft = this.draftSettings.answerReasoningEffort;
+
     this.settings.answerReasoningEffort =
       value as VaultSearchSettings["answerReasoningEffort"];
     this.draftSettings.answerReasoningEffort =
       this.settings.answerReasoningEffort;
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings.answerReasoningEffort = previousSettings;
+      this.draftSettings.answerReasoningEffort = previousDraft;
+      throw err;
+    }
     if (this.backend.status.state !== "stopped") {
       await this.backend
         .call("apply_search_config", hotConfig(this.settings), 30_000)
@@ -545,20 +675,72 @@ export default class VaultSearchPlugin extends Plugin {
   async toggleFavoriteModel(
     provider: LLMProviderId,
     model: string,
+    desiredFavorite?: boolean,
   ): Promise<void> {
-    const favorites = (this.settings.favoriteAnswerModels || []).map(
-      (favorite) => ({ ...favorite }),
+    return this.enqueueSettingsLock(() =>
+      this.toggleFavoriteModelUnlocked(provider, model, desiredFavorite),
     );
+  }
+
+  async setFavoriteModel(
+    provider: LLMProviderId,
+    model: string,
+    desiredFavorite: boolean,
+  ): Promise<void> {
+    return this.enqueueSettingsLock(() =>
+      this.toggleFavoriteModelUnlocked(provider, model, desiredFavorite),
+    );
+  }
+
+  private async toggleFavoriteModelUnlocked(
+    provider: LLMProviderId,
+    model: string,
+    desiredFavorite?: boolean,
+  ): Promise<void> {
+    const currentFavorites = this.settings.favoriteAnswerModels || [];
+    const isFavorite = currentFavorites.some(
+      (favorite) => favorite.provider === provider && favorite.model === model,
+    );
+    const targetFavorite =
+      desiredFavorite !== undefined ? desiredFavorite : !isFavorite;
+
+    if (isFavorite === targetFavorite) {
+      if (this.draftSettings.favoriteAnswerModels) {
+        const draftHasIt = (this.draftSettings.favoriteAnswerModels || []).some(
+          (f) => f.provider === provider && f.model === model,
+        );
+        if (draftHasIt !== targetFavorite) {
+          this.draftSettings.favoriteAnswerModels = currentFavorites.map(
+            (f) => ({ ...f }),
+          );
+        }
+      }
+      return;
+    }
+
+    const previousSettings = this.settings.favoriteAnswerModels;
+    const previousDraft = this.draftSettings.favoriteAnswerModels;
+
+    const favorites = currentFavorites.map((favorite) => ({ ...favorite }));
     const index = favorites.findIndex(
       (favorite) => favorite.provider === provider && favorite.model === model,
     );
-    if (index >= 0) favorites.splice(index, 1);
-    else favorites.push({ provider, model });
+    if (targetFavorite) {
+      if (index < 0) favorites.push({ provider, model });
+    } else {
+      if (index >= 0) favorites.splice(index, 1);
+    }
     this.settings.favoriteAnswerModels = favorites;
     this.draftSettings.favoriteAnswerModels = favorites.map((favorite) => ({
       ...favorite,
     }));
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings.favoriteAnswerModels = previousSettings;
+      this.draftSettings.favoriteAnswerModels = previousDraft;
+      throw err;
+    }
     if (this.backend.status.state !== "stopped") {
       await this.backend
         .call("apply_search_config", hotConfig(this.settings), 30_000)
@@ -584,10 +766,66 @@ export default class VaultSearchPlugin extends Plugin {
     });
   }
 
+  /** Mutate the draft backing state in-place to the given settings and cancel
+   *  any pending debounced auto-apply timer. Proxy identity remains unchanged. */
+  restoreDraftInPlace(settings: VaultSearchSettings): void {
+    this.cancelPendingDraftApply();
+    this.syncDraftTo(settings);
+  }
+
+  /** Mutate the draft MCP servers slice in-place to the given server list. */
+  restoreMcpServersInPlace(servers: McpServerSettings[]): void {
+    this.draftTarget.mcpServers = cloneMcpServers(servers);
+  }
+
+  /** Cancel any scheduled auto-apply timer so stale keystrokes are not applied early. */
+  cancelPendingDraftApply(): void {
+    if (this.draftApplyTimer !== null) {
+      clearTimeout(this.draftApplyTimer);
+      this.draftApplyTimer = null;
+    }
+  }
+
+  private async enqueueSettingsLock<T>(action: () => Promise<T>): Promise<T> {
+    const prevQueue = this.settingsQueue;
+    let releaseLock!: () => void;
+    this.settingsQueue = new Promise<void>((resolve) => {
+      releaseLock = resolve;
+    });
+    await prevQueue.catch(() => undefined);
+    try {
+      return await action();
+    } finally {
+      releaseLock();
+    }
+  }
+
+  /** Serialize transactional updates against concurrent settings auto-applies. */
+  async withTransactionLock<T>(action: () => Promise<T>): Promise<T> {
+    this.cancelPendingDraftApply();
+    return this.enqueueSettingsLock(async () => {
+      this.cancelPendingDraftApply();
+      try {
+        return await action();
+      } finally {
+        if (this.draftDirty) {
+          this.scheduleDraftApply();
+        }
+      }
+    });
+  }
+
   /** Replace the draft's contents with the given settings WITHOUT scheduling
    *  an auto-apply (used after a successful apply). The proxy identity stays
    *  the same, so settings controls bound to it keep receiving edits. */
   private syncDraftTo(settings: VaultSearchSettings): void {
+    for (const key of Object.keys(this.draftTarget) as Array<
+      keyof VaultSearchSettings
+    >) {
+      if (!(key in settings)) {
+        delete (this.draftTarget as any)[key];
+      }
+    }
     Object.assign(this.draftTarget, cloneSettings(settings));
   }
 
@@ -602,20 +840,21 @@ export default class VaultSearchPlugin extends Plugin {
     }, 700);
   }
 
-  async applyDraftSettings(): Promise<void> {
-    if (this.runtimeChangePromise) {
-      // An apply/rebuild is in flight; queue a follow-up so edits made in the
-      // meantime are applied too, never dropped.
-      return this.runtimeChangePromise.then(() =>
-        this.draftDirty ? this.applyDraftSettings() : undefined,
-      );
+  async applyDraftSettings(options?: { unlocked?: boolean }): Promise<void> {
+    if (options?.unlocked) {
+      return this.applyDraftSettingsUnlocked();
     }
-    this.runtimeChangePromise = this.applyDraftSettingsInternal();
-    try {
-      await this.runtimeChangePromise;
-    } finally {
-      this.runtimeChangePromise = null;
-    }
+    return this.enqueueSettingsLock(async () => {
+      this.cancelPendingDraftApply();
+      await this.applyDraftSettingsUnlocked();
+      if (this.draftDirty) {
+        this.scheduleDraftApply();
+      }
+    });
+  }
+
+  async applyDraftSettingsUnlocked(): Promise<void> {
+    return this.applyDraftSettingsInternal();
   }
 
   private async applyDraftSettingsInternal(): Promise<void> {
@@ -658,10 +897,7 @@ export default class VaultSearchPlugin extends Plugin {
             await this.backend.call("reconcile", { mode: "fast" }, 600_000);
         }
       }
-      if (this.draftDirty) {
-        // Edits landed while the apply was running — apply them next.
-        this.scheduleDraftApply();
-      } else {
+      if (!this.draftDirty) {
         this.syncDraftTo(this.settings);
       }
       if (impact === "all" || impact === "vectors" || impact === "restart") {
@@ -676,9 +912,6 @@ export default class VaultSearchPlugin extends Plugin {
     } catch (error) {
       await this.backend.stop().catch(() => undefined);
       this.settings = previous;
-      // The stable draft keeps the user's attempted edits, so a failed apply
-      // does not silently revert their choice in the UI. If more edits landed
-      // while it ran, retry automatically; otherwise the next edit retries.
       await this.saveSettings();
       if (previousWasRunning) {
         await this.backend.start(false);
@@ -695,7 +928,23 @@ export default class VaultSearchPlugin extends Plugin {
     }
   }
 
+  async ensureSanitizedConfig(): Promise<void> {
+    if (!this.startupConfigSanitized) {
+      try {
+        await this.backend.persistServiceConfig();
+        this.startupConfigSanitized = true;
+      } catch {
+        new Notice(
+          "Vault Search 시작 실패: SERVICE_CONFIG_WRITE_FAILED",
+          10000,
+        );
+        throw new Error("SERVICE_CONFIG_WRITE_FAILED");
+      }
+    }
+  }
+
   async startBackend(): Promise<void> {
+    await this.ensureSanitizedConfig();
     await this.prepareRuntime(this.settings, false);
     // ensureStarted handles the lazy (first-search) case: if the sidecar is
     // already running, start() is a no-op and the backend sits in idle waiting
@@ -708,13 +957,13 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async installCudaRuntime(): Promise<void> {
-    if (this.runtimeChangePromise) return this.runtimeChangePromise;
-    this.runtimeChangePromise = this.installCudaRuntimeInternal();
-    try {
-      await this.runtimeChangePromise;
-    } finally {
-      this.runtimeChangePromise = null;
-    }
+    return this.enqueueSettingsLock(async () => {
+      this.cancelPendingDraftApply();
+      await this.installCudaRuntimeInternal();
+      if (this.draftDirty) {
+        this.scheduleDraftApply();
+      }
+    });
   }
 
   private async installCudaRuntimeInternal(): Promise<void> {
@@ -796,6 +1045,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async startLazyBackend(): Promise<void> {
+    await this.ensureSanitizedConfig();
     await this.prepareRuntime(this.settings, false);
     await this.backend.start(true);
     await this.backend.waitUntilAvailable();
@@ -803,6 +1053,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async ensureSearchStarted(): Promise<void> {
+    await this.ensureSanitizedConfig();
     if (
       this.backend.status.state === "stopped" ||
       this.backend.status.state === "error"
@@ -813,6 +1064,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async provisionOnnx(): Promise<void> {
+    await this.ensureSanitizedConfig();
     if (this.backend.status.state === "stopped") {
       await this.prepareRuntime(this.settings, false);
       await this.backend.start(false);
@@ -832,6 +1084,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async provisionBackend(): Promise<void> {
+    await this.ensureSanitizedConfig();
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
     await this.refreshBackendInstall();
@@ -846,6 +1099,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
   async restartBackend(): Promise<void> {
     this.startupPrepared = false;
+    await this.ensureSanitizedConfig();
     await this.prepareRuntime(this.settings, false);
     await this.backend.restart();
     await this.completeStartup();
@@ -903,7 +1157,7 @@ export default class VaultSearchPlugin extends Plugin {
 
   /** Clamp the agent-extension settings to their protocol bounds so a
    *  hand-edited data.json can never produce an invalid sidecar config. */
-  private normalizeAgentSettings(): void {
+  private normalizeAgentSettings(failedServerIds?: Set<string>): void {
     const s = this.settings;
     s.answerProjectRules = String(s.answerProjectRules || "").slice(0, 32_000);
     if (s.answerProjectRulesSource !== "agents-md")
@@ -925,9 +1179,17 @@ export default class VaultSearchPlugin extends Plugin {
         .slice(0, 32);
       server.cwd = String(server.cwd || "vault");
       server.transport = server.transport === "http" ? "http" : "stdio";
-      server.url = String(server.url || "")
-        .trim()
-        .slice(0, MAX_MCP_URL_CHARS);
+      if (server.transport === "http") {
+        if (failedServerIds && failedServerIds.has(server.id)) {
+          // Failed migration: preserve raw URL for recovery/retry, keep disabled
+          server.url = String(server.url || "");
+          server.enabled = false;
+        } else {
+          server.url = toSafeOrigin(server.url);
+        }
+      } else {
+        server.url = "";
+      }
       server.enabled = server.enabled !== false;
       const policies: Record<string, McpToolPolicy> = {};
       for (const [tool, policy] of Object.entries(
@@ -1012,39 +1274,22 @@ export default class VaultSearchPlugin extends Plugin {
           envNames: [],
           toolPolicies: {},
         };
+    const coordinator = new McpTransactionCoordinator(this);
     new McpServerEditorModal(this, working, {
       hasEnvValue: (name) => this.hasMcpEnvValue(working.id, name),
-      saveEnvValue: (name, value) =>
-        this.saveMcpEnvValue(working.id, name, value),
-      removeEnvValue: (name) => this.removeMcpEnvValue(working.id, name),
-      onSaved: () => {
-        const servers = [...(this.draftSettings.mcpServers || [])];
-        const index = servers.findIndex((server) => server.id === working.id);
-        if (index >= 0) servers[index] = working;
-        else servers.push(working);
-        this.draftSettings.mcpServers = servers;
-        this.settingTab?.display();
-      },
+      hasHttpUrl: () => this.hasMcpHttpUrl(working.id, working.url),
+      onSave: (savedWorking, staged) =>
+        coordinator.saveServer(savedWorking, staged),
       onCancelledNew: () => {
-        for (const name of working.envNames) {
-          void this.removeMcpEnvValue(working.id, name).catch(() => undefined);
-        }
+        deleteServerSecrets(this.app, working);
       },
     }).open();
   }
 
-  /** Remove a server from the draft and purge its secrets. The exact server
-   *  object is captured first so env names cannot drift mid-delete. */
+  /** Remove a server in an atomic transaction via the coordinator. */
   async deleteMcpServer(serverId: string): Promise<void> {
-    const server = (this.draftSettings.mcpServers || []).find(
-      (entry) => entry.id === serverId,
-    );
-    if (!server) return;
-    deleteServerSecrets(this.app, server);
-    this.draftSettings.mcpServers = (
-      this.draftSettings.mcpServers || []
-    ).filter((entry) => entry.id !== serverId);
-    await this.notifyMcpSecretsChanged();
+    const coordinator = new McpTransactionCoordinator(this);
+    await coordinator.deleteServer(serverId);
   }
 
   async saveMcpEnvValue(
@@ -1076,7 +1321,11 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   hasMcpEnvValue(serverId: string, envName: string): boolean {
-    return Boolean(getMcpSecret(this.app, serverId, envName));
+    return hasMcpEnvSecret(this.app, serverId, envName);
+  }
+
+  hasMcpHttpUrl(serverId: string, expectedServerUrl?: string): boolean {
+    return hasMcpHttpUrl(this.app, serverId, expectedServerUrl);
   }
 
   async refreshMcpStatus(): Promise<McpStatusResponse> {

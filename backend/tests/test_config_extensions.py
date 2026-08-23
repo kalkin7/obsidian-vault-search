@@ -257,7 +257,8 @@ def test_http_transport_servers_are_accepted(tmp_path: Path):
     assert not any("MCP server" in p for p in config.config_problems)
     server = config.mcp_servers[0]
     assert server.transport == "http"
-    assert server.url.endswith("/law?oc=honggildong")
+    assert server.url == "https://mcp.gomdori.app"
+    assert "honggildong" not in server.url
     assert server.command == ""
 
 
@@ -286,7 +287,7 @@ def test_invalid_http_entries_are_isolated(tmp_path: Path):
                 "vaultPath": str(tmp_path),
                 "dataDir": str(data_dir),
                 "mcpServers": [
-                    {"id": "r1", "name": "No Url", "transport": "http"},
+                    {"id": "r0", "name": "Empty Url", "transport": "http", "url": ""},
                     {
                         "id": "r2",
                         "name": "Bad Scheme",
@@ -299,12 +300,20 @@ def test_invalid_http_entries_are_isolated(tmp_path: Path):
                         "transport": "http",
                         "url": "not a url at all",
                     },
+                    {
+                        "id": "r4",
+                        "name": "Control Chars",
+                        "transport": "http",
+                        "url": "https://mcp.example.com\x00bad",
+                    },
                     make_server_entry("ok1", "Still Fine"),
                 ],
             },
         )
     )
-    assert [server.id for server in config.mcp_servers] == ["ok1"]
+    # r0 (empty URL for awaiting_secret) and ok1 survive; r2, r3, r4 are isolated
+    assert [server.id for server in config.mcp_servers] == ["r0", "ok1"]
+    assert config.mcp_servers[0].url == ""
     assert len([p for p in config.config_problems if "MCP server" in p]) >= 3
 
 

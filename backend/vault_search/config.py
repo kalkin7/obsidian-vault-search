@@ -293,24 +293,32 @@ def _as_mcp_servers(
                 raise ValueError("transport must be 'stdio' or 'http'")
             url = ""
             if transport == "http":
-                url = str(entry.get("url", "")).strip()
-                if not url:
-                    raise ValueError("url is required for http transport")
-                if len(url) > MAX_MCP_URL_CHARS:
-                    raise ValueError(
-                        f"url must be at most {MAX_MCP_URL_CHARS} chars"
+                raw_url = str(entry.get("url", "")).strip()
+                if raw_url:
+                    if len(raw_url) > MAX_MCP_URL_CHARS:
+                        raise ValueError(
+                            f"url must be at most {MAX_MCP_URL_CHARS} chars"
+                        )
+                    if has_control_chars(raw_url):
+                        raise ValueError("url contains control characters")
+                    parsed = urlparse(raw_url)
+                    if (
+                        parsed.scheme not in {"http", "https"}
+                        or not parsed.hostname
+                        or any(ch.isspace() for ch in raw_url)
+                    ):
+                        raise ValueError(
+                            "url must be an absolute http(s) endpoint"
+                        )
+                    port_part = f":{parsed.port}" if parsed.port is not None else ""
+                    host = (
+                        f"[{parsed.hostname}]"
+                        if ":" in parsed.hostname and not parsed.hostname.startswith("[")
+                        else parsed.hostname
                     )
-                if has_control_chars(url):
-                    raise ValueError("url contains control characters")
-                parsed = urlparse(url)
-                if (
-                    parsed.scheme not in {"http", "https"}
-                    or not parsed.hostname
-                    or any(ch.isspace() for ch in url)
-                ):
-                    raise ValueError(
-                        "url must be an absolute http(s) endpoint"
-                    )
+                    url = f"{parsed.scheme}://{host}{port_part}"
+                else:
+                    url = ""
             else:
                 if not command:
                     raise ValueError("command is required")

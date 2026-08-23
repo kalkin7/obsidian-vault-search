@@ -707,9 +707,14 @@ class SearchService:
         self, method: str, params: dict[str, Any]
     ) -> dict[str, Any]:
         if method == "mcp_status":
+            host_status = self.mcp_host.status()
+            host_problems = host_status.pop("config_problems", [])
+            merged_problems = sorted(
+                set(list(self.config.config_problems) + host_problems)
+            )
             return {
-                **self.mcp_host.status(),
-                "config_problems": list(self.config.config_problems),
+                **host_status,
+                "config_problems": merged_problems,
                 "tool_surface": dict(self._last_tool_surface),
             }
         if method == "mcp_refresh":

@@ -178,16 +178,17 @@ across duplicate continues.
 
 ## MCP / skills management methods
 
-- `set_mcp_secrets` — one-shot handoff of per-server env values over the
-  authenticated loopback: `{ "servers": { "<server-uuid>": { "NAME": "value" } } }`.
-  Bounds: 32 KiB total payload, name ≤128 chars, value ≤8 KiB. Values are
-  never echoed back; the response lists received server ids + env names only.
+- `set_mcp_secrets` — one-shot handoff of per-server env values and HTTP URLs over the
+  authenticated loopback: `{ "servers": { "<server-uuid>": { "NAME": "value" } }, "http_urls": { "<server-uuid>": "<full-secret-url>" } }`.
+  Bounds: 32 KiB total payload, name ≤128 chars, env value ≤8 KiB, URL ≤2048 chars. Values are
+  never echoed back; the response lists received server ids + env names only (values are never logged).
 - `mcp_status` — `{ enabled, servers: [{id, name, state, message, command,
-  transport?, endpoint?, tools, tool_names, env_names, tool_policies}],
+  transport?, endpoint?, has_url_secret?, tools, tool_names, env_names, tool_policies}],
   connected, config_problems }`. States: `disabled | awaiting_secret |
   connecting | connected | error`. `transport` is `"stdio"` (default) or
-  `"http"`; `endpoint` carries the http origin+path only — query strings are
-  stripped before any status response.
+  `"http"`; `endpoint` carries the http safe origin (`scheme://hostname[:port]`) only — path,
+  query strings, fragments, and userinfo are strictly stripped before any status response.
+  `has_url_secret` is a boolean indicating whether a valid secret URL is currently held in sidecar memory (available even when disabled or awaiting_secret).
 - `mcp_refresh` — reconnect changed servers and re-list their tools.
 - `skills_status` / `skills_refresh` — skill registry scan state: roots with
   `{state, skills}` counts, discovered catalog entries, conflicts, problems,

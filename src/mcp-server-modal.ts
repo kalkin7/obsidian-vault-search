@@ -1,10 +1,12 @@
 import { Modal, Notice, Setting } from "obsidian";
 import { MAX_MCP_URL_CHARS } from "./constants";
 import {
-  describeMcpServer,
+  isLoopbackHost,
+  toSafeOrigin,
   validateMcpServerForm,
   withPolicyForAll,
 } from "./mcp-server-form";
+import { sanitizeSecretMessage } from "./mcp-transaction-coordinator";
 import type { McpStatusResponse, McpServerSettings } from "./types";
 
 export interface McpServerEditorOwner {
@@ -13,14 +15,27 @@ export interface McpServerEditorOwner {
   refreshMcpStatus(): Promise<McpStatusResponse>;
 }
 
+export interface StagedSecrets {
+  envValues: Record<string, string>;
+  removedEnvNames: string[];
+  httpUrl?: string | null;
+}
+
 export interface McpServerEditorCallbacks {
-  /** Commit the (already-mutated) working copy into the settings list. */
-  onSaved(): void;
-  /** A brand-new entry was cancelled: purge env values saved while typing. */
-  onCancelledNew?(): void;
   hasEnvValue(name: string): boolean;
-  saveEnvValue(name: string, value: string): Promise<void>;
-  removeEnvValue(name: string): Promise<void>;
+  hasHttpUrl?(): boolean;
+  /** Transactional save boundary: commits staged secrets + settings together.
+   *  Must throw if verification or write fails. */
+  onSave?(working: McpServerSettings, staged: StagedSecrets): Promise<void>;
+  /** Optional notification when new server modal is cancelled/closed without saving */
+  onCancelledNew?(): void;
+  /** Legacy callbacks retained for backward-compatible testing */
+  onSaved?(): void;
+  saveAllSecrets?(staged: StagedSecrets): Promise<void>;
+  saveEnvValue?(name: string, value: string): Promise<void>;
+  removeEnvValue?(name: string): Promise<void>;
+  saveHttpUrl?(url: string): Promise<void>;
+  removeHttpUrl?(): Promise<void>;
 }
 
 /** Smart-Composer-style modal editor (plan §12.3). The settings list stays a
@@ -28,6 +43,15 @@ export interface McpServerEditorCallbacks {
  *  unrelated sections below them. */
 export class McpServerEditorModal extends Modal {
   private readonly working: McpServerSettings;
+  private readonly originalSafeOrigin: string;
+  private readonly stagedEnvValues = new Map<string, string | null>();
+  private stagedHttpUrl: string | null | undefined = undefined;
+  private isSaving = false;
+  private isSaved = false;
+  private allowCloseAfterSave = false;
+  private cancelledNewCalled = false;
+  private envSectionEl: HTMLElement | null = null;
+  private applyVisibility: (() => void) | null = null;
 
   constructor(
     private readonly editorOwner: McpServerEditorOwner,
@@ -36,21 +60,47 @@ export class McpServerEditorModal extends Modal {
   ) {
     super(editorOwner.app);
     this.working = working;
+    this.originalSafeOrigin = toSafeOrigin(working.url || "");
+  }
+
+  override close(): void {
+    if (this.isSaving && !this.allowCloseAfterSave) {
+      // Block all close paths while saving (Escape, X button, backdrop click, etc.)
+      return;
+    }
+    super.close();
   }
 
   onOpen(): void {
     this.modalEl.addClass("vault-search-mcp-editor");
     this.titleEl.setText("MCP 서버 편집");
     this.renderBasics();
-    if (this.working.transport === "stdio") {
-      this.renderEnvSection();
-    }
-    void this.renderToolPolicies();
+    this.renderEnvSection();
+    const toolsContainer = this.contentEl.createDiv({
+      cls: "vault-search-mcp-tools",
+    });
     this.renderActions();
+    this.applyVisibility?.();
+    void this.populateToolPolicies(toolsContainer);
   }
 
-  onClose(): void {
-    this.contentEl.empty();
+
+  private hasStoredOrStagedUrl(): boolean {
+    if (this.stagedHttpUrl !== undefined) {
+      return this.stagedHttpUrl !== null && this.stagedHttpUrl !== "";
+    }
+    if (this.callbacks.hasHttpUrl) {
+      return this.callbacks.hasHttpUrl();
+    }
+    return Boolean(this.working.url);
+  }
+
+  private hasStoredOrStagedEnv(name: string): boolean {
+    if (this.stagedEnvValues.has(name)) {
+      const v = this.stagedEnvValues.get(name);
+      return v !== null && v !== "";
+    }
+    return this.callbacks.hasEnvValue(name);
   }
 
   private renderBasics(): void {
@@ -70,11 +120,15 @@ export class McpServerEditorModal extends Modal {
       const isHttp = this.working.transport === "http";
       stdioFields.toggleClass("is-hidden", isHttp);
       httpFields.toggleClass("is-hidden", !isHttp);
+      if (this.envSectionEl) {
+        this.envSectionEl.toggleClass("is-hidden", isHttp);
+      }
       // The custom-path input belongs to the "직접 지정" mode only.
       const isCustom =
         this.working.cwd !== "vault" && this.working.cwd !== "plugin";
       cwdCustomField.toggleClass("is-hidden", !isCustom);
     };
+    this.applyVisibility = applyTransportVisibility;
 
     new Setting(container)
       .setName("연결 방식")
@@ -161,34 +215,110 @@ export class McpServerEditorModal extends Modal {
           }),
       );
 
-    new Setting(httpFields)
+    const httpSetting = new Setting(httpFields)
       .setName("서버 URL")
       .setDesc(
-        "서비스에서 발급한 전체 URL을 그대로 붙여넣으세요. 토큰이 쿼리 문자열에 포함된 형식이라면 그대로 사용되며 설정 파일에만 저장됩니다(목록에는 호스트까지만 표시).",
-      )
-      .addText((text) =>
-        text
-          .setPlaceholder("https://example.com/mcp?token=...")
-          .setValue(this.working.url)
-          .onChange((value) => {
-            this.working.url = value.slice(0, MAX_MCP_URL_CHARS);
-          }),
+        "서비스에서 발급한 전체 접속 URL을 입력하세요. 전체 URL은 Obsidian 보안 저장소에만 보관되며, 설정 파일과 상태 목록에는 도메인(오리진)만 표시됩니다.",
       );
+
+    const httpWarningEl = httpFields.createDiv({
+      cls: "vault-search-mcp-http-warning is-hidden",
+    });
+    httpWarningEl.setText(
+      "경고: 비-루프백 HTTP 연결은 암호화되지 않습니다. 원격 서버는 HTTPS를 권장합니다.",
+    );
+
+    let urlInputEl: HTMLInputElement | null = null;
+
+    const renderHttpField = (): void => {
+      const stored = this.hasStoredOrStagedUrl();
+      const originDisplay = this.working.url
+        ? ` (표시 오리진: ${toSafeOrigin(this.working.url)})`
+        : "";
+      httpSetting.setDesc(
+        `전체 URL은 보안 저장소에만 보관됩니다. 현재 상태: ${stored ? "저장됨" : "미저장"}${originDisplay}`,
+      );
+      try {
+        const checkUrl = this.stagedHttpUrl || this.working.url;
+        if (checkUrl) {
+          const parsed = new URL(checkUrl);
+          if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+            httpWarningEl.removeClass("is-hidden");
+          } else {
+            httpWarningEl.addClass("is-hidden");
+          }
+        } else {
+          httpWarningEl.addClass("is-hidden");
+        }
+      } catch {
+        httpWarningEl.addClass("is-hidden");
+      }
+    };
+
+    httpSetting.addText((text) => {
+      urlInputEl = text.inputEl;
+      if (text.inputEl) {
+        text.inputEl.type = "password";
+        if (typeof text.inputEl.setAttribute === "function") {
+          text.inputEl.setAttribute("aria-label", "원격 MCP 서버 전체 URL");
+        }
+      }
+      const stored = this.hasStoredOrStagedUrl();
+      text
+        .setPlaceholder(
+          stored
+            ? "•••••••• (변경 시 새 전체 URL 입력)"
+            : "https://example.com/mcp?token=...",
+        )
+        .onChange((value) => {
+          const trimmed = value.trim();
+          if (trimmed) {
+            this.stagedHttpUrl = trimmed;
+            const safe = toSafeOrigin(trimmed);
+            this.working.url = safe;
+          } else {
+            this.stagedHttpUrl = undefined;
+            this.working.url = this.originalSafeOrigin;
+          }
+          renderHttpField();
+        });
+    });
+
+    httpSetting.addButton((button) =>
+      button
+        .setButtonText("URL 삭제")
+        .setWarning()
+        .onClick(() => {
+          this.stagedHttpUrl = "";
+          this.working.url = "";
+          if (urlInputEl) urlInputEl.value = "";
+          renderHttpField();
+          new Notice("원격 URL이 삭제 대기 상태로 설정되었습니다. '저장' 시 완전히 삭제됩니다.", 4000);
+        }),
+    );
+
+    renderHttpField();
     applyTransportVisibility();
   }
 
   private renderEnvSection(): void {
     const section = this.contentEl.createDiv({ cls: "vault-search-mcp-env" });
+    this.envSectionEl = section;
     section.createEl("div", {
       cls: "setting-item-name",
       text: "환경 변수 (값은 보안 저장소에만 저장)",
     });
     const renderRows = (): void => {
-      section.querySelectorAll(".vault-search-mcp-env-row").forEach((row) => row.remove());
+      section
+        .querySelectorAll(".vault-search-mcp-env-row")
+        .forEach((row) => row.remove());
       for (const envName of [...this.working.envNames]) {
         const row = section.createDiv({ cls: "vault-search-mcp-env-row" });
-        row.createEl("span", { text: envName, cls: "vault-search-mcp-env-name" });
-        const stored = this.callbacks.hasEnvValue(envName);
+        row.createEl("span", {
+          text: envName,
+          cls: "vault-search-mcp-env-name",
+        });
+        const stored = this.hasStoredOrStagedEnv(envName);
         row.createEl("span", {
           text: stored ? "저장됨" : "미저장",
           cls: `vault-search-mcp-env-state ${stored ? "is-set" : "is-unset"}`,
@@ -200,23 +330,18 @@ export class McpServerEditorModal extends Modal {
         input.className = "vault-search-mcp-env-input";
         row.appendChild(input);
         const save = row.createEl("button", {
-          text: "저장",
-          attr: { type: "button", "aria-label": `${envName} 값 저장` },
+          text: "입력",
+          attr: { type: "button", "aria-label": `${envName} 값 입력` },
         });
         save.addEventListener("click", () => {
-          void this.callbacks
-            .saveEnvValue(envName, input.value)
-            .then(() => {
-              input.value = "";
-              renderRows();
-              new Notice(`${envName} 값을 보안 저장소에 저장했습니다.`, 4000);
-            })
-            .catch((error: unknown) => {
-              new Notice(
-                error instanceof Error ? error.message : String(error),
-                8000,
-              );
-            });
+          const val = input.value;
+          this.stagedEnvValues.set(envName, val);
+          input.value = "";
+          renderRows();
+          new Notice(
+            `${envName} 값이 준비되었습니다. 모달의 '저장' 버튼을 누르면 보안 저장소에 반영됩니다.`,
+            4000,
+          );
         });
         const remove = row.createEl("button", {
           text: "삭제",
@@ -226,7 +351,7 @@ export class McpServerEditorModal extends Modal {
           this.working.envNames = this.working.envNames.filter(
             (name) => name !== envName,
           );
-          void this.callbacks.removeEnvValue(envName).catch(() => undefined);
+          this.stagedEnvValues.set(envName, null);
           renderRows();
         });
       }
@@ -257,14 +382,14 @@ export class McpServerEditorModal extends Modal {
       });
   }
 
-  private async renderToolPolicies(): Promise<void> {
+  private async populateToolPolicies(wrap: HTMLElement): Promise<void> {
     try {
       const status = await this.editorOwner.refreshMcpStatus();
       const serverStatus = status.servers.find(
         (entry) => entry.id === this.working.id,
       );
       if (!serverStatus || serverStatus.tools === 0) return;
-      const wrap = this.contentEl.createDiv({ cls: "vault-search-mcp-tools" });
+      wrap.empty();
       wrap.createEl("div", {
         cls: "setting-item-name",
         text: `발견된 도구 (${serverStatus.tools}) — 실행 전 승인 여부`,
@@ -311,14 +436,28 @@ export class McpServerEditorModal extends Modal {
       };
 
       const renderRows = (): void => {
-        wrap.querySelectorAll(".vault-search-mcp-tool-row,.vault-search-mcp-tools-all").forEach((row) => row.remove());
+        wrap
+          .querySelectorAll(
+            ".vault-search-mcp-tool-row,.vault-search-mcp-tools-all",
+          )
+          .forEach((row) => row.remove());
         const allRow = wrap.createDiv({ cls: "vault-search-mcp-tools-all" });
-        allRow.createEl("span", { text: "모든 도구", cls: "vault-search-mcp-tool-name" });
+        allRow.createEl("span", {
+          text: "모든 도구",
+          cls: "vault-search-mcp-tool-name",
+        });
         renderSegmented(allRow, allTools, this.majorityPolicy(allTools));
         for (const tool of allTools) {
           const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
-          row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
-          renderSegmented(row, [tool], this.working.toolPolicies[tool] || "ask");
+          row.createEl("span", {
+            text: tool,
+            cls: "vault-search-mcp-tool-name",
+          });
+          renderSegmented(
+            row,
+            [tool],
+            this.working.toolPolicies[tool] || "ask",
+          );
         }
       };
       renderRows();
@@ -342,31 +481,159 @@ export class McpServerEditorModal extends Modal {
     return "ask";
   }
 
+  onClose(): void {
+    if (!this.isSaved && !this.isCommittedEntry && !this.cancelledNewCalled) {
+      this.cancelledNewCalled = true;
+      this.callbacks.onCancelledNew?.();
+    }
+    this.contentEl.empty();
+  }
+
   private renderActions(): void {
     const bar = this.contentEl.createDiv({
       cls: "vault-search-mcp-editor-actions",
     });
+    let saveButton: any = null;
+    let cancelButton: any = null;
+
     new Setting(bar)
-      .addButton((button) =>
+      .addButton((button) => {
+        cancelButton = button;
         button.setButtonText("취소").onClick(() => {
-          if (!this.isCommittedEntry) this.callbacks.onCancelledNew?.();
+          if (this.isSaving) return;
           this.close();
-        }),
-      )
-      .addButton((button) =>
+        });
+      })
+      .addButton((button) => {
+        saveButton = button;
         button
           .setButtonText("저장")
           .setCta()
-          .onClick(() => {
-            const problem = validateMcpServerForm(this.working);
+          .onClick(async () => {
+            if (this.isSaving) return;
+            const problem = validateMcpServerForm(this.working, {
+              hasStoredUrl: this.hasStoredOrStagedUrl(),
+              stagedRawUrl: this.stagedHttpUrl,
+            });
             if (problem) {
               new Notice(problem, 5000);
               return;
             }
-            this.callbacks.onSaved();
-            this.close();
-          }),
+            this.isSaving = true;
+            this.allowCloseAfterSave = false;
+
+            const formElements = Array.from(
+              this.modalEl.querySelectorAll<
+                HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLButtonElement
+              >("input, textarea, select, button"),
+            );
+            const previousDisabledStates = formElements.map((el) => el.disabled);
+            formElements.forEach((el) => {
+              el.disabled = true;
+            });
+
+            try {
+              const workingSnapshot: McpServerSettings = {
+                ...this.working,
+                args: [...this.working.args],
+                envNames: [...this.working.envNames],
+                toolPolicies: { ...this.working.toolPolicies },
+              };
+              const envValues: Record<string, string> = {};
+              const removedEnvNames: string[] = [];
+              for (const [name, val] of this.stagedEnvValues.entries()) {
+                if (val === null || val === "") removedEnvNames.push(name);
+                else envValues[name] = val;
+              }
+              const stagedSnapshot: StagedSecrets = {
+                envValues,
+                removedEnvNames,
+                httpUrl: this.stagedHttpUrl,
+              };
+              if (this.callbacks.onSave) {
+                await this.callbacks.onSave(workingSnapshot, stagedSnapshot);
+              } else {
+                await this.commitStagedSecrets();
+                this.callbacks.onSaved?.();
+              }
+              this.allowCloseAfterSave = true;
+              this.isSaved = true;
+              this.close();
+            } catch (error) {
+              this.isSaving = false;
+              this.allowCloseAfterSave = false;
+              formElements.forEach((el, idx) => {
+                el.disabled = previousDisabledStates[idx] ?? false;
+              });
+              const rawMsg =
+                error instanceof Error ? error.message : String(error);
+              const envVals = Array.from(this.stagedEnvValues.values()).filter(
+                (v): v is string => Boolean(v),
+              );
+              const sanitized = sanitizeSecretMessage(rawMsg, [
+                this.stagedHttpUrl,
+                ...envVals,
+              ]);
+              new Notice(sanitized, 8000);
+            }
+          });
+      });
+  }
+
+  private async commitStagedSecrets(): Promise<void> {
+    try {
+      if (this.callbacks.saveAllSecrets) {
+        const envValues: Record<string, string> = {};
+        const removedEnvNames: string[] = [];
+        for (const [name, val] of this.stagedEnvValues.entries()) {
+          if (val === null || val === "") removedEnvNames.push(name);
+          else envValues[name] = val;
+        }
+        await this.callbacks.saveAllSecrets({
+          envValues,
+          removedEnvNames,
+          httpUrl: this.stagedHttpUrl,
+        });
+        return;
+      }
+
+      if (this.stagedHttpUrl !== undefined) {
+        if (this.stagedHttpUrl === null || this.stagedHttpUrl === "") {
+          if (this.callbacks.removeHttpUrl) {
+            await this.callbacks.removeHttpUrl();
+          }
+        } else {
+          if (this.callbacks.saveHttpUrl) {
+            await this.callbacks.saveHttpUrl(this.stagedHttpUrl);
+          }
+        }
+      }
+      for (const [name, val] of this.stagedEnvValues.entries()) {
+        if (val === null || val === "") {
+          if (this.callbacks.removeEnvValue) {
+            await this.callbacks.removeEnvValue(name);
+          }
+        } else {
+          if (this.callbacks.saveEnvValue) {
+            await this.callbacks.saveEnvValue(name, val);
+          }
+        }
+      }
+    } catch (err) {
+      if (
+        err instanceof Error &&
+        (err.message.startsWith("MCP_SECRET_COMMIT_FAILED:") ||
+          err.message.startsWith("MCP_SECRET_DELETE_FAILED:") ||
+          err.message.startsWith("MCP_SECRET_SNAPSHOT_FAILED:") ||
+          err.message.startsWith("MCP_SECRET_RESTORE_FAILED:") ||
+          err.message.startsWith("MCP_TRANSACTION_FAILED:"))
+      ) {
+        throw err;
+      }
+      throw new Error(
+        `MCP_SECRET_COMMIT_FAILED: 서버(${this.working.id}) 보안 저장소 반영에 실패했습니다.`,
       );
+    }
   }
 
   /** True once onSaved ran (or the entry already exists in the list); a

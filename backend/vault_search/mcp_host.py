@@ -30,6 +30,10 @@ from .agent_tools import (
 from .config import McpServerConfig
 
 try:  # The MCP SDK is optional at import time so unit tests can stub it.
+    import importlib.metadata
+
+    if importlib.metadata.version("mcp") != "1.28.1":
+        raise ImportError("mcp version is not 1.28.1")
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import get_default_environment, stdio_client
     from mcp.client.streamable_http import streamablehttp_client
@@ -73,6 +77,7 @@ class _ServerRuntime:
     tool_schemas: dict[str, dict[str, Any]] = field(default_factory=dict)
     tool_descriptions: dict[str, str] = field(default_factory=dict)
     ready: asyncio.Event | None = None
+    generation: int = 0
 
 
 class McpHost:
@@ -96,6 +101,7 @@ class McpHost:
         self._lock = threading.RLock()
         self._servers: dict[str, _ServerRuntime] = {}
         self._secrets: dict[str, dict[str, str]] = {}
+        self._http_urls: dict[str, str] = {}
         self._pending_futures: dict[str, asyncio.Future[Any]] = {}
         self._active_tasks: dict[str, asyncio.Task[Any]] = {}
         self._tasks_lock = threading.Lock()
@@ -139,6 +145,7 @@ class McpHost:
             remaining = deadline_total - time.monotonic()
             if remaining <= 0:
                 break
+            runtime.generation += 1
             future = asyncio.run_coroutine_threadsafe(
                 self._shutdown_server(runtime), loop
             )
@@ -148,24 +155,19 @@ class McpHost:
                 future.result(timeout=SHUTDOWN_PER_SERVER_SECONDS + 2.0)
             except Exception:
                 pass
-        # Anything still alive after the cooperative phase is force-cancelled;
-        # cancelling the session task tears down the async-with stack, which
-        # terminates the child process.
-        remaining_tasks = [
-            runtime.session_task
-            for runtime in runtimes
-            if runtime.session_task is not None and not runtime.session_task.done()
-        ]
-        if remaining_tasks:
-
-            def force_cancel() -> None:
-                for task in remaining_tasks:
+        # Cancel any leftover tasks in the loop before shutting down
+        def force_cancel_all() -> None:
+            for task in asyncio.all_tasks(loop):
+                if not task.done() and task is not asyncio.current_task():
                     task.cancel()
 
-            loop.call_soon_threadsafe(force_cancel)
+        loop.call_soon_threadsafe(force_cancel_all)
         loop.call_soon_threadsafe(loop.stop)
         if self._thread is not None:
             self._thread.join(timeout=3)
+        with self._lock:
+            self._secrets.clear()
+            self._http_urls.clear()
         if self._devnull is not None:
             try:
                 self._devnull.close()
@@ -195,23 +197,37 @@ class McpHost:
             with self._lock:
                 runtime = self._servers.pop(rid, None)
                 self._secrets.pop(rid, None)
+                self._http_urls.pop(rid, None)
             if runtime is not None:
                 self._stop_runtime(runtime)
 
         summaries: list[dict[str, Any]] = []
         for server in servers:
             previous = old_by_id.get(server.id)
+            if previous is not None and previous.transport != server.transport:
+                with self._lock:
+                    if server.transport == "http":
+                        self._secrets.pop(server.id, None)
+                    elif server.transport == "stdio":
+                        self._http_urls.pop(server.id, None)
             unchanged = (
                 previous is not None
+                and previous.transport == server.transport
                 and previous.command == server.command
                 and previous.args == server.args
                 and previous.cwd == server.cwd
+                and previous.url == server.url
                 and previous.enabled == server.enabled
                 and previous.env_names == server.env_names
             )
-            missing_secret = bool(server.env_names) and not set(
-                server.env_names
-            ).issubset(set(self._secrets.get(server.id, {}).keys()))
+            if server.transport == "http":
+                missing_secret = not bool(self._http_urls.get(server.id))
+                awaiting_message = "원격 URL이 저장되지 않았습니다"
+            else:
+                missing_secret = bool(server.env_names) and not set(
+                    server.env_names
+                ).issubset(set(self._secrets.get(server.id, {}).keys()))
+                awaiting_message = "환경 변수 값이 저장되지 않았습니다"
             runtime = self._servers.get(server.id)
             if runtime is None:
                 runtime = _ServerRuntime(config=server)
@@ -226,7 +242,7 @@ class McpHost:
             if missing_secret:
                 self._stop_runtime(runtime)
                 runtime.state = SERVER_STATE_AWAITING_SECRET
-                runtime.message = "환경 변수 값이 저장되지 않았습니다"
+                runtime.message = awaiting_message
                 summaries.append(self._summary(runtime))
                 continue
             if unchanged and runtime.state == SERVER_STATE_CONNECTED:
@@ -238,44 +254,72 @@ class McpHost:
         return {"servers": summaries}
 
     def apply_secrets(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Receive per-server env values over the authenticated protocol.
+        """Receive per-server env values and HTTP URLs over the authenticated protocol.
 
-        Allowlist rules (fix §5):
-        - every server id must exist in the current configuration, otherwise
-          the whole payload is rejected — arbitrary ids must never be able to
-          pre-seed env values for future servers;
-        - per known server, env names outside that server's ``env_names`` are
+        Allowlist rules:
+        - every server id in 'servers' or 'http_urls' must exist in the current
+          configuration, otherwise the whole payload is rejected;
+        - 'http_urls' entries must correspond to transport='http' servers;
+        - 'servers' entries must correspond to transport='stdio' servers;
+        - per known stdio server, env names outside that server's ``env_names`` are
           isolated (dropped and reported by name; values are never echoed);
-        - each listed server's stored mapping is REPLACED wholesale, so a
-          snapshot without a previously-sent value performs the deletion.
+        - each listed server's stored mapping or URL is REPLACED wholesale;
+        - secret values and full URLs are never echoed in responses or logs.
         """
         servers = payload.get("servers")
-        if not isinstance(servers, dict):
-            raise ValueError("payload must contain a 'servers' object")
+        http_urls = payload.get("http_urls")
+        if servers is not None and not isinstance(servers, dict):
+            raise ValueError("'servers' must be an object")
+        if http_urls is not None and not isinstance(http_urls, dict):
+            raise ValueError("'http_urls' must be an object")
+        if servers is None and http_urls is None:
+            raise ValueError("payload must contain 'servers' and/or 'http_urls'")
+
+        servers_dict = servers if isinstance(servers, dict) else {}
+        http_urls_dict = http_urls if isinstance(http_urls, dict) else {}
+
         applied = 0
         rejected_names: list[dict[str, str]] = []
         plan_launch: list[_ServerRuntime] = []
-        plan_await: list[_ServerRuntime] = []
+        plan_await: list[tuple[_ServerRuntime, str]] = []
+
         with self._lock:
             configured = {sid: rt.config for sid, rt in self._servers.items()}
-            unknown = sorted({str(sid) for sid in servers} - set(configured))
+            all_incoming_ids = set(servers_dict.keys()) | set(http_urls_dict.keys())
+            unknown = sorted({str(sid) for sid in all_incoming_ids} - set(configured))
             if unknown:
                 raise ValueError(f"unknown server id(s): {', '.join(unknown)}")
-            decisions: list[tuple[_ServerRuntime, McpServerConfig, dict[str, str], bool]] = []
-            for server_id, values in servers.items():
+
+            # Pre-validation phase (all-or-nothing): validate types and transport compatibility
+            for server_id, values in servers_dict.items():
+                config = configured[str(server_id)]
+                if config.transport != "stdio":
+                    raise ValueError(
+                        f"server {config.id} is an HTTP transport server and cannot accept stdio env values"
+                    )
                 if not isinstance(values, dict):
-                    continue
+                    raise ValueError(f"env values for server {config.id} must be an object")
+                for name, value in values.items():
+                    if not isinstance(name, str) or not isinstance(value, str):
+                        raise ValueError(f"invalid env mapping for server {config.id}")
+
+            for server_id, url in http_urls_dict.items():
+                config = configured[str(server_id)]
+                if config.transport != "http":
+                    raise ValueError(
+                        f"server {config.id} is a stdio transport server and cannot accept http url"
+                    )
+                if not isinstance(url, str):
+                    raise ValueError(f"http url for server {config.id} must be a string")
+
+            stdio_decisions: list[tuple[_ServerRuntime, McpServerConfig, dict[str, str], bool]] = []
+            for server_id, values in servers_dict.items():
                 config = configured[str(server_id)]
                 allowed = set(config.env_names)
                 cleaned: dict[str, str] = {}
                 for name, value in values.items():
-                    if not isinstance(name, str) or not isinstance(value, str):
-                        continue
                     bounded_name = name[:128]
                     if bounded_name not in allowed:
-                        # Isolate: an unregistered env name (e.g. a provider
-                        # key such as OPENAI_API_KEY) never reaches storage,
-                        # so it cannot be injected into any child environment.
                         rejected_names.append(
                             {"server_id": config.id, "name": bounded_name}
                         )
@@ -285,49 +329,83 @@ class McpHost:
                 old = self._secrets.get(config.id)
                 self._secrets[config.id] = cleaned
                 runtime = self._servers[config.id]
-                decisions.append(
+                stdio_decisions.append(
                     (runtime, config, cleaned, old != cleaned)
                 )
+
+            http_decisions: list[tuple[_ServerRuntime, McpServerConfig, str, bool]] = []
+            for server_id, url in http_urls_dict.items():
+                config = configured[str(server_id)]
+                bounded_url = url[:2048].strip()
+                old_url = self._http_urls.get(config.id)
+                self._http_urls[config.id] = bounded_url
+                if bounded_url:
+                    applied += 1
+                runtime = self._servers[config.id]
+                http_decisions.append(
+                    (runtime, config, bounded_url, old_url != bounded_url)
+                )
+
             handled = {
                 id(runtime)
-                for runtime, _config, _cleaned, changed in decisions
+                for runtime, _config, _cleaned, changed in stdio_decisions
+                if changed
+            } | {
+                id(runtime)
+                for runtime, _config, _url, changed in http_decisions
                 if changed
             }
-            for runtime, config, cleaned, changed in decisions:
+
+            for runtime, config, cleaned, changed in stdio_decisions:
                 if not changed or not config.enabled or not self.enabled:
                     continue
                 missing_secret = bool(config.env_names) and not set(
                     config.env_names
                 ).issubset(set(cleaned.keys()))
                 if missing_secret:
-                    plan_await.append(runtime)
+                    plan_await.append((runtime, "환경 변수 값이 저장되지 않았습니다"))
                 elif runtime.state in {
                     SERVER_STATE_CONNECTED,
                     SERVER_STATE_CONNECTING,
                     SERVER_STATE_AWAITING_SECRET,
                     SERVER_STATE_ERROR,
                 }:
-                    # Rotation/deletion touches ONLY this server; every other
-                    # session stays untouched. An error-state server whose
-                    # complete snapshot changed gets a fresh launch instead of
-                    # staying stuck in error until a full reconfigure.
                     plan_launch.append(runtime)
-            # Awaiting servers whose values are now complete may connect.
+
+            for runtime, config, bounded_url, changed in http_decisions:
+                if not changed or not config.enabled or not self.enabled:
+                    continue
+                if not bounded_url:
+                    plan_await.append((runtime, "원격 URL이 저장되지 않았습니다"))
+                elif runtime.state in {
+                    SERVER_STATE_CONNECTED,
+                    SERVER_STATE_CONNECTING,
+                    SERVER_STATE_AWAITING_SECRET,
+                    SERVER_STATE_ERROR,
+                }:
+                    plan_launch.append(runtime)
+
+            # Awaiting servers whose values or URLs are now complete may connect.
             for runtime in self._servers.values():
                 if id(runtime) in handled or runtime in plan_launch:
                     continue
-                if (
-                    runtime.state == SERVER_STATE_AWAITING_SECRET
-                    and set(runtime.config.env_names).issubset(
-                        set(self._secrets.get(runtime.config.id, {}).keys())
-                    )
-                ):
-                    plan_launch.append(runtime)
+                if not runtime.config.enabled or not self.enabled:
+                    continue
+                if runtime.state == SERVER_STATE_AWAITING_SECRET:
+                    if runtime.config.transport == "http":
+                        if bool(self._http_urls.get(runtime.config.id)):
+                            plan_launch.append(runtime)
+                    else:
+                        if set(runtime.config.env_names).issubset(
+                            set(self._secrets.get(runtime.config.id, {}).keys())
+                        ):
+                            plan_launch.append(runtime)
+
         # Execute outside the lock: stop/launch block on the loop thread.
-        for runtime in plan_await:
+        for runtime, msg in plan_await:
             self._stop_runtime(runtime)
             runtime.state = SERVER_STATE_AWAITING_SECRET
-            runtime.message = "환경 변수 값이 저장되지 않았습니다"
+            runtime.message = msg
         for runtime in plan_launch:
             runtime.message = None
             self._launch_session(runtime)
@@ -362,19 +440,34 @@ class McpHost:
     def _launch_session(self, runtime: _ServerRuntime) -> None:
         assert self._loop is not None
         self._stop_runtime(runtime)
+        runtime.generation += 1
+        target_gen = runtime.generation
         runtime.state = SERVER_STATE_CONNECTING
         runtime.message = None
+        runtime.ready = None
         loop = self._loop
 
         def spawn() -> None:
+            if (
+                runtime.generation != target_gen
+                or runtime.state == SERVER_STATE_DISABLED
+                or self._closed
+            ):
+                return
             runtime.ready = asyncio.Event()
             runtime.stop_event = asyncio.Event()
-            runtime.session_task = loop.create_task(self._session_main(runtime))
+            runtime.session_task = loop.create_task(
+                self._session_main(runtime, target_gen)
+            )
 
         loop.call_soon_threadsafe(spawn)
 
     def _stop_runtime(self, runtime: _ServerRuntime) -> None:
+        runtime.generation += 1
         if self._loop is None or runtime.session_task is None:
+            runtime.session = None
+            runtime.tool_schemas = {}
+            runtime.tool_descriptions = {}
             return
         loop = self._loop
         stop_event = runtime.stop_event
@@ -383,17 +476,22 @@ class McpHost:
         def request_stop() -> None:
             if stop_event is not None:
                 stop_event.set()
-
-        loop.call_soon_threadsafe(request_stop)
-        try:
-            # Wait briefly for a clean context-manager teardown.
-            concurrent = asyncio.run_coroutine_threadsafe(
-                self._wait_task(task, SHUTDOWN_PER_SERVER_SECONDS), loop
-            )
-            concurrent.result(timeout=SHUTDOWN_PER_SERVER_SECONDS + 1.5)
-        except Exception:
             if not task.done():
-                loop.call_soon_threadsafe(task.cancel)
+                task.cancel()
+
+        if threading.current_thread() is self._thread:
+            request_stop()
+        else:
+            loop.call_soon_threadsafe(request_stop)
+            try:
+                # Wait briefly for a clean context-manager teardown.
+                concurrent = asyncio.run_coroutine_threadsafe(
+                    self._wait_task(task, SHUTDOWN_PER_SERVER_SECONDS), loop
+                )
+                concurrent.result(timeout=SHUTDOWN_PER_SERVER_SECONDS + 1.5)
+            except Exception:
+                if not task.done():
+                    loop.call_soon_threadsafe(task.cancel)
         runtime.session_task = None
         runtime.session = None
         runtime.tool_schemas = {}
@@ -405,23 +503,35 @@ class McpHost:
         except Exception:
             pass
 
-    async def _session_main(self, runtime: _ServerRuntime) -> None:
+    async def _session_main(
+        self, runtime: _ServerRuntime, generation: int
+    ) -> None:
+        if runtime.generation != generation:
+            return
         config = runtime.config
         stop_event = runtime.stop_event
         assert stop_event is not None
         try:
             if not MCP_SDK_AVAILABLE:
-                raise RuntimeError("MCP SDK is not installed in this runtime")
+                raise RuntimeError("MCP_SDK_UNAVAILABLE_OR_INCOMPATIBLE")
             client_cm = self._open_client_connection(config)
             # stdio_client yields (read, write); streamablehttp_client yields
             # (read, write, get_session_id) — index access covers both.
             async with client_cm as streams:
+                if runtime.generation != generation:
+                    return
                 read, write = streams[0], streams[1]
                 async with ClientSession(read, write) as session:
+                    if runtime.generation != generation:
+                        return
                     await asyncio.wait_for(
                         session.initialize(), timeout=CONNECT_TIMEOUT_SECONDS
                     )
-                    await self._reload_tools(runtime, session)
+                    if runtime.generation != generation:
+                        return
+                    await self._reload_tools(runtime, session, generation)
+                    if runtime.generation != generation:
+                        return
                     runtime.session = session
                     runtime.state = SERVER_STATE_CONNECTED
                     runtime.message = None
@@ -431,20 +541,29 @@ class McpHost:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            runtime.state = SERVER_STATE_ERROR
-            runtime.message = f"{type(exc).__name__}: {exc}"
-            if runtime.ready is not None:
-                runtime.ready.set()
+            if runtime.generation == generation:
+                runtime.state = SERVER_STATE_ERROR
+                runtime.message = _format_safe_exception_message(exc)
+                if runtime.ready is not None:
+                    runtime.ready.set()
+        finally:
+            if runtime.generation == generation:
+                runtime.session = None
+                if runtime.state == SERVER_STATE_CONNECTED:
+                    runtime.state = SERVER_STATE_DISABLED
 
     def _open_client_connection(self, config: McpServerConfig) -> Any:
         """Return the async context manager owning the transport.
 
-        HTTP servers connect straight to their URL; a hostile remote can no
-        more see our environment than a hostile local child could (plan §15.4),
-        and stderr is discarded for the same reason.
+        HTTP servers connect straight to their secret URL stored in memory;
+        a hostile remote can no more see our environment than a hostile
+        local child could (plan §15.4), and stderr is discarded for the same reason.
         """
         if config.transport == "http":
-            return streamablehttp_client(config.url)
+            url = self._http_urls.get(config.id)
+            if not url:
+                raise RuntimeError("remote HTTP URL secret is missing")
+            return streamablehttp_client(url)
         cwd = self._cwd_path(config)
         if cwd is None:
             raise RuntimeError(f"working directory is unavailable: {config.cwd}")
@@ -460,10 +579,19 @@ class McpHost:
         # could echo back the very env values we passed it (plan §15.4).
         return stdio_client(params, errlog=self._devnull)
 
-    async def _reload_tools(self, runtime: _ServerRuntime, session: Any) -> None:
+    async def _reload_tools(
+        self, runtime: _ServerRuntime, session: Any, generation: int
+    ) -> None:
         result = await asyncio.wait_for(
             session.list_tools(), timeout=LIST_TOOLS_TIMEOUT_SECONDS
         )
+        server_id = runtime.config.id
+        if (
+            self._servers.get(server_id) is not runtime
+            or runtime.generation != generation
+            or (runtime.session is not None and runtime.session is not session)
+        ):
+            return
         schemas: dict[str, dict[str, Any]] = {}
         descriptions: dict[str, str] = {}
         for tool in getattr(result, "tools", []) or []:
@@ -472,7 +600,9 @@ class McpHost:
                 continue
             try:
                 # SDK 1.x exposes camelCase inputSchema; 2.x input_schema.
-                raw_schema = _result_attr(tool, "input_schema", "inputSchema", {})
+                raw_schema = _result_attr(
+                    tool, "input_schema", "inputSchema", {}
+                )
                 schema = validate_input_schema(raw_schema)
             except ValueError:
                 # Malformed schema isolates the single tool, not the server.
@@ -481,8 +611,13 @@ class McpHost:
             description = _result_attr(tool, "description", "description")
             if isinstance(description, str):
                 descriptions[name] = description[:2000]
-        runtime.tool_schemas = schemas
-        runtime.tool_descriptions = descriptions
+        if (
+            self._servers.get(server_id) is runtime
+            and runtime.generation == generation
+            and (runtime.session is None or runtime.session is session)
+        ):
+            runtime.tool_schemas = schemas
+            runtime.tool_descriptions = descriptions
 
     # ------------------------------------------------------------------
     # Public operations
@@ -530,22 +665,18 @@ class McpHost:
 
     async def _shutdown_server(self, runtime: _ServerRuntime) -> None:
         """Cooperative teardown: signal the session loop, then force-cancel."""
+        runtime.generation += 1
         stop_event = runtime.stop_event
         task = runtime.session_task
         if stop_event is not None:
             stop_event.set()
         if task is not None and not task.done():
+            task.cancel()
             try:
                 await asyncio.wait_for(
                     asyncio.shield(task), timeout=SHUTDOWN_PER_SERVER_SECONDS
                 )
-            except asyncio.TimeoutError:
-                task.cancel()
-                try:
-                    await asyncio.wait_for(task, timeout=1.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
-                    pass
-            except Exception:
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                 pass
         runtime.session = None
         runtime.session_task = None
@@ -560,26 +691,37 @@ class McpHost:
         """Force re-listing tools from every connected session."""
         if self._loop is None:
             return {"refreshed": []}
-        connected = [
-            runtime
-            for runtime in self._servers.values()
-            if runtime.state == SERVER_STATE_CONNECTED and runtime.session
+        connected_snapshots: list[tuple[_ServerRuntime, Any, int]] = [
+            (runtime, runtime.session, runtime.generation)
+            for runtime in list(self._servers.values())
+            if runtime.state == SERVER_STATE_CONNECTED and runtime.session is not None
         ]
 
         async def reload_all() -> None:
-            for runtime in connected:
+            for runtime, session, generation in connected_snapshots:
+                server_id = runtime.config.id
                 try:
-                    await self._reload_tools(runtime, runtime.session)
+                    await self._reload_tools(
+                        runtime, session, generation
+                    )
                 except Exception as exc:
-                    runtime.message = f"{type(exc).__name__}: {exc}"
+                    if (
+                        self._servers.get(server_id) is runtime
+                        and runtime.generation == generation
+                        and runtime.session is session
+                        and runtime.state == SERVER_STATE_CONNECTED
+                    ):
+                        runtime.message = _format_safe_exception_message(exc)
 
         future = asyncio.run_coroutine_threadsafe(reload_all(), self._loop)
         try:
-            future.result(timeout=LIST_TOOLS_TIMEOUT_SECONDS * len(connected) + 5)
+            future.result(
+                timeout=LIST_TOOLS_TIMEOUT_SECONDS * len(connected_snapshots) + 5
+            )
         except Exception:
             pass
         return {
-            "refreshed": [runtime.config.id for runtime in connected],
+            "refreshed": [runtime.config.id for runtime, _, _ in connected_snapshots],
             **self.status(),
         }
 
@@ -748,8 +890,12 @@ class McpHost:
     # Status
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _summary(runtime: _ServerRuntime) -> dict[str, Any]:
+    def _summary(self, runtime: _ServerRuntime) -> dict[str, Any]:
+        has_url_secret = (
+            bool(self._http_urls.get(runtime.config.id))
+            if runtime.config.transport == "http"
+            else False
+        )
         return {
             "id": runtime.config.id,
             "name": runtime.config.name,
@@ -757,13 +903,14 @@ class McpHost:
             "message": runtime.message,
             "enabled": runtime.config.enabled,
             "transport": runtime.config.transport,
-            # Query strings frequently carry issued tokens; only the origin
-            # plus path ever reaches a status response (plan §15.4).
+            # Remote endpoints only expose safe origins (scheme://host[:port]);
+            # path, userinfo, queries, and fragments are never exposed.
             "endpoint": (
                 McpHost._safe_endpoint(runtime.config.url)
                 if runtime.config.transport == "http"
                 else runtime.config.command
             ),
+            "has_url_secret": has_url_secret,
             "command": (
                 "" if runtime.config.transport == "http" else runtime.config.command
             ),
@@ -775,13 +922,25 @@ class McpHost:
 
     @staticmethod
     def _safe_endpoint(url: str) -> str:
-        from urllib.parse import urlsplit
-
-        parts = urlsplit(url)
-        if not parts.netloc:
+        if not url or not isinstance(url, str):
             return ""
-        path = parts.path.rstrip("/")
-        return f"{parts.scheme}://{parts.netloc}{path}"
+        try:
+            from urllib.parse import urlsplit
+
+            parts = urlsplit(url.strip())
+            if not parts.scheme or not parts.hostname:
+                return ""
+            if parts.scheme.lower() not in {"http", "https"}:
+                return ""
+            port_part = f":{parts.port}" if parts.port is not None else ""
+            host = (
+                f"[{parts.hostname}]"
+                if ":" in parts.hostname and not parts.hostname.startswith("[")
+                else parts.hostname
+            )
+            return f"{parts.scheme.lower()}://{host}{port_part}"
+        except Exception:
+            return ""
 
     def server_summary(self, server_id: str) -> dict[str, Any] | None:
         runtime = self._servers.get(server_id)
@@ -798,17 +957,40 @@ class McpHost:
     def status(self) -> dict[str, Any]:
         with self._lock:
             servers = [self._summary(rt) for rt in self._servers.values()]
+        problems: list[str] = []
+        if not MCP_SDK_AVAILABLE:
+            problems.append("MCP_SDK_UNAVAILABLE_OR_INCOMPATIBLE")
         return {
             "enabled": self.enabled,
             "servers": servers,
             "connected": sum(
                 1 for summary in servers if summary["state"] == SERVER_STATE_CONNECTED
             ),
+            "config_problems": problems,
         }
 
     def shutdown_children_nowait(self) -> None:
         """Best-effort synchronous teardown used by tests."""
         self.close()
+
+
+def _format_safe_exception_message(exc: Exception) -> str:
+    exc_type = type(exc).__name__
+    raw_msg = f"{exc_type}: {exc}"
+    return _redact_url_in_message(raw_msg)
+
+
+def _redact_url_in_message(message: str) -> str:
+    if not message or not isinstance(message, str):
+        return "" if message is None else str(message)
+    import re
+
+    def _replace_url(match: re.Match[str]) -> str:
+        raw_url = match.group(0)
+        safe = McpHost._safe_endpoint(raw_url)
+        return safe if safe else "[redacted-url]"
+
+    return re.sub(r"(?i)\bhttps?://[^\s\"'`<>]*", _replace_url, message)
 
 
 __all__ = [

@@ -6,6 +6,12 @@ import socket
 import uuid
 from typing import Any
 
+from vault_search.config import (
+    MAX_ENV_NAMES_PER_SERVER as MAX_MCP_SERVER_ENV_COUNT,
+    MAX_MCP_SERVERS as MAX_MCP_SERVER_COUNT,
+    MAX_MCP_URL_CHARS,
+)
+
 PROTOCOL_VERSION = 1
 MAX_MESSAGE_BYTES = 2 * 1024 * 1024
 
@@ -131,31 +137,85 @@ def validate_answer_cancel_params(params: dict[str, Any]) -> dict[str, Any]:
     return {"run_id": run_id.strip()}
 
 
+def _validate_server_id(server_id: Any) -> str:
+    if not isinstance(server_id, str) or not server_id or len(server_id) > 64:
+        raise ProtocolError("server id must be a string of 1-64 characters")
+    if any(ord(c) < 32 or ord(c) == 127 for c in server_id):
+        raise ProtocolError("server id contains invalid control characters")
+    return server_id
+
+
+def _validate_mcp_http_url(url: Any) -> str:
+    if not isinstance(url, str):
+        raise ProtocolError("http url must be a string")
+    if not url:
+        return ""
+    if len(url) > MAX_MCP_URL_CHARS:
+        raise ProtocolError(f"http url must be at most {MAX_MCP_URL_CHARS} characters")
+    if any(ord(c) <= 32 or ord(c) == 127 for c in url):
+        raise ProtocolError("http url contains invalid whitespace or control characters")
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        if parts.scheme.lower() not in {"http", "https"} or not parts.netloc or not parts.hostname:
+            raise ProtocolError("http url must be an absolute http or https URL with a hostname")
+    except Exception as exc:
+        if isinstance(exc, ProtocolError):
+            raise
+        raise ProtocolError("http url is malformed") from exc
+    return url
+
+
 def validate_mcp_secrets_params(params: dict[str, Any]) -> dict[str, Any]:
     """Validate the one-shot secret handoff (values never logged)."""
     servers = params.get("servers")
-    if not isinstance(servers, dict):
-        raise ProtocolError("'servers' object is required")
-    total = 0
-    cleaned: dict[str, dict[str, str]] = {}
-    for server_id, values in servers.items():
-        sid = str(server_id)
-        if len(sid) > 64:
-            raise ProtocolError("server id too long")
+    http_urls = params.get("http_urls")
+    if servers is None and http_urls is None:
+        raise ProtocolError("'servers' or 'http_urls' object is required")
+    if servers is not None and not isinstance(servers, dict):
+        raise ProtocolError("'servers' must be an object")
+    if http_urls is not None and not isinstance(http_urls, dict):
+        raise ProtocolError("'http_urls' must be an object")
+
+    servers_dict = servers if isinstance(servers, dict) else {}
+    http_urls_dict = http_urls if isinstance(http_urls, dict) else {}
+
+    if len(servers_dict) > MAX_MCP_SERVER_COUNT:
+        raise ProtocolError(f"servers count exceeds limit of {MAX_MCP_SERVER_COUNT}")
+    if len(http_urls_dict) > MAX_MCP_SERVER_COUNT:
+        raise ProtocolError(f"http_urls count exceeds limit of {MAX_MCP_SERVER_COUNT}")
+    if len(set(servers_dict.keys()) | set(http_urls_dict.keys())) > MAX_MCP_SERVER_COUNT:
+        raise ProtocolError(f"total server count exceeds limit of {MAX_MCP_SERVER_COUNT}")
+
+    cleaned_servers: dict[str, dict[str, str]] = {}
+    for server_id, values in servers_dict.items():
+        sid = _validate_server_id(server_id)
         if not isinstance(values, dict):
             raise ProtocolError("each server must map env names to values")
+        if len(values) > MAX_MCP_SERVER_ENV_COUNT:
+            raise ProtocolError(f"env count for server exceeds limit of {MAX_MCP_SERVER_ENV_COUNT}")
         entry: dict[str, str] = {}
         for name, value in values.items():
             if not isinstance(name, str) or not name or len(name) > MAX_SECRET_NAME_CHARS:
                 raise ProtocolError("env name must be 1-128 characters")
+            if any(ord(c) < 32 or ord(c) == 127 for c in name):
+                raise ProtocolError("env name contains invalid control characters")
             if not isinstance(value, str) or len(value) > MAX_SECRET_VALUE_CHARS:
                 raise ProtocolError("env value must be a string of at most 8 KiB")
-            total += len(name.encode()) + len(value.encode())
             entry[name[:MAX_SECRET_NAME_CHARS]] = value[:MAX_SECRET_VALUE_CHARS]
-        cleaned[sid] = entry
-    if total > MAX_SECRET_PAYLOAD_BYTES:
+        cleaned_servers[sid] = entry
+
+    cleaned_http_urls: dict[str, str] = {}
+    for server_id, url in http_urls_dict.items():
+        sid = _validate_server_id(server_id)
+        cleaned_http_urls[sid] = _validate_mcp_http_url(url)
+
+    cleaned = {"servers": cleaned_servers, "http_urls": cleaned_http_urls}
+    encoded_bytes = len(json.dumps(cleaned, ensure_ascii=False).encode("utf-8"))
+    if encoded_bytes > MAX_SECRET_PAYLOAD_BYTES:
         raise ProtocolError("secret payload exceeds 32 KiB")
-    return {"servers": cleaned}
+    return cleaned
 
 
 class ProtocolError(RuntimeError):
@@ -212,6 +272,7 @@ _IDEMPOTENT_METHODS = frozenset(
         "heartbeat",
         "mcp_status",
         "mcp_refresh",
+        "set_mcp_secrets",
         "skills_status",
         "skills_refresh",
         "search",

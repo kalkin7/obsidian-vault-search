@@ -35,7 +35,7 @@ export interface McpServerSettings {
   args: string[];
   /** "vault" | "plugin" | absolute directory chosen explicitly by the user. */
   cwd: string;
-  /** Remote endpoint for http servers (stdio servers ignore this). */
+  /** Safe origin (scheme://host[:port]) for http servers (full URLs live in secret storage). */
   url: string;
   envNames: string[];
   toolPolicies: Record<string, McpToolPolicy>;
@@ -123,6 +123,8 @@ export interface VaultSearchSettings {
   skillRoots: SkillRootSettings[];
   /** Canonical skill ids ("root-id:normalized-name") the user enabled. */
   enabledSkills: string[];
+  /** Migration marker: true once legacy v0.1.59~0.1.63 HTTP URLs have been migrated to secretStorage. */
+  mcpHttpUrlsMigrated?: boolean;
   settingsVersion?: number;
 }
 
@@ -305,8 +307,10 @@ export interface McpServerStatus {
   enabled: boolean;
   /** Additive since 0.1.59: "stdio" (default when absent) or "http". */
   transport?: "stdio" | "http";
-  /** stdio: command; http: origin+path only — query strings are stripped. */
+  /** stdio: command; http: safe origin only (scheme://host[:port]). */
   endpoint?: string;
+  /** True when a secret full URL is held in backend memory for this HTTP server. */
+  has_url_secret?: boolean;
   command: string;
   tools: number;
   tool_names?: string[];

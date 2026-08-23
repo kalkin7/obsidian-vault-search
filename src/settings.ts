@@ -114,6 +114,7 @@ export function cloneSettings(
     })),
     skillRoots: (settings.skillRoots || []).map((root) => ({ ...root })),
     enabledSkills: [...(settings.enabledSkills || [])],
+    mcpHttpUrlsMigrated: settings.mcpHttpUrlsMigrated,
   };
 }
 

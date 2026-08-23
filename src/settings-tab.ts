@@ -16,6 +16,10 @@ type SettingsTabId = "general" | "answer" | "agent" | "search";
 export class VaultSearchSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = "general";
   private providerModelSelections: Partial<Record<LLMProviderId, string>> = {};
+  private modelSelectionOpSeq = 0;
+  private latestModelSelectionOp: Partial<Record<LLMProviderId, number>> = {};
+  private favoriteOpSeq = 0;
+  private latestFavoriteOp: Record<string, number> = {};
   /** Status line created by display(); updated in place on backend events so
    *  the tab never re-renders (which would reset the scroll position) while
    *  the user is editing settings. */
@@ -217,6 +221,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       })
       .addButton((button) =>
         button.setButtonText("테스트").onClick(async () => {
+          const targetProvider = draft.answerProvider;
+          const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
           const key = apiKeyInput?.value.trim() || savedApiKey || "";
           if (!key) {
             new Notice("저장된 키가 없습니다.");
@@ -225,16 +231,16 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           button.setDisabled(true);
           try {
             const status = await validateProviderApiKey(
-              draft.answerProvider,
+              targetProvider,
               key,
             );
             let message: string;
             if (status === "valid") {
-              message = `${answerProvider.name} 키가 유효합니다.`;
+              message = `${targetProviderInfo.name} 키가 유효합니다.`;
             } else if (status === "invalid") {
-              message = `${answerProvider.name}가 이 키를 거부했습니다. 키를 다시 확인해 주세요.`;
+              message = `${targetProviderInfo.name}가 이 키를 거부했습니다. 키를 다시 확인해 주세요.`;
             } else {
-              message = `${answerProvider.name} 키 인증을 확인할 수 없습니다 (네트워크/provider 상태). 저장은 가능합니다.`;
+              message = `${targetProviderInfo.name} 키 인증을 확인할 수 없습니다 (네트워크/provider 상태). 저장은 가능합니다.`;
             }
             new Notice(message, 8000);
           } catch (error) {
@@ -249,14 +255,16 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           .setButtonText("저장")
           .setCta()
           .onClick(async () => {
+            const targetProvider = draft.answerProvider;
+            const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
             const value = apiKeyInput?.value.trim() || "";
             if (!value) {
               new Notice("저장할 API 키를 입력해 주세요.");
               return;
             }
             try {
-              await this.owner.saveProviderApiKey(draft.answerProvider, value);
-              new Notice(`${answerProvider.name} API 키를 저장했습니다.`);
+              await this.owner.saveProviderApiKey(targetProvider, value);
+              new Notice(`${targetProviderInfo.name} API 키를 저장했습니다.`);
               this.display();
             } catch (error) {
               this.showError(error);
@@ -265,9 +273,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       )
       .addButton((button) =>
         button.setButtonText("삭제").onClick(async () => {
+          const targetProvider = draft.answerProvider;
+          const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
           try {
-            await this.owner.saveProviderApiKey(draft.answerProvider, "");
-            new Notice(`${answerProvider.name} API 키를 삭제했습니다.`);
+            await this.owner.saveProviderApiKey(targetProvider, "");
+            new Notice(`${targetProviderInfo.name} API 키를 삭제했습니다.`);
             this.display();
           } catch (error) {
             this.showError(error);
@@ -312,15 +322,40 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           text: model,
           attr: { type: "button", title: model },
         });
-        name.addEventListener("click", () => {
-          draft.answerModel = model;
-          this.providerModelSelections[draft.answerProvider] = model;
-          // Persist immediately (hot) so the choice survives plugin updates
-          // without needing "설정 적용".
-          void this.owner.setAnswerModel(draft.answerProvider, model, {
-            notify: false,
-          });
+        name.addEventListener("click", async () => {
+          name.disabled = true;
+          const targetProvider = draft.answerProvider;
+          const targetModel = model;
+          const prevModel = draft.answerModel;
+          const prevSelection = this.providerModelSelections[targetProvider];
+          const opId = ++this.modelSelectionOpSeq;
+          this.latestModelSelectionOp[targetProvider] = opId;
+
+          draft.answerModel = targetModel;
+          this.providerModelSelections[targetProvider] = targetModel;
           renderModelList();
+          try {
+            await this.owner.setAnswerModel(targetProvider, targetModel, {
+              notify: false,
+            });
+          } catch (error) {
+            const isLatest =
+              this.latestModelSelectionOp[targetProvider] === opId;
+            const matchesDraft =
+              draft.answerProvider === targetProvider &&
+              draft.answerModel === targetModel;
+            const matchesSelection =
+              this.providerModelSelections[targetProvider] === targetModel;
+
+            if (isLatest && matchesDraft && matchesSelection) {
+              draft.answerModel = prevModel;
+              this.providerModelSelections[targetProvider] = prevSelection;
+              renderModelList();
+            } else if (isLatest && matchesSelection) {
+              this.providerModelSelections[targetProvider] = prevSelection;
+            }
+            this.showError(error);
+          }
         });
         if (model === draft.answerModel && !fetchedModels.includes(model)) {
           row.createEl("span", {
@@ -343,20 +378,84 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           },
         });
         star.toggleClass("is-favorite", starred);
-        star.addEventListener("click", () => {
-          const index = favorites.findIndex(
-            (favorite) =>
-              favorite.provider === draft.answerProvider &&
-              favorite.model === model,
+        star.addEventListener("click", async () => {
+          star.disabled = true;
+          const targetProvider = draft.answerProvider;
+          const targetModel = model;
+          const opKey = `${targetProvider}::${targetModel}`;
+          const opId = ++this.favoriteOpSeq;
+          this.latestFavoriteOp[opKey] = opId;
+
+          const prevFavorites = Array.isArray(draft.favoriteAnswerModels)
+            ? draft.favoriteAnswerModels.map((f) => ({ ...f }))
+            : [];
+          const exists = prevFavorites.some(
+            (f) =>
+              f.provider === targetProvider && f.model === targetModel,
           );
-          if (index >= 0) favorites.splice(index, 1);
-          else favorites.push({ provider: draft.answerProvider, model });
-          draft.favoriteAnswerModels = favorites.map((favorite) => ({
-            ...favorite,
+          const desiredFavorite = !exists;
+          const optimisticFavorites = desiredFavorite
+            ? [
+                ...prevFavorites,
+                { provider: targetProvider, model: targetModel },
+              ]
+            : prevFavorites.filter(
+                (f) =>
+                  !(f.provider === targetProvider && f.model === targetModel),
+              );
+
+          draft.favoriteAnswerModels = optimisticFavorites.map((f) => ({
+            ...f,
           }));
-          // Persist immediately (hot) so stars survive plugin updates.
-          void this.owner.toggleFavoriteModel(draft.answerProvider, model);
+          favorites.length = 0;
+          favorites.push(...optimisticFavorites.map((f) => ({ ...f })));
           renderModelList();
+          try {
+            await this.owner.toggleFavoriteModel(
+              targetProvider,
+              targetModel,
+              desiredFavorite,
+            );
+            const isLatest = this.latestFavoriteOp[opKey] === opId;
+            if (isLatest) {
+              const latestSaved = Array.isArray(
+                this.owner.settings.favoriteAnswerModels,
+              )
+                ? this.owner.settings.favoriteAnswerModels.map((f) => ({
+                    ...f,
+                  }))
+                : [];
+              draft.favoriteAnswerModels = latestSaved.map((f) => ({ ...f }));
+              favorites.length = 0;
+              favorites.push(...latestSaved.map((f) => ({ ...f })));
+              if (draft.answerProvider === targetProvider) {
+                renderModelList();
+              }
+            }
+          } catch (error) {
+            const isLatest = this.latestFavoriteOp[opKey] === opId;
+            const currentDraftFavs = draft.favoriteAnswerModels || [];
+            const isOptimisticMatch =
+              currentDraftFavs.length === optimisticFavorites.length &&
+              optimisticFavorites.every((opt) =>
+                currentDraftFavs.some(
+                  (cur) =>
+                    cur.provider === opt.provider && cur.model === opt.model,
+                ),
+              );
+
+            if (isLatest && isOptimisticMatch) {
+              draft.favoriteAnswerModels = prevFavorites.map((f) => ({
+                ...f,
+              }));
+              favorites.length = 0;
+              favorites.push(...prevFavorites.map((f) => ({ ...f })));
+              if (draft.answerProvider === targetProvider) {
+                renderModelList();
+              }
+            }
+            this.showError(error);
+          }
         });
       }
     };
@@ -364,21 +463,25 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     modelSetting.addButton((button) =>
       button.setButtonText("모델 최신화").onClick(async () => {
         button.setDisabled(true);
+        const targetProvider = draft.answerProvider;
+        const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
         try {
-          const models = await this.owner.fetchProviderModels(
-            draft.answerProvider,
-          );
-          this.owner.setProviderModels(draft.answerProvider, models);
-          this.providerModelSelections[draft.answerProvider] =
-            draft.answerModel;
+          const models = await this.owner.fetchProviderModels(targetProvider);
+          await this.owner.setProviderModels(targetProvider, models);
+          this.providerModelSelections[targetProvider] =
+            draft.answerProvider === targetProvider
+              ? draft.answerModel
+              : (this.providerModelSelections[targetProvider] || "");
           new Notice(
             models.length
-              ? `${answerProvider.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
-              : draft.answerProvider === "openai"
+              ? `${targetProviderInfo.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
+              : targetProvider === "openai"
                 ? "OpenAI API가 선택 가능한 채팅 모델을 반환하지 않았습니다. API 키의 모델 권한을 확인해 주세요."
-                : `${answerProvider.name}: 선택 가능한 모델을 찾지 못했습니다. API 키의 모델 권한을 확인해 주세요.`,
+                : `${targetProviderInfo.name}: 선택 가능한 모델을 찾지 못했습니다. API 키의 모델 권한을 확인해 주세요.`,
           );
-          this.display();
+          if (draft.answerProvider === targetProvider) {
+            this.display();
+          }
         } catch (error) {
           this.showError(error);
         } finally {

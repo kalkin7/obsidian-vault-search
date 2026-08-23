@@ -24,6 +24,8 @@ export class Notice {
   constructor(_message: string, _timeout?: number) {}
 }
 
+export function setIcon(_el: unknown, _icon: string): void {}
+
 class StubElement {
   tag = "div";
   children: StubElement[] = [];
@@ -33,6 +35,8 @@ class StubElement {
   textContent = "";
   value = "";
   disabled = false;
+  scrollHeight = 20;
+  style: Record<string, string> = {};
   classList = {
     add: (..._names: string[]) => undefined,
     remove: (..._names: string[]) => undefined,

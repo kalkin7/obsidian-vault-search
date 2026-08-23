@@ -73,7 +73,9 @@ function renderServerRow(
     .setDesc(`${kindLabel} · ${describeMcpServer(server)}`)
     .addToggle((toggle) =>
       toggle.setValue(server.enabled).onChange((value) => {
-        server.enabled = value;
+        owner.draftSettings.mcpServers = (owner.draftSettings.mcpServers || []).map(
+          (s) => (s.id === server.id ? { ...s, enabled: value } : s),
+        );
       }),
     )
     .addButton((button) =>
@@ -89,8 +91,14 @@ function renderServerRow(
         .onClick(async () => {
           if (!window.confirm(`MCP 서버 '${server.name}'을(를) 삭제할까요?`))
             return;
-          await owner.deleteMcpServer(server.id);
-          owner.settingTab?.display();
+          button.setDisabled(true);
+          try {
+            await owner.deleteMcpServer(server.id);
+          } catch (err) {
+            button.setDisabled(false);
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`MCP 서버 삭제 실패: ${msg}`, 6000);
+          }
         }),
     );
 }

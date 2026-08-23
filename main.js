@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.63";
+var BACKEND_VERSION = "0.1.64";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -3161,6 +3161,92 @@ function reasoningEffortLevels(provider, model) {
   return providerDefault ? [...providerDefault] : [...DEFAULT_REASONING_LEVELS];
 }
 
+// src/mcp-server-form.ts
+var NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/;
+function toSafeOrigin(url) {
+  if (!url || typeof url !== "string") return "";
+  const trimmed = url.trim();
+  if (!trimmed) return "";
+  try {
+    const parsed = new URL(trimmed);
+    if (!parsed.protocol || !parsed.hostname) return "";
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return "";
+  }
+}
+function isLoopbackHost(hostname) {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  return h === "localhost" || h === "127.0.0.1" || h === "::1" || /^127(?:\.(?:25[0-5]|2[0-4]\d|[01]?\d\d?)){3}$/.test(h);
+}
+function withPolicyForAll(current, tools, policy) {
+  const next = { ...current };
+  for (const tool of tools) next[tool] = policy;
+  return next;
+}
+function validateMcpServerForm(form, options) {
+  const name = form.name.trim();
+  if (!NAME_PATTERN.test(name)) {
+    return "\uD45C\uC2DC\uBA85\uC740 \uC601\uBB38/\uC22B\uC790\uB85C \uC2DC\uC791\uD558\uB294 1-64\uC790(\uACF5\uBC31, ., _, - \uD5C8\uC6A9)\uC5EC\uC57C \uD569\uB2C8\uB2E4.";
+  }
+  if (form.transport === "http") {
+    let urlToValidate;
+    if (options?.stagedRawUrl !== void 0) {
+      if (options.stagedRawUrl === null || options.stagedRawUrl === "") {
+        return null;
+      }
+      urlToValidate = options.stagedRawUrl;
+    } else if (options?.hasStoredUrl === true) {
+      return null;
+    } else if (options?.hasStoredUrl === false) {
+      return "\uC6D0\uACA9 \uC11C\uBC84 URL\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
+    } else {
+      if (!form.url.trim()) {
+        return "\uC6D0\uACA9 \uC11C\uBC84 URL\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
+      }
+      urlToValidate = form.url;
+    }
+    if (urlToValidate.length > 2048) {
+      return "URL\uC774 \uB108\uBB34 \uAE41\uB2C8\uB2E4(\uCD5C\uB300 2048\uC790).";
+    }
+    if (/[\x00-\x1F\x7F]/.test(urlToValidate)) {
+      return "URL\uC5D0 \uC81C\uC5B4 \uBB38\uC790\uAC00 \uD3EC\uD568\uB420 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    }
+    if (/\s/.test(urlToValidate)) {
+      return "URL\uC5D0 \uACF5\uBC31\uC774 \uD3EC\uD568\uB420 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    }
+    let parsed;
+    try {
+      parsed = new URL(urlToValidate);
+    } catch {
+      return "URL \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC804\uCCB4 URL\uC744 \uBD99\uC5EC\uB123\uC5B4 \uC8FC\uC138\uC694.";
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return "URL\uC740 http \uB610\uB294 https\uB85C \uC2DC\uC791\uD574\uC57C \uD569\uB2C8\uB2E4.";
+    }
+    if (!parsed.hostname) {
+      return "URL\uC5D0 \uC720\uD6A8\uD55C \uD638\uC2A4\uD2B8\uBA85\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.";
+    }
+    return null;
+  }
+  if (!form.command.trim()) {
+    return "\uC2E4\uD589 \uBA85\uB839\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694. \uC6D0\uACA9 \uC11C\uBC84\uB77C\uBA74 \uC5F0\uACB0 \uBC29\uC2DD\uC744 '\uC6D0\uACA9 URL'\uB85C \uBC14\uAFD4 \uC8FC\uC138\uC694.";
+  }
+  return null;
+}
+function describeMcpServer(server) {
+  if (server.transport === "http") {
+    const url = server.url.trim();
+    if (!url) return "\uC6D0\uACA9 URL \uBBF8\uC9C0\uC815";
+    const safe = toSafeOrigin(url);
+    if (safe) return safe;
+    return "(\uC798\uBABB\uB41C URL)";
+  }
+  const command = server.command.trim();
+  if (!command) return "\uBA85\uB839 \uBBF8\uC9C0\uC815";
+  return [command, ...server.args].join(" ");
+}
+
 // src/backend-protocol.ts
 var net = __toESM(require("net"));
 var import_crypto = require("crypto");
@@ -3300,9 +3386,9 @@ var PROVIDER_ENV_VARS = [
   "OPENCODE_GO_API_KEY",
   "DEEPSEEK_API_KEY"
 ];
-var MCP_SDK_IMPORT_PROBE = "from mcp.client.streamable_http import streamablehttp_client";
+var MCP_SDK_IMPORT_PROBE = "import importlib.metadata; assert importlib.metadata.version('mcp') == '1.28.1'; from mcp import ClientSession, StdioServerParameters; from mcp.client.stdio import stdio_client; from mcp.client.streamable_http import streamablehttp_client";
 var BackendManager = class {
-  constructor(vaultPath, pluginDir, getSettings, statusChanged, manifestVersion = BACKEND_VERSION, getEnvironment = () => ({}), getMcpSecretPayload = null) {
+  constructor(vaultPath, pluginDir, getSettings, statusChanged, manifestVersion = BACKEND_VERSION, getEnvironment = () => ({}), getMcpSecretPayload) {
     this.vaultPath = vaultPath;
     this.pluginDir = pluginDir;
     this.getSettings = getSettings;
@@ -3526,14 +3612,14 @@ var BackendManager = class {
     return info;
   }
   /** Ensure the pinned mcp SDK is importable in the runtime interpreter.
-   *  Probe-first so healthy venvs pay one ~100ms import; install failures
+   *  Probe-first with full symbol + version check; install failures
    *  must never block a plain search session — the MCP server simply keeps
    *  its error state and the status surface explains why. */
   async ensureMcpSdk(python) {
     try {
       await this.execFileText(
         python,
-        ["-X", "utf8", "-c", "import mcp"],
+        ["-X", "utf8", "-c", MCP_SDK_IMPORT_PROBE],
         15e3
       );
       return;
@@ -3549,18 +3635,19 @@ var BackendManager = class {
           "pip",
           "install",
           "--disable-pip-version-check",
+          "--force-reinstall",
           MCP_SDK_SPEC
         ],
         3e5
       );
       await this.execFileText(
         python,
-        ["-X", "utf8", "-c", `import mcp; ${MCP_SDK_IMPORT_PROBE}`],
+        ["-X", "utf8", "-c", MCP_SDK_IMPORT_PROBE],
         15e3
       );
     } catch (error) {
       console.warn(
-        `[vault-search] MCP SDK auto-install failed: ${error instanceof Error ? error.message : String(error)}`
+        `[vault-search] MCP SDK auto-install failed (MCP_SDK_UNAVAILABLE_OR_INCOMPATIBLE): ${error instanceof Error ? error.message : String(error)}`
       );
     }
   }
@@ -3744,7 +3831,15 @@ var BackendManager = class {
     if (!(0, import_fs.existsSync)(path3.join(this.backendRoot, "vault_search", "__main__.py"))) {
       throw new Error(`Python backend is missing: ${this.backendRoot}`);
     }
-    await this.writeServiceConfig(lazyOverride);
+    try {
+      await this.writeServiceConfig(lazyOverride);
+    } catch {
+      this.setStatus({
+        state: "error",
+        error: "SERVICE_CONFIG_WRITE_FAILED"
+      });
+      throw new Error("SERVICE_CONFIG_WRITE_FAILED");
+    }
     if (generation !== this.startGeneration || this.stopping) return;
     const settings = this.getSettings();
     const explicit = settings.pythonExecutable?.trim();
@@ -3950,10 +4045,10 @@ var BackendManager = class {
    *  a FULL snapshot of every enabled server (possibly with empty maps) so
    *  rotations AND deletions propagate; the sidecar replaces each listed
    *  server's stored mapping wholesale and reconnects only changed ones. */
-  async sendMcpSecrets() {
+  async sendMcpSecrets(options) {
     if (!this.getMcpSecretPayload || !this.runtime) return;
     if (!this.getSettings().mcpEnabled) return;
-    const built = this.getMcpSecretPayload();
+    const built = this.getMcpSecretPayload(options);
     if (!built) return;
     await this.call("set_mcp_secrets", built.payload, 1e4);
   }
@@ -4006,12 +4101,19 @@ var BackendManager = class {
   async writeServiceConfig(lazyOverride) {
     const settings = this.getSettings();
     const { fetchedProviderModels: _fetched, ...configSettings } = settings;
+    const sanitizedMcpServers = (configSettings.mcpServers || []).map(
+      (server) => ({
+        ...server,
+        url: server.transport === "http" ? toSafeOrigin(server.url) : ""
+      })
+    );
     const payload = {
       vaultPath: this.vaultPath,
       dataDir: this.dataDir,
       // Resolved for MCP servers configured with cwd="plugin" (plan §6.1).
       pluginPath: this.pluginDir,
       ...configSettings,
+      mcpServers: sanitizedMcpServers,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search"
     };
     const temp = `${this.configPath}.${Date.now()}.tmp`;
@@ -4256,326 +4358,391 @@ var BackendCallError = class extends Error {
 // src/mcp-server-modal.ts
 var import_obsidian3 = require("obsidian");
 
-// src/mcp-server-form.ts
-var NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/;
-function withPolicyForAll(current, tools, policy) {
-  const next = { ...current };
-  for (const tool of tools) next[tool] = policy;
-  return next;
+// src/mcp-secrets.ts
+var import_crypto3 = require("crypto");
+function storage2(app) {
+  return app.secretStorage;
 }
-function validateMcpServerForm(form) {
-  const name = form.name.trim();
-  if (!NAME_PATTERN.test(name)) {
-    return "\uD45C\uC2DC\uBA85\uC740 \uC601\uBB38/\uC22B\uC790\uB85C \uC2DC\uC791\uD558\uB294 1-64\uC790(\uACF5\uBC31, ., _, - \uD5C8\uC6A9)\uC5EC\uC57C \uD569\uB2C8\uB2E4.";
-  }
-  if (form.transport === "http") {
-    const url = form.url.trim();
-    if (!url) return "\uC6D0\uACA9 \uC11C\uBC84 URL\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
-    if (url.length > 2048) return "URL\uC774 \uB108\uBB34 \uAE41\uB2C8\uB2E4(\uCD5C\uB300 2048\uC790).";
-    let parsed;
-    try {
-      parsed = new URL(url);
-    } catch {
-      return "URL \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC804\uCCB4 URL\uC744 \uBD99\uC5EC\uB123\uC5B4 \uC8FC\uC138\uC694.";
-    }
-    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-      return "URL\uC740 http \uB610\uB294 https\uB85C \uC2DC\uC791\uD574\uC57C \uD569\uB2C8\uB2E4.";
-    }
-    if (!parsed.hostname) return "URL\uC5D0 \uD638\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.";
-    return null;
-  }
-  if (!form.command.trim()) {
-    return "\uC2E4\uD589 \uBA85\uB839\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694. \uC6D0\uACA9 \uC11C\uBC84\uB77C\uBA74 \uC5F0\uACB0 \uBC29\uC2DD\uC744 '\uC6D0\uACA9 URL'\uB85C \uBC14\uAFD4 \uC8FC\uC138\uC694.";
-  }
-  return null;
+function mcpSecretId(serverId, envName) {
+  const digest = (0, import_crypto3.createHash)("sha256").update(envName, "utf8").digest("hex");
+  return `vault-search-mcp-env-${serverId}-${digest.slice(0, 12)}`;
 }
-function describeMcpServer(server) {
-  if (server.transport === "http") {
-    const url = server.url.trim();
-    if (!url) return "\uC6D0\uACA9 URL \uBBF8\uC9C0\uC815";
-    try {
-      const parsed = new URL(url);
-      return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(
-        /\/$/,
-        ""
-      );
-    } catch {
-      return "(\uC798\uBABB\uB41C URL)";
-    }
+function getMcpSecret(app, serverId, envName) {
+  try {
+    const value = storage2(app)?.getSecret(mcpSecretId(serverId, envName));
+    return value === null || value === void 0 || value === "" ? null : value;
+  } catch {
+    throw new Error(`MCP_SECRET_READ_FAILED:${serverId}:${envName}`);
   }
-  const command = server.command.trim();
-  if (!command) return "\uBA85\uB839 \uBBF8\uC9C0\uC815";
-  return [command, ...server.args].join(" ");
 }
-
-// src/mcp-server-modal.ts
-var McpServerEditorModal = class extends import_obsidian3.Modal {
-  constructor(editorOwner, working, callbacks) {
-    super(editorOwner.app);
-    this.editorOwner = editorOwner;
-    this.callbacks = callbacks;
-    this.working = working;
+function setMcpSecret(app, serverId, envName, value) {
+  const secretStorage = storage2(app);
+  if (!secretStorage) {
+    throw new Error(
+      "\uC774 \uBC84\uC804\uC758 Obsidian\uC740 \uBCF4\uC548 \uD0A4 \uC800\uC7A5\uC18C\uB97C \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. Obsidian 1.11.4 \uC774\uC0C1\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
+    );
   }
-  working;
-  onOpen() {
-    this.modalEl.addClass("vault-search-mcp-editor");
-    this.titleEl.setText("MCP \uC11C\uBC84 \uD3B8\uC9D1");
-    this.renderBasics();
-    if (this.working.transport === "stdio") {
-      this.renderEnvSection();
+  try {
+    secretStorage.setSecret(mcpSecretId(serverId, envName), value);
+  } catch {
+    throw new Error(`MCP_SECRET_WRITE_FAILED:${serverId}:${envName}`);
+  }
+}
+function deleteMcpSecret(app, serverId, envName) {
+  const s = storage2(app);
+  if (!s) return;
+  try {
+    const store = s;
+    if (typeof store.deleteSecret === "function") {
+      store.deleteSecret(mcpSecretId(serverId, envName));
+      return;
     }
-    void this.renderToolPolicies();
-    this.renderActions();
+    s.setSecret(mcpSecretId(serverId, envName), "");
+  } catch {
+    throw new Error(`MCP_SECRET_DELETE_FAILED:${serverId}:${envName}`);
   }
-  onClose() {
-    this.contentEl.empty();
+}
+function mcpHttpUrlSecretId(serverId) {
+  return `vault-search-mcp-http-url-${serverId}`;
+}
+function getMcpHttpUrl(app, serverId) {
+  try {
+    const value = storage2(app)?.getSecret(mcpHttpUrlSecretId(serverId));
+    return value === null || value === void 0 || value === "" ? null : value;
+  } catch {
+    throw new Error(`MCP_SECRET_READ_FAILED:${serverId}:http_url`);
   }
-  renderBasics() {
-    const container = this.contentEl.createDiv({
-      cls: "vault-search-mcp-editor-basics"
-    });
-    new import_obsidian3.Setting(container).setName("\uD45C\uC2DC\uBA85").addText(
-      (text) => text.setValue(this.working.name).onChange((value) => {
-        this.working.name = value;
-      })
+}
+function setMcpHttpUrl(app, serverId, url) {
+  const secretStorage = storage2(app);
+  if (!secretStorage) {
+    throw new Error(
+      "\uC774 \uBC84\uC804\uC758 Obsidian\uC740 \uBCF4\uC548 \uD0A4 \uC800\uC7A5\uC18C\uB97C \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. Obsidian 1.11.4 \uC774\uC0C1\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
     );
-    const applyTransportVisibility = () => {
-      const isHttp = this.working.transport === "http";
-      stdioFields.toggleClass("is-hidden", isHttp);
-      httpFields.toggleClass("is-hidden", !isHttp);
-      const isCustom = this.working.cwd !== "vault" && this.working.cwd !== "plugin";
-      cwdCustomField.toggleClass("is-hidden", !isCustom);
-    };
-    new import_obsidian3.Setting(container).setName("\uC5F0\uACB0 \uBC29\uC2DD").setDesc(
-      "\uB85C\uCEEC \uBA85\uB839\uC740 \uC774 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uC790\uC2DD \uD504\uB85C\uC138\uC2A4\uB85C \uC2E4\uD589\uB429\uB2C8\uB2E4. \uC6D0\uACA9 URL\uC740 \uC2A4\uD2B8\uB9AC\uBC0D HTTP MCP \uC11C\uBC84\uC5D0 \uC9C1\uC811 \uC5F0\uACB0\uD569\uB2C8\uB2E4."
-    ).addDropdown(
-      (dropdown) => dropdown.addOption("stdio", "\uB85C\uCEEC \uBA85\uB839 (stdio)").addOption("http", "\uC6D0\uACA9 URL (HTTP)").setValue(this.working.transport).onChange((value) => {
-        this.working.transport = value === "http" ? "http" : "stdio";
-        applyTransportVisibility();
-      })
-    );
-    const stdioFields = container.createDiv();
-    const httpFields = container.createDiv();
-    new import_obsidian3.Setting(stdioFields).setName("\uC2E4\uD589 \uBA85\uB839").setDesc(
-      "\uC608: python, npx, C:\\tools\\server.exe \u2014 \uC178\uC744 \uAC70\uCE58\uC9C0 \uC54A\uACE0 \uC9C1\uC811 \uC2E4\uD589\uB429\uB2C8\uB2E4."
-    ).addText(
-      (text) => text.setValue(this.working.command).onChange((value) => {
-        this.working.command = value;
-      })
-    );
-    new import_obsidian3.Setting(stdioFields).setName("\uC778\uC790").setDesc("\uD55C \uC904\uC5D0 \uD558\uB098\uC529 \uC785\uB825\uD569\uB2C8\uB2E4.").addTextArea((text) => {
-      text.setValue(this.working.args.join("\n")).onChange((value) => {
-        this.working.args = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-      });
-      text.inputEl.rows = 3;
-    });
-    const cwdSetting = new import_obsidian3.Setting(stdioFields).setName("\uC791\uC5C5 \uD3F4\uB354");
-    const cwdCustomField = stdioFields.createDiv();
-    cwdSetting.addDropdown(
-      (dropdown) => dropdown.addOption("vault", "\uBCFC\uD2B8 \uB8E8\uD2B8").addOption("plugin", "\uD50C\uB7EC\uADF8\uC778 \uD3F4\uB354").addOption("custom", "\uC9C1\uC811 \uC9C0\uC815").setValue(
-        this.working.cwd === "vault" || this.working.cwd === "plugin" ? this.working.cwd : "custom"
-      ).onChange((value) => {
-        if (value === "custom") {
-          if (this.working.cwd === "vault" || this.working.cwd === "plugin") {
-            this.working.cwd = "";
+  }
+  try {
+    secretStorage.setSecret(mcpHttpUrlSecretId(serverId), url);
+  } catch {
+    throw new Error(`MCP_SECRET_WRITE_FAILED:${serverId}:http_url`);
+  }
+}
+function deleteMcpHttpUrl(app, serverId) {
+  const s = storage2(app);
+  if (!s) return;
+  try {
+    const store = s;
+    if (typeof store.deleteSecret === "function") {
+      store.deleteSecret(mcpHttpUrlSecretId(serverId));
+      return;
+    }
+    s.setSecret(mcpHttpUrlSecretId(serverId), "");
+  } catch {
+    throw new Error(`MCP_SECRET_DELETE_FAILED:${serverId}:http_url`);
+  }
+}
+function hasMcpHttpUrl(app, serverId, expectedServerUrl) {
+  try {
+    const val = storage2(app)?.getSecret(mcpHttpUrlSecretId(serverId));
+    if (!val || typeof val !== "string") return false;
+    if (!isValidMigrationUrl(val)) return false;
+    if (expectedServerUrl !== void 0 && expectedServerUrl !== "") {
+      const expectedOrigin = toSafeOrigin(expectedServerUrl);
+      const storedOrigin = toSafeOrigin(val);
+      if (!expectedOrigin || !storedOrigin || expectedOrigin !== storedOrigin) {
+        return false;
+      }
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+function hasMcpEnvSecret(app, serverId, envName) {
+  try {
+    const val = storage2(app)?.getSecret(mcpSecretId(serverId, envName));
+    return val !== null && val !== void 0 && val !== "";
+  } catch {
+    return false;
+  }
+}
+function deleteServerSecrets(app, server) {
+  for (const name of server.envNames || []) {
+    deleteMcpSecret(app, server.id, name);
+  }
+  deleteMcpHttpUrl(app, server.id);
+}
+function buildMcpSecretPayload(app, servers, options) {
+  const payloadServers = {};
+  const payloadHttpUrls = {};
+  const summaryServers = {};
+  const summaryHttpUrls = {};
+  const skipped = [];
+  for (const server of servers) {
+    if (!server.enabled) continue;
+    if (server.transport === "http") {
+      let url = null;
+      try {
+        url = getMcpHttpUrl(app, server.id);
+      } catch {
+        if (options?.strict) {
+          throw new Error(`MCP_SECRET_PAYLOAD_READ_FAILED:${server.id}`);
+        }
+        payloadHttpUrls[server.id] = "";
+        summaryHttpUrls[server.id] = false;
+        skipped.push({ serverId: server.id, reason: "storage-read-error" });
+        continue;
+      }
+      if (url === null || url === "") {
+        const tempPayload2 = {
+          servers: { ...payloadServers },
+          http_urls: { ...payloadHttpUrls, [server.id]: "" }
+        };
+        if (Buffer.byteLength(JSON.stringify(tempPayload2), "utf8") > MCP_SECRET_PAYLOAD_LIMIT_BYTES) {
+          if (options?.strict) {
+            throw new Error(`MCP_SECRET_PAYLOAD_BUDGET_EXCEEDED:${server.id}`);
           }
-        } else {
-          this.working.cwd = value;
+          summaryHttpUrls[server.id] = false;
+          skipped.push({
+            serverId: server.id,
+            reason: "payload-budget-exceeded"
+          });
+          continue;
         }
-        applyTransportVisibility();
-      })
-    );
-    new import_obsidian3.Setting(cwdCustomField).setName("\uC791\uC5C5 \uD3F4\uB354 \uACBD\uB85C").setDesc("\uC9C1\uC811 \uC9C0\uC815 \uC2DC \uC0AC\uC6A9\uD560 \uC808\uB300 \uACBD\uB85C\uC785\uB2C8\uB2E4.").addText(
-      (text) => text.setPlaceholder("\uC608: C:\\tools\\mcp-server").setValue(
-        this.working.cwd !== "vault" && this.working.cwd !== "plugin" ? this.working.cwd : ""
-      ).onChange((value) => {
-        if (value.trim()) this.working.cwd = value.trim();
-      })
-    );
-    new import_obsidian3.Setting(httpFields).setName("\uC11C\uBC84 URL").setDesc(
-      "\uC11C\uBE44\uC2A4\uC5D0\uC11C \uBC1C\uAE09\uD55C \uC804\uCCB4 URL\uC744 \uADF8\uB300\uB85C \uBD99\uC5EC\uB123\uC73C\uC138\uC694. \uD1A0\uD070\uC774 \uCFFC\uB9AC \uBB38\uC790\uC5F4\uC5D0 \uD3EC\uD568\uB41C \uD615\uC2DD\uC774\uB77C\uBA74 \uADF8\uB300\uB85C \uC0AC\uC6A9\uB418\uBA70 \uC124\uC815 \uD30C\uC77C\uC5D0\uB9CC \uC800\uC7A5\uB429\uB2C8\uB2E4(\uBAA9\uB85D\uC5D0\uB294 \uD638\uC2A4\uD2B8\uAE4C\uC9C0\uB9CC \uD45C\uC2DC)."
-    ).addText(
-      (text) => text.setPlaceholder("https://example.com/mcp?token=...").setValue(this.working.url).onChange((value) => {
-        this.working.url = value.slice(0, MAX_MCP_URL_CHARS);
-      })
-    );
-    applyTransportVisibility();
-  }
-  renderEnvSection() {
-    const section = this.contentEl.createDiv({ cls: "vault-search-mcp-env" });
-    section.createEl("div", {
-      cls: "setting-item-name",
-      text: "\uD658\uACBD \uBCC0\uC218 (\uAC12\uC740 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0\uB9CC \uC800\uC7A5)"
-    });
-    const renderRows = () => {
-      section.querySelectorAll(".vault-search-mcp-env-row").forEach((row) => row.remove());
-      for (const envName of [...this.working.envNames]) {
-        const row = section.createDiv({ cls: "vault-search-mcp-env-row" });
-        row.createEl("span", { text: envName, cls: "vault-search-mcp-env-name" });
-        const stored = this.callbacks.hasEnvValue(envName);
-        row.createEl("span", {
-          text: stored ? "\uC800\uC7A5\uB428" : "\uBBF8\uC800\uC7A5",
-          cls: `vault-search-mcp-env-state ${stored ? "is-set" : "is-unset"}`
+        payloadHttpUrls[server.id] = "";
+        summaryHttpUrls[server.id] = false;
+        continue;
+      }
+      if (url.length > MAX_MCP_URL_CHARS) {
+        if (options?.strict) {
+          throw new Error(`MCP_SECRET_PAYLOAD_URL_TOO_LARGE:${server.id}`);
+        }
+        payloadHttpUrls[server.id] = "";
+        summaryHttpUrls[server.id] = false;
+        skipped.push({ serverId: server.id, reason: "url-too-large" });
+        continue;
+      }
+      if (!isValidMigrationUrl(url)) {
+        if (options?.strict) {
+          throw new Error(`MCP_SECRET_PAYLOAD_INVALID_URL:${server.id}`);
+        }
+        payloadHttpUrls[server.id] = "";
+        summaryHttpUrls[server.id] = false;
+        skipped.push({ serverId: server.id, reason: "invalid-url" });
+        continue;
+      }
+      const serverOrigin = toSafeOrigin(server.url || "");
+      const storedOrigin = toSafeOrigin(url);
+      if (!serverOrigin || !storedOrigin || serverOrigin !== storedOrigin) {
+        if (options?.strict) {
+          throw new Error(`MCP_SECRET_PAYLOAD_ORIGIN_MISMATCH:${server.id}`);
+        }
+        payloadHttpUrls[server.id] = "";
+        summaryHttpUrls[server.id] = false;
+        skipped.push({ serverId: server.id, reason: "origin-mismatch" });
+        continue;
+      }
+      const tempPayload = {
+        servers: { ...payloadServers },
+        http_urls: { ...payloadHttpUrls, [server.id]: url }
+      };
+      if (Buffer.byteLength(JSON.stringify(tempPayload), "utf8") > MCP_SECRET_PAYLOAD_LIMIT_BYTES) {
+        if (options?.strict) {
+          throw new Error(`MCP_SECRET_PAYLOAD_BUDGET_EXCEEDED:${server.id}`);
+        }
+        payloadHttpUrls[server.id] = "";
+        summaryHttpUrls[server.id] = false;
+        skipped.push({
+          serverId: server.id,
+          reason: "payload-budget-exceeded"
         });
-        const input = document.createElement("input");
-        input.type = "password";
-        input.placeholder = stored ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (\uBCC0\uACBD \uC2DC \uC785\uB825)" : "\uAC12 \uC785\uB825";
-        input.setAttribute("aria-label", `${envName} \uAC12`);
-        input.className = "vault-search-mcp-env-input";
-        row.appendChild(input);
-        const save = row.createEl("button", {
-          text: "\uC800\uC7A5",
-          attr: { type: "button", "aria-label": `${envName} \uAC12 \uC800\uC7A5` }
-        });
-        save.addEventListener("click", () => {
-          void this.callbacks.saveEnvValue(envName, input.value).then(() => {
-            input.value = "";
-            renderRows();
-            new import_obsidian3.Notice(`${envName} \uAC12\uC744 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`, 4e3);
-          }).catch((error) => {
-            new import_obsidian3.Notice(
-              error instanceof Error ? error.message : String(error),
-              8e3
+        continue;
+      }
+      payloadHttpUrls[server.id] = url;
+      summaryHttpUrls[server.id] = true;
+    } else {
+      const values = {};
+      for (const envName of server.envNames || []) {
+        if (!envName || envName.length > MCP_SECRET_NAME_MAX) {
+          skipped.push({ serverId: server.id, envName, reason: "invalid-name" });
+          continue;
+        }
+        let value = null;
+        try {
+          value = getMcpSecret(app, server.id, envName);
+        } catch {
+          if (options?.strict) {
+            throw new Error(
+              `MCP_SECRET_PAYLOAD_READ_FAILED: \uC11C\uBC84(${server.id}) \uD658\uACBD \uBCC0\uC218(${envName}) \uBE44\uBC00 \uC870\uD68C \uC2E4\uD328`
             );
+          }
+          skipped.push({
+            serverId: server.id,
+            envName,
+            reason: "storage-read-error"
           });
-        });
-        const remove = row.createEl("button", {
-          text: "\uC0AD\uC81C",
-          attr: { type: "button", "aria-label": `${envName} \uD658\uACBD \uBCC0\uC218 \uC81C\uAC70` }
-        });
-        remove.addEventListener("click", () => {
-          this.working.envNames = this.working.envNames.filter(
-            (name) => name !== envName
-          );
-          void this.callbacks.removeEnvValue(envName).catch(() => void 0);
-          renderRows();
-        });
+          continue;
+        }
+        if (value === null || value === "") continue;
+        if (value.length > MCP_SECRET_VALUE_MAX) {
+          skipped.push({
+            serverId: server.id,
+            envName,
+            reason: "value-too-large"
+          });
+          continue;
+        }
+        const tempValues = { ...values, [envName]: value };
+        const tempPayload = {
+          servers: { ...payloadServers, [server.id]: tempValues },
+          http_urls: { ...payloadHttpUrls }
+        };
+        if (Buffer.byteLength(JSON.stringify(tempPayload), "utf8") > MCP_SECRET_PAYLOAD_LIMIT_BYTES) {
+          if (options?.strict) {
+            throw new Error(`MCP_SECRET_PAYLOAD_BUDGET_EXCEEDED:${server.id}`);
+          }
+          skipped.push({
+            serverId: server.id,
+            envName,
+            reason: "payload-budget-exceeded"
+          });
+          continue;
+        }
+        values[envName] = value;
       }
-    };
-    renderRows();
-    const addRow = section.createDiv({ cls: "vault-search-mcp-env-add" });
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.placeholder = "\uD658\uACBD \uBCC0\uC218 \uC774\uB984 (\uC608: GITHUB_TOKEN)";
-    nameInput.setAttribute("aria-label", "\uC0C8 \uD658\uACBD \uBCC0\uC218 \uC774\uB984");
-    nameInput.className = "vault-search-mcp-env-input";
-    addRow.appendChild(nameInput);
-    addRow.createEl("button", { text: "\uBCC0\uC218 \uCD94\uAC00", attr: { type: "button" } }).addEventListener("click", () => {
-      const name = nameInput.value.trim();
-      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
-        new import_obsidian3.Notice("\uD658\uACBD \uBCC0\uC218 \uC774\uB984 \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.", 5e3);
-        return;
-      }
-      if (this.working.envNames.includes(name)) {
-        new import_obsidian3.Notice("\uC774\uBBF8 \uB4F1\uB85D\uB41C \uC774\uB984\uC785\uB2C8\uB2E4.", 5e3);
-        return;
-      }
-      this.working.envNames = [...this.working.envNames, name];
-      nameInput.value = "";
-      renderRows();
-    });
+      payloadServers[server.id] = values;
+      summaryServers[server.id] = Object.keys(values).sort();
+    }
   }
-  async renderToolPolicies() {
+  return {
+    payload: { servers: payloadServers, http_urls: payloadHttpUrls },
+    summary: { servers: summaryServers, http_urls: summaryHttpUrls },
+    skipped
+  };
+}
+function isValidMigrationUrl(rawUrl) {
+  if (!rawUrl || rawUrl.length > MAX_MCP_URL_CHARS) return false;
+  for (let i = 0; i < rawUrl.length; i++) {
+    const code = rawUrl.charCodeAt(i);
+    if (code <= 32 || code === 127) return false;
+  }
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    if (!parsed.hostname) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+function migrateMcpHttpUrls(app, settings) {
+  if (settings.mcpHttpUrlsMigrated === true) {
+    return { migratedCount: 0, failedServers: [], changed: false };
+  }
+  let migratedCount = 0;
+  let changed = false;
+  const failedServers = [];
+  for (const server of settings.mcpServers || []) {
+    if (server.transport !== "http") continue;
+    const rawUrl = server.url || "";
+    if (!rawUrl) continue;
+    if (!isValidMigrationUrl(rawUrl)) {
+      server.enabled = false;
+      failedServers.push({ id: server.id, name: server.name || server.id });
+      changed = true;
+      continue;
+    }
+    const safeOrigin = toSafeOrigin(rawUrl);
+    if (!safeOrigin) {
+      server.enabled = false;
+      failedServers.push({ id: server.id, name: server.name || server.id });
+      changed = true;
+      continue;
+    }
+    let storedUrl = null;
     try {
-      const status = await this.editorOwner.refreshMcpStatus();
-      const serverStatus = status.servers.find(
-        (entry) => entry.id === this.working.id
-      );
-      if (!serverStatus || serverStatus.tools === 0) return;
-      const wrap = this.contentEl.createDiv({ cls: "vault-search-mcp-tools" });
-      wrap.createEl("div", {
-        cls: "setting-item-name",
-        text: `\uBC1C\uACAC\uB41C \uB3C4\uAD6C (${serverStatus.tools}) \u2014 \uC2E4\uD589 \uC804 \uC2B9\uC778 \uC5EC\uBD80`
-      });
-      const allTools = Array.from(
-        /* @__PURE__ */ new Set([
-          ...Object.keys(this.working.toolPolicies),
-          ...serverStatus.tool_names || []
-        ])
-      ).sort();
-      const renderSegmented = (parent, tools, current) => {
-        const seg = parent.createDiv({ cls: "vault-search-policy-seg" });
-        for (const [value, label, icon] of [
-          ["allow", "\uC790\uB3D9 \uD5C8\uC6A9", "\u2713"],
-          ["ask", "\uC2B9\uC778 \uC694\uAD6C", "\u270B"],
-          ["deny", "\uAC70\uBD80", "\u2298"]
-        ]) {
-          const button = seg.createEl("button", {
-            text: `${icon} ${label}`,
-            cls: `vault-search-policy-option seg-${value}${current === value ? " is-active" : ""}`,
-            attr: {
-              type: "button",
-              "aria-label": `${tools.length > 1 ? `${tools.length}\uAC1C \uB3C4\uAD6C` : tools[0]} ${label}`,
-              "aria-pressed": String(current === value)
-            }
-          });
-          button.addEventListener("click", () => {
-            this.working.toolPolicies = tools.length === 1 ? { ...this.working.toolPolicies, [tools[0]]: value } : withPolicyForAll(this.working.toolPolicies, tools, value);
-            renderRows();
-          });
-        }
-      };
-      const renderRows = () => {
-        wrap.querySelectorAll(".vault-search-mcp-tool-row,.vault-search-mcp-tools-all").forEach((row) => row.remove());
-        const allRow = wrap.createDiv({ cls: "vault-search-mcp-tools-all" });
-        allRow.createEl("span", { text: "\uBAA8\uB4E0 \uB3C4\uAD6C", cls: "vault-search-mcp-tool-name" });
-        renderSegmented(allRow, allTools, this.majorityPolicy(allTools));
-        for (const tool of allTools) {
-          const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
-          row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
-          renderSegmented(row, [tool], this.working.toolPolicies[tool] || "ask");
-        }
-      };
-      renderRows();
+      storedUrl = getMcpHttpUrl(app, server.id);
     } catch {
+      server.enabled = false;
+      failedServers.push({ id: server.id, name: server.name || server.id });
+      changed = true;
+      continue;
     }
-  }
-  /** The policy shown on the bulk row: the common value across tools, or
-   *  "ask" when they disagree (safe default wins ties). */
-  majorityPolicy(tools) {
-    let allow = true;
-    let deny = true;
-    for (const tool of tools) {
-      const policy = this.working.toolPolicies[tool] || "ask";
-      if (policy !== "allow") allow = false;
-      if (policy !== "deny") deny = false;
-    }
-    if (allow) return "allow";
-    if (deny) return "deny";
-    return "ask";
-  }
-  renderActions() {
-    const bar = this.contentEl.createDiv({
-      cls: "vault-search-mcp-editor-actions"
-    });
-    new import_obsidian3.Setting(bar).addButton(
-      (button) => button.setButtonText("\uCDE8\uC18C").onClick(() => {
-        if (!this.isCommittedEntry) this.callbacks.onCancelledNew?.();
-        this.close();
-      })
-    ).addButton(
-      (button) => button.setButtonText("\uC800\uC7A5").setCta().onClick(() => {
-        const problem = validateMcpServerForm(this.working);
-        if (problem) {
-          new import_obsidian3.Notice(problem, 5e3);
-          return;
+    if (!storedUrl) {
+      try {
+        setMcpHttpUrl(app, server.id, rawUrl);
+        const verified = getMcpHttpUrl(app, server.id);
+        if (verified === rawUrl) {
+          server.url = safeOrigin;
+          migratedCount++;
+          changed = true;
+        } else {
+          throw new Error("Secret storage verification failed");
         }
-        this.callbacks.onSaved();
-        this.close();
-      })
-    );
+      } catch {
+        server.enabled = false;
+        try {
+          deleteMcpHttpUrl(app, server.id);
+        } catch {
+        }
+        failedServers.push({ id: server.id, name: server.name || server.id });
+        changed = true;
+      }
+    } else {
+      const storedOrigin = toSafeOrigin(storedUrl);
+      if (rawUrl === safeOrigin) {
+        if (!isValidMigrationUrl(storedUrl) || !storedOrigin || storedOrigin !== safeOrigin) {
+          server.enabled = false;
+          try {
+            deleteMcpHttpUrl(app, server.id);
+            const verifiedDeleted = getMcpHttpUrl(app, server.id);
+            if (verifiedDeleted !== null) {
+              console.warn(
+                `[vault-search] Stale MCP secret deletion not confirmed for server ${server.id} (MCP_SECRET_DELETE_UNCONFIRMED)`
+              );
+            }
+          } catch {
+            console.warn(
+              `[vault-search] Stale MCP secret deletion error for server ${server.id} (MCP_SECRET_DELETE_FAILED)`
+            );
+          }
+          failedServers.push({ id: server.id, name: server.name || server.id });
+          changed = true;
+          continue;
+        }
+        if (server.url !== safeOrigin) {
+          server.url = safeOrigin;
+          changed = true;
+        }
+        migratedCount++;
+      } else if (storedUrl === rawUrl) {
+        server.url = safeOrigin;
+        migratedCount++;
+        changed = true;
+      } else {
+        try {
+          setMcpHttpUrl(app, server.id, rawUrl);
+          const verified = getMcpHttpUrl(app, server.id);
+          if (verified === rawUrl) {
+            server.url = safeOrigin;
+            migratedCount++;
+            changed = true;
+          } else {
+            throw new Error("Secret storage verification failed");
+          }
+        } catch {
+          server.enabled = false;
+          failedServers.push({ id: server.id, name: server.name || server.id });
+          changed = true;
+        }
+      }
+    }
   }
-  /** True once onSaved ran (or the entry already exists in the list); a
-   *  cancel before that means the brand-new entry must be rolled back. */
-  get isCommittedEntry() {
-    return (this.editorOwner.draftSettings.mcpServers || []).some(
-      (server) => server.id === this.working.id
-    );
+  if (failedServers.length === 0) {
+    settings.mcpHttpUrlsMigrated = true;
+    changed = true;
   }
-};
-
-// src/settings-tab.ts
-var import_obsidian7 = require("obsidian");
+  return { migratedCount, failedServers, changed };
+}
 
 // src/settings.ts
 var ALL_KEYS = [
@@ -4662,7 +4829,8 @@ function cloneSettings(settings) {
       toolPolicies: { ...server.toolPolicies }
     })),
     skillRoots: (settings.skillRoots || []).map((root) => ({ ...root })),
-    enabledSkills: [...settings.enabledSkills || []]
+    enabledSkills: [...settings.enabledSkills || []],
+    mcpHttpUrlsMigrated: settings.mcpHttpUrlsMigrated
   };
 }
 function hotConfig(settings) {
@@ -4724,6 +4892,1216 @@ function isAutoPython(value) {
   const trimmed = (value || "").trim();
   return trimmed === "" || trimmed === "python";
 }
+
+// src/mcp-transaction-coordinator.ts
+function sanitizeSecretMessage(message, context) {
+  if (!message) return "";
+  let sanitized = message;
+  sanitized = sanitized.replace(/https?:\/\/[^\s"'`<>]+/g, (rawUrl) => {
+    try {
+      const parsed = new URL(rawUrl);
+      const port = parsed.port ? `:${parsed.port}` : "";
+      return `${parsed.protocol}//${parsed.hostname}${port}`;
+    } catch {
+      return "[redacted-url]";
+    }
+  });
+  const candidates = [];
+  const addCandidate = (val) => {
+    if (typeof val === "string") {
+      const trimmed = val.trim();
+      if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) {
+        try {
+          const parsed = new URL(trimmed);
+          if (parsed.password && parsed.password.length >= 4) {
+            candidates.push(parsed.password);
+          }
+          if (parsed.username && parsed.username.length >= 4) {
+            candidates.push(parsed.username);
+          }
+          for (const paramVal of parsed.searchParams.values()) {
+            if (paramVal && paramVal.length >= 4) {
+              candidates.push(paramVal);
+            }
+          }
+        } catch {
+        }
+      } else if (trimmed.length >= 4) {
+        candidates.push(trimmed);
+      }
+    }
+  };
+  if (Array.isArray(context)) {
+    for (const v of context) addCandidate(v);
+  } else if (context?.redactValues) {
+    for (const v of context.redactValues) addCandidate(v);
+  }
+  candidates.sort((a, b) => b.length - a.length);
+  for (const cand of candidates) {
+    const escaped = cand.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    sanitized = sanitized.replace(new RegExp(escaped, "g"), "[redacted-secret]");
+  }
+  return sanitized;
+}
+function restoreSingleEnvSecretWithVerification(app, serverId, name, val) {
+  try {
+    if (val === null || val === "") {
+      try {
+        deleteMcpSecret(app, serverId, name);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      let readBack = null;
+      try {
+        readBack = getMcpSecret(app, serverId, name);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      if (readBack !== null) {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+    } else {
+      try {
+        setMcpSecret(app, serverId, name, val);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      let readBack = null;
+      try {
+        readBack = getMcpSecret(app, serverId, name);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      if (readBack !== val) {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("MCP_SECRET_RESTORE_FAILED:")) {
+      throw err;
+    }
+    throw new Error(
+      `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+    );
+  }
+}
+function restoreSingleHttpUrlWithVerification(app, serverId, httpUrl) {
+  try {
+    if (httpUrl === null || httpUrl === "") {
+      try {
+        deleteMcpHttpUrl(app, serverId);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      let readBack = null;
+      try {
+        readBack = getMcpHttpUrl(app, serverId);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      if (readBack !== null) {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+    } else {
+      try {
+        setMcpHttpUrl(app, serverId, httpUrl);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      let readBack = null;
+      try {
+        readBack = getMcpHttpUrl(app, serverId);
+      } catch {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      if (readBack !== httpUrl) {
+        throw new Error(
+          `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31 \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+    }
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("MCP_SECRET_RESTORE_FAILED:")) {
+      throw err;
+    }
+    throw new Error(
+      `MCP_SECRET_RESTORE_FAILED: \uC11C\uBC84(${serverId}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uB864\uBC31\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+    );
+  }
+}
+function cloneMcpServers(servers) {
+  return (servers || []).map((server) => ({
+    ...server,
+    args: [...server.args || []],
+    envNames: [...server.envNames || []],
+    toolPolicies: { ...server.toolPolicies || {} }
+  }));
+}
+var McpTransactionCoordinator = class {
+  constructor(owner) {
+    this.owner = owner;
+  }
+  setDraftMcpServers(servers) {
+    if (typeof this.owner.restoreMcpServersInPlace === "function") {
+      this.owner.restoreMcpServersInPlace(servers);
+    } else {
+      this.owner.draftSettings.mcpServers = servers;
+    }
+  }
+  restoreDraftMcpServers(servers, fullBackup) {
+    if (typeof this.owner.restoreMcpServersInPlace === "function") {
+      this.owner.restoreMcpServersInPlace(servers);
+    } else if (typeof this.owner.restoreDraftInPlace === "function") {
+      const merged = cloneSettings(this.owner.draftSettings);
+      merged.mcpServers = cloneMcpServers(servers);
+      this.owner.restoreDraftInPlace(merged);
+    } else {
+      this.owner.draftSettings.mcpServers = cloneMcpServers(servers);
+    }
+  }
+  async applyStructuralSettings() {
+    if (typeof this.owner.applyDraftSettingsUnlocked === "function") {
+      await this.owner.applyDraftSettingsUnlocked();
+    } else {
+      await this.owner.applyDraftSettings({ unlocked: true });
+    }
+  }
+  /** Save an MCP server's structural settings and staged secrets in an atomic
+   *  transaction. If secret storage write, settings application (including
+   *  sidecar restart), or live secret handoff fails, all storage and running
+   *  state is rolled back to the pre-transaction snapshot. */
+  async saveServer(savedWorking, staged) {
+    if (typeof this.owner.withTransactionLock === "function") {
+      return this.owner.withTransactionLock(
+        () => this.saveServerInternal(savedWorking, staged)
+      );
+    }
+    return this.saveServerInternal(savedWorking, staged);
+  }
+  async saveServerInternal(savedWorking, staged) {
+    this.owner.cancelPendingDraftApply?.();
+    let previousMcpServers;
+    let previousDraft;
+    let secretSnapshot;
+    let redactionCandidates = [];
+    let allEnvKeys = /* @__PURE__ */ new Set();
+    const isNewServer = !(this.owner.draftSettings.mcpServers || []).some(
+      (s) => s.id === savedWorking.id
+    );
+    try {
+      previousMcpServers = cloneMcpServers(
+        this.owner.draftSettings.mcpServers || []
+      );
+      previousDraft = cloneSettings(this.owner.draftSettings);
+      secretSnapshot = {
+        env: {},
+        httpUrl: getMcpHttpUrl(this.owner.app, savedWorking.id)
+      };
+      const previousServer = previousMcpServers.find(
+        (s) => s.id === savedWorking.id
+      );
+      allEnvKeys = /* @__PURE__ */ new Set([
+        ...previousServer?.envNames || [],
+        ...savedWorking.envNames,
+        ...Object.keys(staged.envValues),
+        ...staged.removedEnvNames
+      ]);
+      for (const envName of allEnvKeys) {
+        secretSnapshot.env[envName] = getMcpSecret(
+          this.owner.app,
+          savedWorking.id,
+          envName
+        );
+      }
+      redactionCandidates = [
+        staged.httpUrl,
+        secretSnapshot.httpUrl,
+        ...Object.values(staged.envValues),
+        ...Object.values(secretSnapshot.env)
+      ].filter((v) => Boolean(v));
+    } catch {
+      throw new Error(
+        `MCP_SECRET_SNAPSHOT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC2A4\uB0C5\uC0F7 \uC77D\uAE30\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+      );
+    }
+    let structuralApplySucceeded = false;
+    try {
+      try {
+        if (savedWorking.transport === "stdio") {
+          try {
+            deleteMcpHttpUrl(this.owner.app, savedWorking.id);
+          } catch {
+            throw new Error(
+              `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+            );
+          }
+          let verifiedUrl = null;
+          try {
+            verifiedUrl = getMcpHttpUrl(this.owner.app, savedWorking.id);
+          } catch {
+            throw new Error(
+              `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+            );
+          }
+          if (verifiedUrl !== null) {
+            throw new Error(
+              `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+            );
+          }
+          for (const [name, val] of Object.entries(staged.envValues)) {
+            try {
+              setMcpSecret(this.owner.app, savedWorking.id, name, val);
+            } catch {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+            let readBack = null;
+            try {
+              readBack = getMcpSecret(this.owner.app, savedWorking.id, name);
+            } catch {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+            if (readBack !== val) {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+          }
+          for (const name of staged.removedEnvNames) {
+            try {
+              deleteMcpSecret(this.owner.app, savedWorking.id, name);
+            } catch {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+            let readBack = null;
+            try {
+              readBack = getMcpSecret(this.owner.app, savedWorking.id, name);
+            } catch {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+            if (readBack !== null) {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+          }
+        } else {
+          for (const name of allEnvKeys) {
+            try {
+              deleteMcpSecret(this.owner.app, savedWorking.id, name);
+            } catch {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+            let readBack = null;
+            try {
+              readBack = getMcpSecret(this.owner.app, savedWorking.id, name);
+            } catch {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+            if (readBack !== null) {
+              throw new Error(
+                `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uD658\uACBD \uBCC0\uC218(${name}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+              );
+            }
+          }
+          if (staged.httpUrl !== void 0) {
+            if (staged.httpUrl === null || staged.httpUrl === "") {
+              try {
+                deleteMcpHttpUrl(this.owner.app, savedWorking.id);
+              } catch {
+                throw new Error(
+                  `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+                );
+              }
+              let verified = null;
+              try {
+                verified = getMcpHttpUrl(this.owner.app, savedWorking.id);
+              } catch {
+                throw new Error(
+                  `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+                );
+              }
+              if (verified !== null) {
+                throw new Error(
+                  `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+                );
+              }
+            } else {
+              try {
+                setMcpHttpUrl(this.owner.app, savedWorking.id, staged.httpUrl);
+              } catch {
+                throw new Error(
+                  `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC800\uC7A5\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+                );
+              }
+              let readBack = null;
+              try {
+                readBack = getMcpHttpUrl(this.owner.app, savedWorking.id);
+              } catch {
+                throw new Error(
+                  `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+                );
+              }
+              if (readBack !== staged.httpUrl) {
+                throw new Error(
+                  `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+                );
+              }
+            }
+          }
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("MCP_SECRET_COMMIT_FAILED:")) {
+          throw err;
+        }
+        throw new Error(
+          `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${savedWorking.id}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uBC18\uC601\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      const servers = [...this.owner.draftSettings.mcpServers || []];
+      const index = servers.findIndex(
+        (server) => server.id === savedWorking.id
+      );
+      if (index >= 0) servers[index] = savedWorking;
+      else servers.push(savedWorking);
+      this.setDraftMcpServers(servers);
+      await this.applyStructuralSettings();
+      structuralApplySucceeded = true;
+      if (this.owner.backend.status.state !== "stopped") {
+        await this.owner.backend.sendMcpSecrets({ strict: true });
+      }
+    } catch (origError) {
+      const rollbackErrors = [];
+      let secretRestoreFailed = false;
+      this.owner.cancelPendingDraftApply?.();
+      for (const [name, val] of Object.entries(secretSnapshot.env)) {
+        try {
+          restoreSingleEnvSecretWithVerification(
+            this.owner.app,
+            savedWorking.id,
+            name,
+            val
+          );
+        } catch (err) {
+          secretRestoreFailed = true;
+          rollbackErrors.push(
+            sanitizeSecretMessage(
+              err instanceof Error ? err.message : String(err),
+              redactionCandidates
+            )
+          );
+        }
+      }
+      try {
+        restoreSingleHttpUrlWithVerification(
+          this.owner.app,
+          savedWorking.id,
+          secretSnapshot.httpUrl
+        );
+      } catch (err) {
+        secretRestoreFailed = true;
+        rollbackErrors.push(
+          sanitizeSecretMessage(
+            err instanceof Error ? err.message : String(err),
+            redactionCandidates
+          )
+        );
+      }
+      const restoredServers = cloneMcpServers(previousMcpServers);
+      if (secretRestoreFailed) {
+        const idx = restoredServers.findIndex((s) => s.id === savedWorking.id);
+        if (idx >= 0) {
+          restoredServers[idx] = { ...restoredServers[idx], enabled: false };
+        } else {
+          const recoveryServer = {
+            id: savedWorking.id,
+            name: savedWorking.name || savedWorking.id,
+            transport: savedWorking.transport,
+            command: savedWorking.command || "",
+            args: savedWorking.args ? [...savedWorking.args] : [],
+            cwd: savedWorking.cwd || "vault",
+            url: savedWorking.url ? toSafeOrigin(savedWorking.url) : "",
+            envNames: savedWorking.envNames ? [...savedWorking.envNames] : [],
+            toolPolicies: savedWorking.toolPolicies ? { ...savedWorking.toolPolicies } : {},
+            enabled: false
+          };
+          restoredServers.push(recoveryServer);
+        }
+        rollbackErrors.push(`MCP_SERVER_RECOVERY_DISABLED: ${savedWorking.id}`);
+      }
+      try {
+        this.restoreDraftMcpServers(restoredServers, previousDraft);
+      } catch (err) {
+        rollbackErrors.push(
+          sanitizeSecretMessage(
+            err instanceof Error ? err.message : String(err),
+            redactionCandidates
+          )
+        );
+      }
+      let structuralRollbackSucceeded = false;
+      try {
+        await this.applyStructuralSettings();
+        structuralRollbackSucceeded = true;
+      } catch (err) {
+        structuralRollbackSucceeded = false;
+        rollbackErrors.push(
+          sanitizeSecretMessage(
+            err instanceof Error ? err.message : String(err),
+            redactionCandidates
+          )
+        );
+      }
+      if (structuralRollbackSucceeded && this.owner.backend.status.state !== "stopped") {
+        try {
+          await this.owner.backend.sendMcpSecrets({ strict: true });
+        } catch (err) {
+          rollbackErrors.push(
+            sanitizeSecretMessage(
+              err instanceof Error ? err.message : String(err),
+              redactionCandidates
+            )
+          );
+        }
+      }
+      const origMessage = sanitizeSecretMessage(
+        origError instanceof Error ? origError.message : String(origError),
+        redactionCandidates
+      );
+      if (rollbackErrors.length > 0) {
+        const rollbackMessage = rollbackErrors.join("; ");
+        throw new Error(
+          `MCP_TRANSACTION_FAILED: ${origMessage}; MCP_ROLLBACK_FAILED: ${rollbackMessage}`
+        );
+      }
+      throw new Error(origMessage);
+    }
+    try {
+      this.owner.settingTab?.display();
+    } catch {
+    }
+  }
+  /** Delete an MCP server in an atomic transaction: purges its secrets,
+   *  updates draft settings, re-applies settings to rebuild/restart the sidecar,
+   *  and verifies the removal. */
+  async deleteServer(serverId) {
+    if (typeof this.owner.withTransactionLock === "function") {
+      return this.owner.withTransactionLock(
+        () => this.deleteServerInternal(serverId)
+      );
+    }
+    return this.deleteServerInternal(serverId);
+  }
+  async deleteServerInternal(serverId) {
+    this.owner.cancelPendingDraftApply?.();
+    let previousMcpServers;
+    let previousDraft;
+    let server;
+    let secretSnapshot;
+    let redactionCandidates = [];
+    try {
+      previousMcpServers = cloneMcpServers(
+        this.owner.draftSettings.mcpServers || []
+      );
+      previousDraft = cloneSettings(this.owner.draftSettings);
+      server = previousMcpServers.find((entry) => entry.id === serverId);
+      if (!server) return;
+      secretSnapshot = {
+        env: {},
+        httpUrl: getMcpHttpUrl(this.owner.app, server.id)
+      };
+      for (const envName of server.envNames || []) {
+        secretSnapshot.env[envName] = getMcpSecret(
+          this.owner.app,
+          server.id,
+          envName
+        );
+      }
+      redactionCandidates = [
+        secretSnapshot.httpUrl,
+        ...Object.values(secretSnapshot.env)
+      ].filter((v) => Boolean(v));
+    } catch {
+      throw new Error(
+        `MCP_SECRET_SNAPSHOT_FAILED: \uC11C\uBC84(${serverId}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC2A4\uB0C5\uC0F7 \uC77D\uAE30\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+      );
+    }
+    let structuralApplySucceeded = false;
+    try {
+      try {
+        try {
+          deleteServerSecrets(this.owner.app, server);
+        } catch {
+          throw new Error(
+            `MCP_SECRET_DELETE_FAILED: \uC11C\uBC84(${server.id}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+          );
+        }
+        let readBackUrl = null;
+        try {
+          readBackUrl = getMcpHttpUrl(this.owner.app, server.id);
+        } catch {
+          throw new Error(
+            `MCP_SECRET_DELETE_FAILED: \uC11C\uBC84(${server.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+          );
+        }
+        if (readBackUrl !== null) {
+          throw new Error(
+            `MCP_SECRET_DELETE_FAILED: \uC11C\uBC84(${server.id}) \uC6D0\uACA9 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+          );
+        }
+        for (const envName of server.envNames || []) {
+          let readBackEnv = null;
+          try {
+            readBackEnv = getMcpSecret(this.owner.app, server.id, envName);
+          } catch {
+            throw new Error(
+              `MCP_SECRET_DELETE_FAILED: \uC11C\uBC84(${server.id}) \uD658\uACBD \uBCC0\uC218(${envName}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+            );
+          }
+          if (readBackEnv !== null) {
+            throw new Error(
+              `MCP_SECRET_DELETE_FAILED: \uC11C\uBC84(${server.id}) \uD658\uACBD \uBCC0\uC218(${envName}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C \uAC80\uC99D\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+            );
+          }
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.startsWith("MCP_SECRET_DELETE_FAILED:")) {
+          throw err;
+        }
+        throw new Error(
+          `MCP_SECRET_DELETE_FAILED: \uC11C\uBC84(${server.id}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uC0AD\uC81C\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+        );
+      }
+      this.setDraftMcpServers(
+        (this.owner.draftSettings.mcpServers || []).filter(
+          (entry) => entry.id !== serverId
+        )
+      );
+      await this.applyStructuralSettings();
+      structuralApplySucceeded = true;
+      if (this.owner.backend.status.state !== "stopped") {
+        await this.owner.backend.sendMcpSecrets({ strict: true });
+      }
+    } catch (origError) {
+      const rollbackErrors = [];
+      let secretRestoreFailed = false;
+      this.owner.cancelPendingDraftApply?.();
+      for (const [name, val] of Object.entries(secretSnapshot.env)) {
+        try {
+          restoreSingleEnvSecretWithVerification(
+            this.owner.app,
+            server.id,
+            name,
+            val
+          );
+        } catch (err) {
+          secretRestoreFailed = true;
+          rollbackErrors.push(
+            sanitizeSecretMessage(
+              err instanceof Error ? err.message : String(err),
+              redactionCandidates
+            )
+          );
+        }
+      }
+      try {
+        restoreSingleHttpUrlWithVerification(
+          this.owner.app,
+          server.id,
+          secretSnapshot.httpUrl
+        );
+      } catch (err) {
+        secretRestoreFailed = true;
+        rollbackErrors.push(
+          sanitizeSecretMessage(
+            err instanceof Error ? err.message : String(err),
+            redactionCandidates
+          )
+        );
+      }
+      const restoredServers = cloneMcpServers(previousMcpServers);
+      if (secretRestoreFailed) {
+        const idx = restoredServers.findIndex((s) => s.id === server.id);
+        if (idx >= 0) {
+          restoredServers[idx] = { ...restoredServers[idx], enabled: false };
+        }
+        rollbackErrors.push(`MCP_SERVER_RECOVERY_DISABLED: ${server.id}`);
+      }
+      try {
+        this.restoreDraftMcpServers(restoredServers, previousDraft);
+      } catch (err) {
+        rollbackErrors.push(
+          sanitizeSecretMessage(
+            err instanceof Error ? err.message : String(err),
+            redactionCandidates
+          )
+        );
+      }
+      let structuralRollbackSucceeded = false;
+      try {
+        await this.applyStructuralSettings();
+        structuralRollbackSucceeded = true;
+      } catch (err) {
+        structuralRollbackSucceeded = false;
+        rollbackErrors.push(
+          sanitizeSecretMessage(
+            err instanceof Error ? err.message : String(err),
+            redactionCandidates
+          )
+        );
+      }
+      if (structuralRollbackSucceeded && this.owner.backend.status.state !== "stopped") {
+        try {
+          await this.owner.backend.sendMcpSecrets({ strict: true });
+        } catch (err) {
+          rollbackErrors.push(
+            sanitizeSecretMessage(
+              err instanceof Error ? err.message : String(err),
+              redactionCandidates
+            )
+          );
+        }
+      }
+      const origMessage = sanitizeSecretMessage(
+        origError instanceof Error ? origError.message : String(origError),
+        redactionCandidates
+      );
+      if (rollbackErrors.length > 0) {
+        const rollbackMessage = rollbackErrors.join("; ");
+        throw new Error(
+          `MCP_TRANSACTION_FAILED: ${origMessage}; MCP_ROLLBACK_FAILED: ${rollbackMessage}`
+        );
+      }
+      throw new Error(origMessage);
+    }
+    try {
+      this.owner.settingTab?.display();
+    } catch {
+    }
+  }
+};
+
+// src/mcp-server-modal.ts
+var McpServerEditorModal = class extends import_obsidian3.Modal {
+  constructor(editorOwner, working, callbacks) {
+    super(editorOwner.app);
+    this.editorOwner = editorOwner;
+    this.callbacks = callbacks;
+    this.working = working;
+    this.originalSafeOrigin = toSafeOrigin(working.url || "");
+  }
+  working;
+  originalSafeOrigin;
+  stagedEnvValues = /* @__PURE__ */ new Map();
+  stagedHttpUrl = void 0;
+  isSaving = false;
+  isSaved = false;
+  allowCloseAfterSave = false;
+  cancelledNewCalled = false;
+  envSectionEl = null;
+  applyVisibility = null;
+  close() {
+    if (this.isSaving && !this.allowCloseAfterSave) {
+      return;
+    }
+    super.close();
+  }
+  onOpen() {
+    this.modalEl.addClass("vault-search-mcp-editor");
+    this.titleEl.setText("MCP \uC11C\uBC84 \uD3B8\uC9D1");
+    this.renderBasics();
+    this.renderEnvSection();
+    const toolsContainer = this.contentEl.createDiv({
+      cls: "vault-search-mcp-tools"
+    });
+    this.renderActions();
+    this.applyVisibility?.();
+    void this.populateToolPolicies(toolsContainer);
+  }
+  hasStoredOrStagedUrl() {
+    if (this.stagedHttpUrl !== void 0) {
+      return this.stagedHttpUrl !== null && this.stagedHttpUrl !== "";
+    }
+    if (this.callbacks.hasHttpUrl) {
+      return this.callbacks.hasHttpUrl();
+    }
+    return Boolean(this.working.url);
+  }
+  hasStoredOrStagedEnv(name) {
+    if (this.stagedEnvValues.has(name)) {
+      const v = this.stagedEnvValues.get(name);
+      return v !== null && v !== "";
+    }
+    return this.callbacks.hasEnvValue(name);
+  }
+  renderBasics() {
+    const container = this.contentEl.createDiv({
+      cls: "vault-search-mcp-editor-basics"
+    });
+    new import_obsidian3.Setting(container).setName("\uD45C\uC2DC\uBA85").addText(
+      (text) => text.setValue(this.working.name).onChange((value) => {
+        this.working.name = value;
+      })
+    );
+    const applyTransportVisibility = () => {
+      const isHttp = this.working.transport === "http";
+      stdioFields.toggleClass("is-hidden", isHttp);
+      httpFields.toggleClass("is-hidden", !isHttp);
+      if (this.envSectionEl) {
+        this.envSectionEl.toggleClass("is-hidden", isHttp);
+      }
+      const isCustom = this.working.cwd !== "vault" && this.working.cwd !== "plugin";
+      cwdCustomField.toggleClass("is-hidden", !isCustom);
+    };
+    this.applyVisibility = applyTransportVisibility;
+    new import_obsidian3.Setting(container).setName("\uC5F0\uACB0 \uBC29\uC2DD").setDesc(
+      "\uB85C\uCEEC \uBA85\uB839\uC740 \uC774 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uC790\uC2DD \uD504\uB85C\uC138\uC2A4\uB85C \uC2E4\uD589\uB429\uB2C8\uB2E4. \uC6D0\uACA9 URL\uC740 \uC2A4\uD2B8\uB9AC\uBC0D HTTP MCP \uC11C\uBC84\uC5D0 \uC9C1\uC811 \uC5F0\uACB0\uD569\uB2C8\uB2E4."
+    ).addDropdown(
+      (dropdown) => dropdown.addOption("stdio", "\uB85C\uCEEC \uBA85\uB839 (stdio)").addOption("http", "\uC6D0\uACA9 URL (HTTP)").setValue(this.working.transport).onChange((value) => {
+        this.working.transport = value === "http" ? "http" : "stdio";
+        applyTransportVisibility();
+      })
+    );
+    const stdioFields = container.createDiv();
+    const httpFields = container.createDiv();
+    new import_obsidian3.Setting(stdioFields).setName("\uC2E4\uD589 \uBA85\uB839").setDesc(
+      "\uC608: python, npx, C:\\tools\\server.exe \u2014 \uC178\uC744 \uAC70\uCE58\uC9C0 \uC54A\uACE0 \uC9C1\uC811 \uC2E4\uD589\uB429\uB2C8\uB2E4."
+    ).addText(
+      (text) => text.setValue(this.working.command).onChange((value) => {
+        this.working.command = value;
+      })
+    );
+    new import_obsidian3.Setting(stdioFields).setName("\uC778\uC790").setDesc("\uD55C \uC904\uC5D0 \uD558\uB098\uC529 \uC785\uB825\uD569\uB2C8\uB2E4.").addTextArea((text) => {
+      text.setValue(this.working.args.join("\n")).onChange((value) => {
+        this.working.args = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      });
+      text.inputEl.rows = 3;
+    });
+    const cwdSetting = new import_obsidian3.Setting(stdioFields).setName("\uC791\uC5C5 \uD3F4\uB354");
+    const cwdCustomField = stdioFields.createDiv();
+    cwdSetting.addDropdown(
+      (dropdown) => dropdown.addOption("vault", "\uBCFC\uD2B8 \uB8E8\uD2B8").addOption("plugin", "\uD50C\uB7EC\uADF8\uC778 \uD3F4\uB354").addOption("custom", "\uC9C1\uC811 \uC9C0\uC815").setValue(
+        this.working.cwd === "vault" || this.working.cwd === "plugin" ? this.working.cwd : "custom"
+      ).onChange((value) => {
+        if (value === "custom") {
+          if (this.working.cwd === "vault" || this.working.cwd === "plugin") {
+            this.working.cwd = "";
+          }
+        } else {
+          this.working.cwd = value;
+        }
+        applyTransportVisibility();
+      })
+    );
+    new import_obsidian3.Setting(cwdCustomField).setName("\uC791\uC5C5 \uD3F4\uB354 \uACBD\uB85C").setDesc("\uC9C1\uC811 \uC9C0\uC815 \uC2DC \uC0AC\uC6A9\uD560 \uC808\uB300 \uACBD\uB85C\uC785\uB2C8\uB2E4.").addText(
+      (text) => text.setPlaceholder("\uC608: C:\\tools\\mcp-server").setValue(
+        this.working.cwd !== "vault" && this.working.cwd !== "plugin" ? this.working.cwd : ""
+      ).onChange((value) => {
+        if (value.trim()) this.working.cwd = value.trim();
+      })
+    );
+    const httpSetting = new import_obsidian3.Setting(httpFields).setName("\uC11C\uBC84 URL").setDesc(
+      "\uC11C\uBE44\uC2A4\uC5D0\uC11C \uBC1C\uAE09\uD55C \uC804\uCCB4 \uC811\uC18D URL\uC744 \uC785\uB825\uD558\uC138\uC694. \uC804\uCCB4 URL\uC740 Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0\uB9CC \uBCF4\uAD00\uB418\uBA70, \uC124\uC815 \uD30C\uC77C\uACFC \uC0C1\uD0DC \uBAA9\uB85D\uC5D0\uB294 \uB3C4\uBA54\uC778(\uC624\uB9AC\uC9C4)\uB9CC \uD45C\uC2DC\uB429\uB2C8\uB2E4."
+    );
+    const httpWarningEl = httpFields.createDiv({
+      cls: "vault-search-mcp-http-warning is-hidden"
+    });
+    httpWarningEl.setText(
+      "\uACBD\uACE0: \uBE44-\uB8E8\uD504\uBC31 HTTP \uC5F0\uACB0\uC740 \uC554\uD638\uD654\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC6D0\uACA9 \uC11C\uBC84\uB294 HTTPS\uB97C \uAD8C\uC7A5\uD569\uB2C8\uB2E4."
+    );
+    let urlInputEl = null;
+    const renderHttpField = () => {
+      const stored = this.hasStoredOrStagedUrl();
+      const originDisplay = this.working.url ? ` (\uD45C\uC2DC \uC624\uB9AC\uC9C4: ${toSafeOrigin(this.working.url)})` : "";
+      httpSetting.setDesc(
+        `\uC804\uCCB4 URL\uC740 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0\uB9CC \uBCF4\uAD00\uB429\uB2C8\uB2E4. \uD604\uC7AC \uC0C1\uD0DC: ${stored ? "\uC800\uC7A5\uB428" : "\uBBF8\uC800\uC7A5"}${originDisplay}`
+      );
+      try {
+        const checkUrl = this.stagedHttpUrl || this.working.url;
+        if (checkUrl) {
+          const parsed = new URL(checkUrl);
+          if (parsed.protocol === "http:" && !isLoopbackHost(parsed.hostname)) {
+            httpWarningEl.removeClass("is-hidden");
+          } else {
+            httpWarningEl.addClass("is-hidden");
+          }
+        } else {
+          httpWarningEl.addClass("is-hidden");
+        }
+      } catch {
+        httpWarningEl.addClass("is-hidden");
+      }
+    };
+    httpSetting.addText((text) => {
+      urlInputEl = text.inputEl;
+      if (text.inputEl) {
+        text.inputEl.type = "password";
+        if (typeof text.inputEl.setAttribute === "function") {
+          text.inputEl.setAttribute("aria-label", "\uC6D0\uACA9 MCP \uC11C\uBC84 \uC804\uCCB4 URL");
+        }
+      }
+      const stored = this.hasStoredOrStagedUrl();
+      text.setPlaceholder(
+        stored ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (\uBCC0\uACBD \uC2DC \uC0C8 \uC804\uCCB4 URL \uC785\uB825)" : "https://example.com/mcp?token=..."
+      ).onChange((value) => {
+        const trimmed = value.trim();
+        if (trimmed) {
+          this.stagedHttpUrl = trimmed;
+          const safe = toSafeOrigin(trimmed);
+          this.working.url = safe;
+        } else {
+          this.stagedHttpUrl = void 0;
+          this.working.url = this.originalSafeOrigin;
+        }
+        renderHttpField();
+      });
+    });
+    httpSetting.addButton(
+      (button) => button.setButtonText("URL \uC0AD\uC81C").setWarning().onClick(() => {
+        this.stagedHttpUrl = "";
+        this.working.url = "";
+        if (urlInputEl) urlInputEl.value = "";
+        renderHttpField();
+        new import_obsidian3.Notice("\uC6D0\uACA9 URL\uC774 \uC0AD\uC81C \uB300\uAE30 \uC0C1\uD0DC\uB85C \uC124\uC815\uB418\uC5C8\uC2B5\uB2C8\uB2E4. '\uC800\uC7A5' \uC2DC \uC644\uC804\uD788 \uC0AD\uC81C\uB429\uB2C8\uB2E4.", 4e3);
+      })
+    );
+    renderHttpField();
+    applyTransportVisibility();
+  }
+  renderEnvSection() {
+    const section = this.contentEl.createDiv({ cls: "vault-search-mcp-env" });
+    this.envSectionEl = section;
+    section.createEl("div", {
+      cls: "setting-item-name",
+      text: "\uD658\uACBD \uBCC0\uC218 (\uAC12\uC740 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0\uB9CC \uC800\uC7A5)"
+    });
+    const renderRows = () => {
+      section.querySelectorAll(".vault-search-mcp-env-row").forEach((row) => row.remove());
+      for (const envName of [...this.working.envNames]) {
+        const row = section.createDiv({ cls: "vault-search-mcp-env-row" });
+        row.createEl("span", {
+          text: envName,
+          cls: "vault-search-mcp-env-name"
+        });
+        const stored = this.hasStoredOrStagedEnv(envName);
+        row.createEl("span", {
+          text: stored ? "\uC800\uC7A5\uB428" : "\uBBF8\uC800\uC7A5",
+          cls: `vault-search-mcp-env-state ${stored ? "is-set" : "is-unset"}`
+        });
+        const input = document.createElement("input");
+        input.type = "password";
+        input.placeholder = stored ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (\uBCC0\uACBD \uC2DC \uC785\uB825)" : "\uAC12 \uC785\uB825";
+        input.setAttribute("aria-label", `${envName} \uAC12`);
+        input.className = "vault-search-mcp-env-input";
+        row.appendChild(input);
+        const save = row.createEl("button", {
+          text: "\uC785\uB825",
+          attr: { type: "button", "aria-label": `${envName} \uAC12 \uC785\uB825` }
+        });
+        save.addEventListener("click", () => {
+          const val = input.value;
+          this.stagedEnvValues.set(envName, val);
+          input.value = "";
+          renderRows();
+          new import_obsidian3.Notice(
+            `${envName} \uAC12\uC774 \uC900\uBE44\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uBAA8\uB2EC\uC758 '\uC800\uC7A5' \uBC84\uD2BC\uC744 \uB204\uB974\uBA74 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uBC18\uC601\uB429\uB2C8\uB2E4.`,
+            4e3
+          );
+        });
+        const remove = row.createEl("button", {
+          text: "\uC0AD\uC81C",
+          attr: { type: "button", "aria-label": `${envName} \uD658\uACBD \uBCC0\uC218 \uC81C\uAC70` }
+        });
+        remove.addEventListener("click", () => {
+          this.working.envNames = this.working.envNames.filter(
+            (name) => name !== envName
+          );
+          this.stagedEnvValues.set(envName, null);
+          renderRows();
+        });
+      }
+    };
+    renderRows();
+    const addRow = section.createDiv({ cls: "vault-search-mcp-env-add" });
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "\uD658\uACBD \uBCC0\uC218 \uC774\uB984 (\uC608: GITHUB_TOKEN)";
+    nameInput.setAttribute("aria-label", "\uC0C8 \uD658\uACBD \uBCC0\uC218 \uC774\uB984");
+    nameInput.className = "vault-search-mcp-env-input";
+    addRow.appendChild(nameInput);
+    addRow.createEl("button", { text: "\uBCC0\uC218 \uCD94\uAC00", attr: { type: "button" } }).addEventListener("click", () => {
+      const name = nameInput.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
+        new import_obsidian3.Notice("\uD658\uACBD \uBCC0\uC218 \uC774\uB984 \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.", 5e3);
+        return;
+      }
+      if (this.working.envNames.includes(name)) {
+        new import_obsidian3.Notice("\uC774\uBBF8 \uB4F1\uB85D\uB41C \uC774\uB984\uC785\uB2C8\uB2E4.", 5e3);
+        return;
+      }
+      this.working.envNames = [...this.working.envNames, name];
+      nameInput.value = "";
+      renderRows();
+    });
+  }
+  async populateToolPolicies(wrap) {
+    try {
+      const status = await this.editorOwner.refreshMcpStatus();
+      const serverStatus = status.servers.find(
+        (entry) => entry.id === this.working.id
+      );
+      if (!serverStatus || serverStatus.tools === 0) return;
+      wrap.empty();
+      wrap.createEl("div", {
+        cls: "setting-item-name",
+        text: `\uBC1C\uACAC\uB41C \uB3C4\uAD6C (${serverStatus.tools}) \u2014 \uC2E4\uD589 \uC804 \uC2B9\uC778 \uC5EC\uBD80`
+      });
+      const allTools = Array.from(
+        /* @__PURE__ */ new Set([
+          ...Object.keys(this.working.toolPolicies),
+          ...serverStatus.tool_names || []
+        ])
+      ).sort();
+      const renderSegmented = (parent, tools, current) => {
+        const seg = parent.createDiv({ cls: "vault-search-policy-seg" });
+        for (const [value, label, icon] of [
+          ["allow", "\uC790\uB3D9 \uD5C8\uC6A9", "\u2713"],
+          ["ask", "\uC2B9\uC778 \uC694\uAD6C", "\u270B"],
+          ["deny", "\uAC70\uBD80", "\u2298"]
+        ]) {
+          const button = seg.createEl("button", {
+            text: `${icon} ${label}`,
+            cls: `vault-search-policy-option seg-${value}${current === value ? " is-active" : ""}`,
+            attr: {
+              type: "button",
+              "aria-label": `${tools.length > 1 ? `${tools.length}\uAC1C \uB3C4\uAD6C` : tools[0]} ${label}`,
+              "aria-pressed": String(current === value)
+            }
+          });
+          button.addEventListener("click", () => {
+            this.working.toolPolicies = tools.length === 1 ? { ...this.working.toolPolicies, [tools[0]]: value } : withPolicyForAll(this.working.toolPolicies, tools, value);
+            renderRows();
+          });
+        }
+      };
+      const renderRows = () => {
+        wrap.querySelectorAll(
+          ".vault-search-mcp-tool-row,.vault-search-mcp-tools-all"
+        ).forEach((row) => row.remove());
+        const allRow = wrap.createDiv({ cls: "vault-search-mcp-tools-all" });
+        allRow.createEl("span", {
+          text: "\uBAA8\uB4E0 \uB3C4\uAD6C",
+          cls: "vault-search-mcp-tool-name"
+        });
+        renderSegmented(allRow, allTools, this.majorityPolicy(allTools));
+        for (const tool of allTools) {
+          const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
+          row.createEl("span", {
+            text: tool,
+            cls: "vault-search-mcp-tool-name"
+          });
+          renderSegmented(
+            row,
+            [tool],
+            this.working.toolPolicies[tool] || "ask"
+          );
+        }
+      };
+      renderRows();
+    } catch {
+    }
+  }
+  /** The policy shown on the bulk row: the common value across tools, or
+   *  "ask" when they disagree (safe default wins ties). */
+  majorityPolicy(tools) {
+    let allow = true;
+    let deny = true;
+    for (const tool of tools) {
+      const policy = this.working.toolPolicies[tool] || "ask";
+      if (policy !== "allow") allow = false;
+      if (policy !== "deny") deny = false;
+    }
+    if (allow) return "allow";
+    if (deny) return "deny";
+    return "ask";
+  }
+  onClose() {
+    if (!this.isSaved && !this.isCommittedEntry && !this.cancelledNewCalled) {
+      this.cancelledNewCalled = true;
+      this.callbacks.onCancelledNew?.();
+    }
+    this.contentEl.empty();
+  }
+  renderActions() {
+    const bar = this.contentEl.createDiv({
+      cls: "vault-search-mcp-editor-actions"
+    });
+    let saveButton = null;
+    let cancelButton = null;
+    new import_obsidian3.Setting(bar).addButton((button) => {
+      cancelButton = button;
+      button.setButtonText("\uCDE8\uC18C").onClick(() => {
+        if (this.isSaving) return;
+        this.close();
+      });
+    }).addButton((button) => {
+      saveButton = button;
+      button.setButtonText("\uC800\uC7A5").setCta().onClick(async () => {
+        if (this.isSaving) return;
+        const problem = validateMcpServerForm(this.working, {
+          hasStoredUrl: this.hasStoredOrStagedUrl(),
+          stagedRawUrl: this.stagedHttpUrl
+        });
+        if (problem) {
+          new import_obsidian3.Notice(problem, 5e3);
+          return;
+        }
+        this.isSaving = true;
+        this.allowCloseAfterSave = false;
+        const formElements = Array.from(
+          this.modalEl.querySelectorAll("input, textarea, select, button")
+        );
+        const previousDisabledStates = formElements.map((el) => el.disabled);
+        formElements.forEach((el) => {
+          el.disabled = true;
+        });
+        try {
+          const workingSnapshot = {
+            ...this.working,
+            args: [...this.working.args],
+            envNames: [...this.working.envNames],
+            toolPolicies: { ...this.working.toolPolicies }
+          };
+          const envValues = {};
+          const removedEnvNames = [];
+          for (const [name, val] of this.stagedEnvValues.entries()) {
+            if (val === null || val === "") removedEnvNames.push(name);
+            else envValues[name] = val;
+          }
+          const stagedSnapshot = {
+            envValues,
+            removedEnvNames,
+            httpUrl: this.stagedHttpUrl
+          };
+          if (this.callbacks.onSave) {
+            await this.callbacks.onSave(workingSnapshot, stagedSnapshot);
+          } else {
+            await this.commitStagedSecrets();
+            this.callbacks.onSaved?.();
+          }
+          this.allowCloseAfterSave = true;
+          this.isSaved = true;
+          this.close();
+        } catch (error) {
+          this.isSaving = false;
+          this.allowCloseAfterSave = false;
+          formElements.forEach((el, idx) => {
+            el.disabled = previousDisabledStates[idx] ?? false;
+          });
+          const rawMsg = error instanceof Error ? error.message : String(error);
+          const envVals = Array.from(this.stagedEnvValues.values()).filter(
+            (v) => Boolean(v)
+          );
+          const sanitized = sanitizeSecretMessage(rawMsg, [
+            this.stagedHttpUrl,
+            ...envVals
+          ]);
+          new import_obsidian3.Notice(sanitized, 8e3);
+        }
+      });
+    });
+  }
+  async commitStagedSecrets() {
+    try {
+      if (this.callbacks.saveAllSecrets) {
+        const envValues = {};
+        const removedEnvNames = [];
+        for (const [name, val] of this.stagedEnvValues.entries()) {
+          if (val === null || val === "") removedEnvNames.push(name);
+          else envValues[name] = val;
+        }
+        await this.callbacks.saveAllSecrets({
+          envValues,
+          removedEnvNames,
+          httpUrl: this.stagedHttpUrl
+        });
+        return;
+      }
+      if (this.stagedHttpUrl !== void 0) {
+        if (this.stagedHttpUrl === null || this.stagedHttpUrl === "") {
+          if (this.callbacks.removeHttpUrl) {
+            await this.callbacks.removeHttpUrl();
+          }
+        } else {
+          if (this.callbacks.saveHttpUrl) {
+            await this.callbacks.saveHttpUrl(this.stagedHttpUrl);
+          }
+        }
+      }
+      for (const [name, val] of this.stagedEnvValues.entries()) {
+        if (val === null || val === "") {
+          if (this.callbacks.removeEnvValue) {
+            await this.callbacks.removeEnvValue(name);
+          }
+        } else {
+          if (this.callbacks.saveEnvValue) {
+            await this.callbacks.saveEnvValue(name, val);
+          }
+        }
+      }
+    } catch (err) {
+      if (err instanceof Error && (err.message.startsWith("MCP_SECRET_COMMIT_FAILED:") || err.message.startsWith("MCP_SECRET_DELETE_FAILED:") || err.message.startsWith("MCP_SECRET_SNAPSHOT_FAILED:") || err.message.startsWith("MCP_SECRET_RESTORE_FAILED:") || err.message.startsWith("MCP_TRANSACTION_FAILED:"))) {
+        throw err;
+      }
+      throw new Error(
+        `MCP_SECRET_COMMIT_FAILED: \uC11C\uBC84(${this.working.id}) \uBCF4\uC548 \uC800\uC7A5\uC18C \uBC18\uC601\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.`
+      );
+    }
+  }
+  /** True once onSaved ran (or the entry already exists in the list); a
+   *  cancel before that means the brand-new entry must be rolled back. */
+  get isCommittedEntry() {
+    return (this.editorOwner.draftSettings.mcpServers || []).some(
+      (server) => server.id === this.working.id
+    );
+  }
+};
+
+// src/settings-tab.ts
+var import_obsidian7 = require("obsidian");
 
 // src/model-catalog.ts
 var OPENAI_NON_CHAT_MARKERS = [
@@ -4889,7 +6267,9 @@ function renderServerRow(containerEl, owner, server) {
   const kindLabel = server.transport === "http" ? "\uC6D0\uACA9 URL" : "\uB85C\uCEEC \uBA85\uB839";
   new import_obsidian5.Setting(containerEl).setName(server.name || "(\uC774\uB984 \uC5C6\uC74C)").setDesc(`${kindLabel} \xB7 ${describeMcpServer(server)}`).addToggle(
     (toggle) => toggle.setValue(server.enabled).onChange((value) => {
-      server.enabled = value;
+      owner.draftSettings.mcpServers = (owner.draftSettings.mcpServers || []).map(
+        (s) => s.id === server.id ? { ...s, enabled: value } : s
+      );
     })
   ).addButton(
     (button) => button.setButtonText("\uC218\uC815").setTooltip("\uC774 \uC11C\uBC84\uC758 \uC5F0\uACB0 \uBC29\uC2DD\xB7\uBA85\uB839\xB7\uD658\uACBD \uBCC0\uC218\uB97C \uD3B8\uC9D1\uD569\uB2C8\uB2E4").onClick(() => owner.openMcpServerEditor(server.id))
@@ -4897,8 +6277,14 @@ function renderServerRow(containerEl, owner, server) {
     (button) => button.setButtonText("\uC0AD\uC81C").setWarning().onClick(async () => {
       if (!window.confirm(`MCP \uC11C\uBC84 '${server.name}'\uC744(\uB97C) \uC0AD\uC81C\uD560\uAE4C\uC694?`))
         return;
-      await owner.deleteMcpServer(server.id);
-      owner.settingTab?.display();
+      button.setDisabled(true);
+      try {
+        await owner.deleteMcpServer(server.id);
+      } catch (err) {
+        button.setDisabled(false);
+        const msg = err instanceof Error ? err.message : String(err);
+        new import_obsidian5.Notice(`MCP \uC11C\uBC84 \uC0AD\uC81C \uC2E4\uD328: ${msg}`, 6e3);
+      }
     })
   );
 }
@@ -5116,6 +6502,10 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
   }
   activeTab = "general";
   providerModelSelections = {};
+  modelSelectionOpSeq = 0;
+  latestModelSelectionOp = {};
+  favoriteOpSeq = 0;
+  latestFavoriteOp = {};
   /** Status line created by display(); updated in place on backend events so
    *  the tab never re-renders (which would reset the scroll position) while
    *  the user is editing settings. */
@@ -5245,6 +6635,8 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       return text;
     }).addButton(
       (button) => button.setButtonText("\uD14C\uC2A4\uD2B8").onClick(async () => {
+        const targetProvider = draft.answerProvider;
+        const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
         const key = apiKeyInput?.value.trim() || savedApiKey || "";
         if (!key) {
           new import_obsidian7.Notice("\uC800\uC7A5\uB41C \uD0A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
@@ -5253,16 +6645,16 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         button.setDisabled(true);
         try {
           const status2 = await validateProviderApiKey(
-            draft.answerProvider,
+            targetProvider,
             key
           );
           let message;
           if (status2 === "valid") {
-            message = `${answerProvider.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.`;
+            message = `${targetProviderInfo.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.`;
           } else if (status2 === "invalid") {
-            message = `${answerProvider.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`;
+            message = `${targetProviderInfo.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`;
           } else {
-            message = `${answerProvider.name} \uD0A4 \uC778\uC99D\uC744 \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 (\uB124\uD2B8\uC6CC\uD06C/provider \uC0C1\uD0DC). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
+            message = `${targetProviderInfo.name} \uD0A4 \uC778\uC99D\uC744 \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 (\uB124\uD2B8\uC6CC\uD06C/provider \uC0C1\uD0DC). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
           }
           new import_obsidian7.Notice(message, 8e3);
         } catch (error) {
@@ -5273,14 +6665,16 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     ).addButton(
       (button) => button.setButtonText("\uC800\uC7A5").setCta().onClick(async () => {
+        const targetProvider = draft.answerProvider;
+        const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
         const value = apiKeyInput?.value.trim() || "";
         if (!value) {
           new import_obsidian7.Notice("\uC800\uC7A5\uD560 API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.");
           return;
         }
         try {
-          await this.owner.saveProviderApiKey(draft.answerProvider, value);
-          new import_obsidian7.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
+          await this.owner.saveProviderApiKey(targetProvider, value);
+          new import_obsidian7.Notice(`${targetProviderInfo.name} API \uD0A4\uB97C \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
           this.display();
         } catch (error) {
           this.showError(error);
@@ -5288,9 +6682,11 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     ).addButton(
       (button) => button.setButtonText("\uC0AD\uC81C").onClick(async () => {
+        const targetProvider = draft.answerProvider;
+        const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
         try {
-          await this.owner.saveProviderApiKey(draft.answerProvider, "");
-          new import_obsidian7.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC0AD\uC81C\uD588\uC2B5\uB2C8\uB2E4.`);
+          await this.owner.saveProviderApiKey(targetProvider, "");
+          new import_obsidian7.Notice(`${targetProviderInfo.name} API \uD0A4\uB97C \uC0AD\uC81C\uD588\uC2B5\uB2C8\uB2E4.`);
           this.display();
         } catch (error) {
           this.showError(error);
@@ -5325,13 +6721,34 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
           text: model,
           attr: { type: "button", title: model }
         });
-        name.addEventListener("click", () => {
-          draft.answerModel = model;
-          this.providerModelSelections[draft.answerProvider] = model;
-          void this.owner.setAnswerModel(draft.answerProvider, model, {
-            notify: false
-          });
+        name.addEventListener("click", async () => {
+          name.disabled = true;
+          const targetProvider = draft.answerProvider;
+          const targetModel = model;
+          const prevModel = draft.answerModel;
+          const prevSelection = this.providerModelSelections[targetProvider];
+          const opId = ++this.modelSelectionOpSeq;
+          this.latestModelSelectionOp[targetProvider] = opId;
+          draft.answerModel = targetModel;
+          this.providerModelSelections[targetProvider] = targetModel;
           renderModelList();
+          try {
+            await this.owner.setAnswerModel(targetProvider, targetModel, {
+              notify: false
+            });
+          } catch (error) {
+            const isLatest = this.latestModelSelectionOp[targetProvider] === opId;
+            const matchesDraft = draft.answerProvider === targetProvider && draft.answerModel === targetModel;
+            const matchesSelection = this.providerModelSelections[targetProvider] === targetModel;
+            if (isLatest && matchesDraft && matchesSelection) {
+              draft.answerModel = prevModel;
+              this.providerModelSelections[targetProvider] = prevSelection;
+              renderModelList();
+            } else if (isLatest && matchesSelection) {
+              this.providerModelSelections[targetProvider] = prevSelection;
+            }
+            this.showError(error);
+          }
         });
         if (model === draft.answerModel && !fetchedModels.includes(model)) {
           row.createEl("span", {
@@ -5352,17 +6769,70 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
           }
         });
         star.toggleClass("is-favorite", starred);
-        star.addEventListener("click", () => {
-          const index = favorites.findIndex(
-            (favorite) => favorite.provider === draft.answerProvider && favorite.model === model
+        star.addEventListener("click", async () => {
+          star.disabled = true;
+          const targetProvider = draft.answerProvider;
+          const targetModel = model;
+          const opKey = `${targetProvider}::${targetModel}`;
+          const opId = ++this.favoriteOpSeq;
+          this.latestFavoriteOp[opKey] = opId;
+          const prevFavorites = Array.isArray(draft.favoriteAnswerModels) ? draft.favoriteAnswerModels.map((f) => ({ ...f })) : [];
+          const exists = prevFavorites.some(
+            (f) => f.provider === targetProvider && f.model === targetModel
           );
-          if (index >= 0) favorites.splice(index, 1);
-          else favorites.push({ provider: draft.answerProvider, model });
-          draft.favoriteAnswerModels = favorites.map((favorite) => ({
-            ...favorite
+          const desiredFavorite = !exists;
+          const optimisticFavorites = desiredFavorite ? [
+            ...prevFavorites,
+            { provider: targetProvider, model: targetModel }
+          ] : prevFavorites.filter(
+            (f) => !(f.provider === targetProvider && f.model === targetModel)
+          );
+          draft.favoriteAnswerModels = optimisticFavorites.map((f) => ({
+            ...f
           }));
-          void this.owner.toggleFavoriteModel(draft.answerProvider, model);
+          favorites.length = 0;
+          favorites.push(...optimisticFavorites.map((f) => ({ ...f })));
           renderModelList();
+          try {
+            await this.owner.toggleFavoriteModel(
+              targetProvider,
+              targetModel,
+              desiredFavorite
+            );
+            const isLatest = this.latestFavoriteOp[opKey] === opId;
+            if (isLatest) {
+              const latestSaved = Array.isArray(
+                this.owner.settings.favoriteAnswerModels
+              ) ? this.owner.settings.favoriteAnswerModels.map((f) => ({
+                ...f
+              })) : [];
+              draft.favoriteAnswerModels = latestSaved.map((f) => ({ ...f }));
+              favorites.length = 0;
+              favorites.push(...latestSaved.map((f) => ({ ...f })));
+              if (draft.answerProvider === targetProvider) {
+                renderModelList();
+              }
+            }
+          } catch (error) {
+            const isLatest = this.latestFavoriteOp[opKey] === opId;
+            const currentDraftFavs = draft.favoriteAnswerModels || [];
+            const isOptimisticMatch = currentDraftFavs.length === optimisticFavorites.length && optimisticFavorites.every(
+              (opt) => currentDraftFavs.some(
+                (cur) => cur.provider === opt.provider && cur.model === opt.model
+              )
+            );
+            if (isLatest && isOptimisticMatch) {
+              draft.favoriteAnswerModels = prevFavorites.map((f) => ({
+                ...f
+              }));
+              favorites.length = 0;
+              favorites.push(...prevFavorites.map((f) => ({ ...f })));
+              if (draft.answerProvider === targetProvider) {
+                renderModelList();
+              }
+            }
+            this.showError(error);
+          }
         });
       }
     };
@@ -5370,16 +6840,18 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
     modelSetting.addButton(
       (button) => button.setButtonText("\uBAA8\uB378 \uCD5C\uC2E0\uD654").onClick(async () => {
         button.setDisabled(true);
+        const targetProvider = draft.answerProvider;
+        const targetProviderInfo = LLM_PROVIDER_DEFAULTS[targetProvider];
         try {
-          const models = await this.owner.fetchProviderModels(
-            draft.answerProvider
-          );
-          this.owner.setProviderModels(draft.answerProvider, models);
-          this.providerModelSelections[draft.answerProvider] = draft.answerModel;
+          const models = await this.owner.fetchProviderModels(targetProvider);
+          await this.owner.setProviderModels(targetProvider, models);
+          this.providerModelSelections[targetProvider] = draft.answerProvider === targetProvider ? draft.answerModel : this.providerModelSelections[targetProvider] || "";
           new import_obsidian7.Notice(
-            models.length ? `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.` : draft.answerProvider === "openai" ? "OpenAI API\uAC00 \uC120\uD0DD \uAC00\uB2A5\uD55C \uCC44\uD305 \uBAA8\uB378\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
+            models.length ? `${targetProviderInfo.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.` : targetProvider === "openai" ? "OpenAI API\uAC00 \uC120\uD0DD \uAC00\uB2A5\uD55C \uCC44\uD305 \uBAA8\uB378\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : `${targetProviderInfo.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
           );
-          this.display();
+          if (draft.answerProvider === targetProvider) {
+            this.display();
+          }
         } catch (error) {
           this.showError(error);
         } finally {
@@ -7169,7 +8641,7 @@ function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
 var import_obsidian13 = require("obsidian");
 
 // src/answer-session.ts
-var import_crypto3 = require("crypto");
+var import_crypto4 = require("crypto");
 var AnswerSession = class {
   constructor(transport, stateChanged) {
     this.transport = transport;
@@ -7274,7 +8746,7 @@ var AnswerSession = class {
     this.generation++;
   }
   async resolveStart(generation, query, conversation) {
-    const runId = (0, import_crypto3.randomUUID)();
+    const runId = (0, import_crypto4.randomUUID)();
     this.activeRunId = runId;
     try {
       const response = await this.transport.start({
@@ -7621,9 +9093,22 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
       cls: "vault-ai-search-model-select vault-ai-search-effort-select",
       attr: { "aria-label": "\uCD94\uB860 \uAC15\uB3C4 (reasoning effort)" }
     });
-    const onEffortChange = () => {
+    const onEffortChange = async () => {
       const value = this.effortSelect.value;
-      if (value) void this.owner.setAnswerReasoningEffort(value);
+      if (value) {
+        this.effortSelect.disabled = true;
+        try {
+          await this.owner.setAnswerReasoningEffort(value);
+        } catch (error) {
+          new import_obsidian13.Notice(
+            `\uCD94\uB860 \uAC15\uB3C4 \uC124\uC815 \uC2E4\uD328: ${error instanceof Error ? error.message : String(error)}`,
+            8e3
+          );
+          this.refreshModelSelector();
+        } finally {
+          this.effortSelect.disabled = false;
+        }
+      }
     };
     this.effortSelect.addEventListener("change", onEffortChange);
     this.listeners.push(
@@ -7696,10 +9181,21 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
     clear.addEventListener("click", clearQuery);
     this.listeners.push(() => clear.removeEventListener("click", clearQuery));
     void spacer;
-    const onModelChange = () => {
+    const onModelChange = async () => {
       const [provider, model] = this.modelSelect.value.split("::", 2);
       if (provider && model) {
-        void this.owner.setAnswerModel(provider, model);
+        this.modelSelect.disabled = true;
+        try {
+          await this.owner.setAnswerModel(provider, model);
+        } catch (error) {
+          new import_obsidian13.Notice(
+            `\uBAA8\uB378 \uBCC0\uACBD \uC2E4\uD328: ${error instanceof Error ? error.message : String(error)}`,
+            8e3
+          );
+          this.refreshModelSelector();
+        } finally {
+          this.modelSelect.disabled = false;
+        }
       }
     };
     this.modelSelect.addEventListener("change", onModelChange);
@@ -8219,73 +9715,6 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
   }
 };
 
-// src/mcp-secrets.ts
-var import_crypto4 = require("crypto");
-function storage2(app) {
-  return app.secretStorage;
-}
-function mcpSecretId(serverId, envName) {
-  const digest = (0, import_crypto4.createHash)("sha256").update(envName, "utf8").digest("hex");
-  return `vault-search-mcp-env-${serverId}-${digest.slice(0, 12)}`;
-}
-function getMcpSecret(app, serverId, envName) {
-  const value = storage2(app)?.getSecret(mcpSecretId(serverId, envName));
-  return value === null || value === void 0 ? null : value;
-}
-function setMcpSecret(app, serverId, envName, value) {
-  const secretStorage = storage2(app);
-  if (!secretStorage) {
-    throw new Error(
-      "\uC774 \uBC84\uC804\uC758 Obsidian\uC740 \uBCF4\uC548 \uD0A4 \uC800\uC7A5\uC18C\uB97C \uC9C0\uC6D0\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. Obsidian 1.11.4 \uC774\uC0C1\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
-    );
-  }
-  secretStorage.setSecret(mcpSecretId(serverId, envName), value);
-}
-function deleteMcpSecret(app, serverId, envName) {
-  storage2(app)?.setSecret(mcpSecretId(serverId, envName), "");
-}
-function deleteServerSecrets(app, server) {
-  for (const name of server.envNames || []) {
-    deleteMcpSecret(app, server.id, name);
-  }
-}
-function buildMcpSecretPayload(app, servers) {
-  const payloadServers = {};
-  const summary = {};
-  const skipped = [];
-  let totalBytes = 0;
-  for (const server of servers) {
-    if (!server.enabled) continue;
-    const values = {};
-    for (const envName of server.envNames || []) {
-      if (!envName || envName.length > MCP_SECRET_NAME_MAX) {
-        skipped.push({ serverId: server.id, envName, reason: "invalid-name" });
-        continue;
-      }
-      const value = getMcpSecret(app, server.id, envName);
-      if (value === null || value === "") continue;
-      const size = Buffer.byteLength(envName) + Buffer.byteLength(value);
-      if (value.length > MCP_SECRET_VALUE_MAX) {
-        skipped.push({ serverId: server.id, envName, reason: "value-too-large" });
-        continue;
-      }
-      if (totalBytes + size > MCP_SECRET_PAYLOAD_LIMIT_BYTES) {
-        skipped.push({
-          serverId: server.id,
-          envName,
-          reason: "payload-budget-exceeded"
-        });
-        continue;
-      }
-      totalBytes += size;
-      values[envName] = value;
-    }
-    payloadServers[server.id] = values;
-    summary[server.id] = Object.keys(values).sort();
-  }
-  return { payload: { servers: payloadServers }, summary, skipped };
-}
-
 // src/main.ts
 var PROVIDER_IDS = ["openai", "opencode-go", "deepseek"];
 function normalizeFavoriteModels(raw, fallbackProvider) {
@@ -8319,9 +9748,11 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   settingTab;
   startupPrepared = false;
   startupInProgress = false;
+  startupConfigSanitized = false;
   searchModal = null;
   aiSearchViews = /* @__PURE__ */ new Set();
-  runtimeChangePromise = null;
+  /** Unified FIFO serialization boundary for debounced settings applies, manual applies, and transactions. */
+  settingsQueue = Promise.resolve();
   /** Debounce handle for auto-applying settings-tab edits. */
   draftApplyTimer = null;
   /** Backing state of the stable draft proxy (identity never changes, so
@@ -8366,8 +9797,21 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       (status) => this.handleStatus(status),
       this.manifest.version,
       () => providerEnvironment(this.app),
-      () => buildMcpSecretPayload(this.app, this.settings.mcpServers || [])
+      (options) => buildMcpSecretPayload(this.app, this.settings.mcpServers || [], options)
     );
+    try {
+      await this.backend.persistServiceConfig();
+      this.startupConfigSanitized = true;
+    } catch {
+      this.startupConfigSanitized = false;
+      console.warn(
+        "[vault-search] Failed to write sanitized service-config during startup (SERVICE_CONFIG_WRITE_FAILED)"
+      );
+      new import_obsidian14.Notice(
+        "Vault Search \uCD08\uAE30\uD654 \uC2E4\uD328: SERVICE_CONFIG_WRITE_FAILED",
+        1e4
+      );
+    }
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
     else await this.backend.writeMachinePython(this.settings.pythonExecutable);
@@ -8422,6 +9866,9 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     this.registerCommands();
     void this.refreshAgentIntegration();
     this.app.workspace.onLayoutReady(() => {
+      if (!this.startupConfigSanitized) {
+        return;
+      }
       if (this.settings.loadPolicy === "vault-open") {
         void this.startBackend().catch(
           (error) => new import_obsidian14.Notice(
@@ -8495,11 +9942,28 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
         Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds
       )
     );
-    const migrated = migrateSettings(this.settings);
+    const mcpMigration = migrateMcpHttpUrls(
+      this.app,
+      this.settings
+    );
+    const failedIds = new Set(mcpMigration.failedServers.map((s) => s.id));
+    if (mcpMigration.failedServers.length > 0) {
+      new import_obsidian14.Notice(
+        `\uC77C\uBD80 \uC6D0\uACA9 MCP \uC11C\uBC84(${mcpMigration.failedServers.length}\uAC1C)\uC758 URL \uBCF4\uC548 \uC800\uC7A5\uC18C \uC774\uC804\uC5D0 \uC2E4\uD328\uD558\uC5EC \uD574\uB2F9 \uC11C\uBC84\uAC00 \uBE44\uD65C\uC131\uD654\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`,
+        8e3
+      );
+    }
+    if (mcpMigration.migratedCount > 0) {
+      new import_obsidian14.Notice(
+        "\uC6D0\uACA9 MCP \uC11C\uBC84 URL\uC774 \uBCF4\uC548 \uC800\uC7A5\uC18C\uB85C \uC548\uC804\uD558\uAC8C \uC774\uC804\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uBCF4\uC548\uC744 \uC704\uD574 \uC6D0\uACA9 \uC11C\uBE44\uC2A4\uC758 \uD1A0\uD070\uC744 \uC7AC\uBC1C\uAE09(\uD68C\uC804)\uD558\uB294 \uAC83\uC744 \uAD8C\uC7A5\uD569\uB2C8\uB2E4.",
+        8e3
+      );
+    }
+    const migrated = migrateSettings(this.settings) || mcpMigration.changed;
     if (loaded?.loadPolicy === void 0) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
-    this.normalizeAgentSettings();
+    this.normalizeAgentSettings(failedIds);
     this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === void 0) {
       await this.saveSettings();
@@ -8534,6 +9998,11 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     return getProviderSecret(this.app, provider);
   }
   async saveProviderApiKey(provider, value) {
+    return this.enqueueSettingsLock(
+      () => this.saveProviderApiKeyUnlocked(provider, value)
+    );
+  }
+  async saveProviderApiKeyUnlocked(provider, value) {
     if (!hasSecretStorage(this.app)) {
       throw new Error(
         "Obsidian 1.11.4 \uC774\uC0C1\uC5D0\uC11C\uB9CC API \uD0A4\uB97C \uBCF4\uC548 \uC800\uC7A5\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
@@ -8572,13 +10041,36 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   }
   /** Cache of fetched model lists per provider (shared by settings + view).
    *  Persists to data.json so restarts keep the list and its stars. */
-  setProviderModels(provider, models) {
+  async setProviderModels(provider, models) {
+    return this.enqueueSettingsLock(
+      () => this.setProviderModelsUnlocked(provider, models)
+    );
+  }
+  async setProviderModelsUnlocked(provider, models) {
+    const previousMemory = this.providerModels[provider];
+    const previousSettings = this.settings.fetchedProviderModels;
+    const previousDraft = this.draftSettings.fetchedProviderModels;
     this.providerModels[provider] = models;
     this.settings.fetchedProviderModels = {
       ...this.settings.fetchedProviderModels,
       [provider]: models
     };
-    void this.saveSettings().catch(() => void 0);
+    this.draftSettings.fetchedProviderModels = {
+      ...this.draftSettings.fetchedProviderModels,
+      [provider]: models
+    };
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      if (previousMemory !== void 0) {
+        this.providerModels[provider] = previousMemory;
+      } else {
+        delete this.providerModels[provider];
+      }
+      this.settings.fetchedProviderModels = previousSettings;
+      this.draftSettings.fetchedProviderModels = previousDraft;
+      throw err;
+    }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
   }
   /** Models the AI search footer offers: the chosen model (if any) plus
@@ -8622,9 +10114,18 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
    *  it up on the next answer request). Persists immediately so a plugin
    *  update/reload never loses the choice. */
   async setAnswerModel(provider, model, options) {
+    return this.enqueueSettingsLock(
+      () => this.setAnswerModelUnlocked(provider, model, options)
+    );
+  }
+  async setAnswerModelUnlocked(provider, model, options) {
     const value = model.trim();
     const previous = this.settings.answerModel;
     const previousProvider = this.settings.answerProvider;
+    const previousReasoning = this.settings.answerReasoningEffort;
+    const previousDraftModel = this.draftSettings.answerModel;
+    const previousDraftProvider = this.draftSettings.answerProvider;
+    const previousDraftReasoning = this.draftSettings.answerReasoningEffort;
     if (!value || value === previous && provider === previousProvider) return;
     this.settings.answerProvider = provider;
     this.settings.answerModel = value;
@@ -8635,7 +10136,17 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     }
     this.draftSettings.answerProvider = provider;
     this.draftSettings.answerModel = value;
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings.answerProvider = previousProvider;
+      this.settings.answerModel = previous;
+      this.settings.answerReasoningEffort = previousReasoning;
+      this.draftSettings.answerProvider = previousDraftProvider;
+      this.draftSettings.answerModel = previousDraftModel;
+      this.draftSettings.answerReasoningEffort = previousDraftReasoning;
+      throw err;
+    }
     if (this.backend.status.state !== "stopped") {
       await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
     }
@@ -8658,6 +10169,11 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   }
   /** Change the reasoning effort from the panel composer (hot, persists). */
   async setAnswerReasoningEffort(effort) {
+    return this.enqueueSettingsLock(
+      () => this.setAnswerReasoningEffortUnlocked(effort)
+    );
+  }
+  async setAnswerReasoningEffortUnlocked(effort) {
     const value = effort.trim();
     const valid = [
       "auto",
@@ -8669,9 +10185,17 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       "max"
     ].includes(value);
     if (!valid || value === this.settings.answerReasoningEffort) return;
+    const previousSettings = this.settings.answerReasoningEffort;
+    const previousDraft = this.draftSettings.answerReasoningEffort;
     this.settings.answerReasoningEffort = value;
     this.draftSettings.answerReasoningEffort = this.settings.answerReasoningEffort;
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings.answerReasoningEffort = previousSettings;
+      this.draftSettings.answerReasoningEffort = previousDraft;
+      throw err;
+    }
     if (this.backend.status.state !== "stopped") {
       await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
     }
@@ -8680,20 +10204,57 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   /** Star/unstar a model from the settings list. Persists immediately (hot)
    *  so favorites survive plugin updates; cross-provider favorites are all
    *  offered in the AI search footer selector. */
-  async toggleFavoriteModel(provider, model) {
-    const favorites = (this.settings.favoriteAnswerModels || []).map(
-      (favorite) => ({ ...favorite })
+  async toggleFavoriteModel(provider, model, desiredFavorite) {
+    return this.enqueueSettingsLock(
+      () => this.toggleFavoriteModelUnlocked(provider, model, desiredFavorite)
     );
+  }
+  async setFavoriteModel(provider, model, desiredFavorite) {
+    return this.enqueueSettingsLock(
+      () => this.toggleFavoriteModelUnlocked(provider, model, desiredFavorite)
+    );
+  }
+  async toggleFavoriteModelUnlocked(provider, model, desiredFavorite) {
+    const currentFavorites = this.settings.favoriteAnswerModels || [];
+    const isFavorite = currentFavorites.some(
+      (favorite) => favorite.provider === provider && favorite.model === model
+    );
+    const targetFavorite = desiredFavorite !== void 0 ? desiredFavorite : !isFavorite;
+    if (isFavorite === targetFavorite) {
+      if (this.draftSettings.favoriteAnswerModels) {
+        const draftHasIt = (this.draftSettings.favoriteAnswerModels || []).some(
+          (f) => f.provider === provider && f.model === model
+        );
+        if (draftHasIt !== targetFavorite) {
+          this.draftSettings.favoriteAnswerModels = currentFavorites.map(
+            (f) => ({ ...f })
+          );
+        }
+      }
+      return;
+    }
+    const previousSettings = this.settings.favoriteAnswerModels;
+    const previousDraft = this.draftSettings.favoriteAnswerModels;
+    const favorites = currentFavorites.map((favorite) => ({ ...favorite }));
     const index = favorites.findIndex(
       (favorite) => favorite.provider === provider && favorite.model === model
     );
-    if (index >= 0) favorites.splice(index, 1);
-    else favorites.push({ provider, model });
+    if (targetFavorite) {
+      if (index < 0) favorites.push({ provider, model });
+    } else {
+      if (index >= 0) favorites.splice(index, 1);
+    }
     this.settings.favoriteAnswerModels = favorites;
     this.draftSettings.favoriteAnswerModels = favorites.map((favorite) => ({
       ...favorite
     }));
-    await this.saveSettings();
+    try {
+      await this.saveSettings();
+    } catch (err) {
+      this.settings.favoriteAnswerModels = previousSettings;
+      this.draftSettings.favoriteAnswerModels = previousDraft;
+      throw err;
+    }
     if (this.backend.status.state !== "stopped") {
       await this.backend.call("apply_search_config", hotConfig(this.settings), 3e4).catch(() => void 0);
     }
@@ -8715,10 +10276,59 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       }
     });
   }
+  /** Mutate the draft backing state in-place to the given settings and cancel
+   *  any pending debounced auto-apply timer. Proxy identity remains unchanged. */
+  restoreDraftInPlace(settings) {
+    this.cancelPendingDraftApply();
+    this.syncDraftTo(settings);
+  }
+  /** Mutate the draft MCP servers slice in-place to the given server list. */
+  restoreMcpServersInPlace(servers) {
+    this.draftTarget.mcpServers = cloneMcpServers(servers);
+  }
+  /** Cancel any scheduled auto-apply timer so stale keystrokes are not applied early. */
+  cancelPendingDraftApply() {
+    if (this.draftApplyTimer !== null) {
+      clearTimeout(this.draftApplyTimer);
+      this.draftApplyTimer = null;
+    }
+  }
+  async enqueueSettingsLock(action) {
+    const prevQueue = this.settingsQueue;
+    let releaseLock;
+    this.settingsQueue = new Promise((resolve3) => {
+      releaseLock = resolve3;
+    });
+    await prevQueue.catch(() => void 0);
+    try {
+      return await action();
+    } finally {
+      releaseLock();
+    }
+  }
+  /** Serialize transactional updates against concurrent settings auto-applies. */
+  async withTransactionLock(action) {
+    this.cancelPendingDraftApply();
+    return this.enqueueSettingsLock(async () => {
+      this.cancelPendingDraftApply();
+      try {
+        return await action();
+      } finally {
+        if (this.draftDirty) {
+          this.scheduleDraftApply();
+        }
+      }
+    });
+  }
   /** Replace the draft's contents with the given settings WITHOUT scheduling
    *  an auto-apply (used after a successful apply). The proxy identity stays
    *  the same, so settings controls bound to it keep receiving edits. */
   syncDraftTo(settings) {
+    for (const key of Object.keys(this.draftTarget)) {
+      if (!(key in settings)) {
+        delete this.draftTarget[key];
+      }
+    }
     Object.assign(this.draftTarget, cloneSettings(settings));
   }
   /** Debounced auto-apply for draft edits (batches text-field keystrokes). */
@@ -8731,18 +10341,20 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       });
     }, 700);
   }
-  async applyDraftSettings() {
-    if (this.runtimeChangePromise) {
-      return this.runtimeChangePromise.then(
-        () => this.draftDirty ? this.applyDraftSettings() : void 0
-      );
+  async applyDraftSettings(options) {
+    if (options?.unlocked) {
+      return this.applyDraftSettingsUnlocked();
     }
-    this.runtimeChangePromise = this.applyDraftSettingsInternal();
-    try {
-      await this.runtimeChangePromise;
-    } finally {
-      this.runtimeChangePromise = null;
-    }
+    return this.enqueueSettingsLock(async () => {
+      this.cancelPendingDraftApply();
+      await this.applyDraftSettingsUnlocked();
+      if (this.draftDirty) {
+        this.scheduleDraftApply();
+      }
+    });
+  }
+  async applyDraftSettingsUnlocked() {
+    return this.applyDraftSettingsInternal();
   }
   async applyDraftSettingsInternal() {
     this.draftDirty = false;
@@ -8776,9 +10388,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
             await this.backend.call("reconcile", { mode: "fast" }, 6e5);
         }
       }
-      if (this.draftDirty) {
-        this.scheduleDraftApply();
-      } else {
+      if (!this.draftDirty) {
         this.syncDraftTo(this.settings);
       }
       if (impact === "all" || impact === "vectors" || impact === "restart") {
@@ -8800,20 +10410,35 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       for (const view of this.aiSearchViews) view.refreshModelSelector();
     }
   }
+  async ensureSanitizedConfig() {
+    if (!this.startupConfigSanitized) {
+      try {
+        await this.backend.persistServiceConfig();
+        this.startupConfigSanitized = true;
+      } catch {
+        new import_obsidian14.Notice(
+          "Vault Search \uC2DC\uC791 \uC2E4\uD328: SERVICE_CONFIG_WRITE_FAILED",
+          1e4
+        );
+        throw new Error("SERVICE_CONFIG_WRITE_FAILED");
+      }
+    }
+  }
   async startBackend() {
+    await this.ensureSanitizedConfig();
     await this.prepareRuntime(this.settings, false);
     await this.backend.ensureStarted();
     await this.completeStartup();
     this.settingTab?.display();
   }
   async installCudaRuntime() {
-    if (this.runtimeChangePromise) return this.runtimeChangePromise;
-    this.runtimeChangePromise = this.installCudaRuntimeInternal();
-    try {
-      await this.runtimeChangePromise;
-    } finally {
-      this.runtimeChangePromise = null;
-    }
+    return this.enqueueSettingsLock(async () => {
+      this.cancelPendingDraftApply();
+      await this.installCudaRuntimeInternal();
+      if (this.draftDirty) {
+        this.scheduleDraftApply();
+      }
+    });
   }
   async installCudaRuntimeInternal() {
     const current = await this.backend.inspectPython(
@@ -8885,18 +10510,21 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     this.settingTab?.display();
   }
   async startLazyBackend() {
+    await this.ensureSanitizedConfig();
     await this.prepareRuntime(this.settings, false);
     await this.backend.start(true);
     await this.backend.waitUntilAvailable();
     this.settingTab?.display();
   }
   async ensureSearchStarted() {
+    await this.ensureSanitizedConfig();
     if (this.backend.status.state === "stopped" || this.backend.status.state === "error") {
       await this.prepareRuntime(this.settings, false);
     }
     await this.backend.ensureStarted();
   }
   async provisionOnnx() {
+    await this.ensureSanitizedConfig();
     if (this.backend.status.state === "stopped") {
       await this.prepareRuntime(this.settings, false);
       await this.backend.start(false);
@@ -8911,6 +10539,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     await this.restartBackend();
   }
   async provisionBackend() {
+    await this.ensureSanitizedConfig();
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
     await this.refreshBackendInstall();
@@ -8924,6 +10553,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   }
   async restartBackend() {
     this.startupPrepared = false;
+    await this.ensureSanitizedConfig();
     await this.prepareRuntime(this.settings, false);
     await this.backend.restart();
     await this.completeStartup();
@@ -8974,7 +10604,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   }
   /** Clamp the agent-extension settings to their protocol bounds so a
    *  hand-edited data.json can never produce an invalid sidecar config. */
-  normalizeAgentSettings() {
+  normalizeAgentSettings(failedServerIds) {
     const s = this.settings;
     s.answerProjectRules = String(s.answerProjectRules || "").slice(0, 32e3);
     if (s.answerProjectRulesSource !== "agents-md")
@@ -8992,7 +10622,16 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       server.envNames = (Array.isArray(server.envNames) ? server.envNames : []).map((name) => String(name)).slice(0, 32);
       server.cwd = String(server.cwd || "vault");
       server.transport = server.transport === "http" ? "http" : "stdio";
-      server.url = String(server.url || "").trim().slice(0, MAX_MCP_URL_CHARS);
+      if (server.transport === "http") {
+        if (failedServerIds && failedServerIds.has(server.id)) {
+          server.url = String(server.url || "");
+          server.enabled = false;
+        } else {
+          server.url = toSafeOrigin(server.url);
+        }
+      } else {
+        server.url = "";
+      }
       server.enabled = server.enabled !== false;
       const policies = {};
       for (const [tool, policy] of Object.entries(
@@ -9069,35 +10708,20 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       envNames: [],
       toolPolicies: {}
     };
+    const coordinator = new McpTransactionCoordinator(this);
     new McpServerEditorModal(this, working, {
       hasEnvValue: (name) => this.hasMcpEnvValue(working.id, name),
-      saveEnvValue: (name, value) => this.saveMcpEnvValue(working.id, name, value),
-      removeEnvValue: (name) => this.removeMcpEnvValue(working.id, name),
-      onSaved: () => {
-        const servers = [...this.draftSettings.mcpServers || []];
-        const index = servers.findIndex((server) => server.id === working.id);
-        if (index >= 0) servers[index] = working;
-        else servers.push(working);
-        this.draftSettings.mcpServers = servers;
-        this.settingTab?.display();
-      },
+      hasHttpUrl: () => this.hasMcpHttpUrl(working.id, working.url),
+      onSave: (savedWorking, staged) => coordinator.saveServer(savedWorking, staged),
       onCancelledNew: () => {
-        for (const name of working.envNames) {
-          void this.removeMcpEnvValue(working.id, name).catch(() => void 0);
-        }
+        deleteServerSecrets(this.app, working);
       }
     }).open();
   }
-  /** Remove a server from the draft and purge its secrets. The exact server
-   *  object is captured first so env names cannot drift mid-delete. */
+  /** Remove a server in an atomic transaction via the coordinator. */
   async deleteMcpServer(serverId) {
-    const server = (this.draftSettings.mcpServers || []).find(
-      (entry) => entry.id === serverId
-    );
-    if (!server) return;
-    deleteServerSecrets(this.app, server);
-    this.draftSettings.mcpServers = (this.draftSettings.mcpServers || []).filter((entry) => entry.id !== serverId);
-    await this.notifyMcpSecretsChanged();
+    const coordinator = new McpTransactionCoordinator(this);
+    await coordinator.deleteServer(serverId);
   }
   async saveMcpEnvValue(serverId, envName, value) {
     setMcpSecret(this.app, serverId, envName, value);
@@ -9117,7 +10741,10 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     }
   }
   hasMcpEnvValue(serverId, envName) {
-    return Boolean(getMcpSecret(this.app, serverId, envName));
+    return hasMcpEnvSecret(this.app, serverId, envName);
+  }
+  hasMcpHttpUrl(serverId, expectedServerUrl) {
+    return hasMcpHttpUrl(this.app, serverId, expectedServerUrl);
   }
   async refreshMcpStatus() {
     return this.backend.call("mcp_status", {}, 15e3);

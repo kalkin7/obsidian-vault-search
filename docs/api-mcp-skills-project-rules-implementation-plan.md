@@ -98,7 +98,7 @@ Smart Composer의 원본 구현에서 참고할 구조는 다음과 같다.
 - prompt 조립: `src/utils/chat/promptGenerator.ts`
 - MCP Python SDK: <https://github.com/modelcontextprotocol/python-sdk>
 
-구현 시 MCP SDK는 현재 안정 버전인 `mcp==2.0.0`을 정확히 pin한다. major 범위를 열어 두지 말고, API 사용법은 v2 문서와 고정 버전에서 검증한다.
+구현 시 MCP SDK는 현재 안정 버전인 `mcp==1.28.1`을 정확히 pin한다. major 범위를 열어 두지 말고, API 사용법은 고정 버전에서 검증한다. (초기 계획의 2.0.0 가상 핀 대신 배포 환경과 일치하는 1.28.1 사용)
 
 ## 5. 핵심 아키텍처 결정
 
@@ -387,7 +387,7 @@ read_skill_resource(skill_id, relative_path)
 - 설정 변경 시 변경된 서버만 disconnect/reconnect
 - backend 종료 시 모든 session/subprocess 정리
 
-SDK는 `mcp==2.0.0`의 unified `Client`/stdio transport API를 사용한다. 구현 전에 설치된 고정 버전의 실제 signature로 최소 spike를 만들고, 문서와 다르면 고정 버전 코드를 기준으로 테스트를 먼저 확정한다.
+SDK는 `mcp==1.28.1`의 `ClientSession` 및 stdio/streamablehttp transport API를 사용한다. 구현 전에 설치된 고정 버전의 실제 signature로 검증하고, 고정 버전 코드를 기준으로 테스트를 확정한다.
 
 ### 9.2 도구 이름과 schema
 
@@ -698,7 +698,7 @@ JSON 전체를 직접 편집하는 textarea를 주 UI로 사용하지 않는다.
 | `backend/vault_search/service.py` | host/skill/run registry 소유, start/continue/cancel/status routing |
 | `backend/vault_search/server.py` | 새 method validation, shutdown에서 `service.close()` 보장 |
 | `backend/vault_search/protocol.py` | 새 요청·응답 validation과 coded errors |
-| `backend/requirements.txt` | `mcp==2.0.0` 및 직접 사용하는 validation dependency pin |
+| `backend/requirements.txt` | `mcp==1.28.1` 및 직접 사용하는 validation dependency pin |
 | `backend/requirements-runtime.txt` | CPU와 동일한 agent runtime dependency 반영 |
 | `backend/pyproject.toml` | 의존성 source of truth 동기화 |
 
@@ -842,7 +842,7 @@ JSON 전체를 직접 편집하는 textarea를 주 UI로 사용하지 않는다.
 ### 단계 7 — 통합·문서·릴리스
 
 1. 전체 자동 테스트와 실제 provider smoke test를 수행한다.
-2. packaged backend venv에서 `mcp==2.0.0` import와 stdio child 실행을 검증한다.
+2. packaged backend venv에서 `mcp==1.28.1` import와 stdio child 실행을 검증한다.
 3. README/settings/protocol/architecture를 같은 변경에서 갱신한다.
 4. source, `main.js`, manifest/backend version, release zip의 동기화를 검증한다.
 
@@ -1164,7 +1164,7 @@ tool 수가 많으면 모든 schema 전송이 비싸다. 첫 구현은 활성 �
   - `agent_prompt.py` — 보안 지침 → `<project_rules>` → 스킬 카탈로그 → 도구 사용법 순의 고정 우선순위 system prompt 조립기
   - `skills.py` — 3개 프로젝트 루트 + 사용자 루트 탐색, 점진적 로딩(`skill_load`/`skill_read_resource`), credential 파일 차단, junction/symlink 탈출 차단
   - `agent_tools.py` — built-in 도구 정의, `mcp__<server>__<tool>` alias 네임스페이스, schema/argument 방어적 검증, MCP 결과 정규화
-  - `mcp_host.py` — 전용 event-loop 스레드 + stdio 영속 세션(`mcp==2.0.0` pin), 시크릿은 인증된 loopback(`set_mcp_secrets`)으로만 주입, stderr 폐기, 협력→강제 2단계 자식 정리
+  - `mcp_host.py` — 전용 event-loop 스레드 + stdio/streamablehttp 영속 세션(`mcp==1.28.1` pin), 시크릿은 인증된 loopback(`set_mcp_secrets`)으로만 주입, stderr 폐기, 협력→강제 2단계 자식 정리
   - `agent_run.py` — 승인 경계가 있는 구조화 run 상태머신(call id당 실행 1회 보장, allow_session 대화 범위, TTL 10분·동시 run 4개)
 - `llm.py`: OpenAI Responses / 호환 Chat Completions 양쪽 native tool calling, HTTP 400/422 → `LLM_TOOLS_UNSUPPORTED`
 - protocol/server/service: `answer_start/continue/cancel`, `set_mcp_secrets`, `mcp_status/mcp_refresh`, `skills_status/skills_refresh`
@@ -1208,20 +1208,27 @@ tool 수가 많으면 모든 schema 전송이 비싸다. 첫 구현은 활성 �
 - **resume 경로 예산 우회, 중복 id 처리** 등 agent_run 로직 결함 다수 수정.
 - **in-process TCP 하니스에서 task 큐 무처리**: `serve_forever`만 띄우면 run_server 본체의 drain 루프가 없어 answer_start가 영원히 실행되지 않는다. 하니스에 drain 스레드를 재현해 해결.
 - **Windows loopback RST 경합**: 응답 write+close가 마이크로초 단위로 연속일 때 클라이언트가 데이터를 받지 못하고 WSAECONNRESET(10054). 파일 트레이스 계측으로 서버 측은 정상(write done→clean close)임을 확인했다. 대응: (a) `protocol.request`가 멱등 메서드(answer_cancel/status류)에 한해 읽기-단계 리셋을 1회 재시도, (b) 비멱등 answer_start/continue는 재시도하지 않고 테스트 단언을 응답 의존에서 상태 불변식(activity=`cancelled`, 레지스트리 drain, provider 재호출 0건)으로 전환. 8회 연속 반복 통과.
+- **Legacy HTTP URL 마이그레이션 실패 복구 예외**:
+  - `migrateMcpHttpUrls`는 개별 서버별로 SecretStorage 마이그레이션을 격리 수행한다.
+  - 성공한 서버는 full URL이 SecretStorage로 이동하고 settings는 safe origin(`scheme://host:port`)으로 정제된다.
+  - 단일 서버의 SecretStorage 쓰기/읽기검증 실패 또는 safe-origin 원시 URL 검증 실패 시:
+    - 전체 마이그레이션 성공 플래그(`mcpHttpUrlsMigrated`)를 `false`로 유지.
+    - 해당 실패 서버는 자동 비활성화(`enabled: false`)되며, 사용자가 수동 복구할 수 있도록 원본 URL(`server.url`)을 파괴적 정제/trim 없이 그대로 보존한다.
+    - `normalizeAgentSettings`는 실패 서버의 원본 URL을 보존하며, 모달 편집(`validateMcpServerForm`)은 SecretStorage에 비밀이 없는 복구 서버가 새 URL을 명시 스테이징하지 않고 저장되는 것을 차단한다.
 
-### 22.4 최종 검증 결과 (2026-08-23)
+### 22.4 과거 검증 checkpoint (2026-08-23, v0.1.64 안정화 중간 checkpoint)
 
 ```text
-npm test                    137 passed (17 files)
+npm test                    239 passed (21 files)
 npm run build               tsc + esbuild 통과
-pytest -q                   348 passed, 3 skipped (~82s)
+pytest -q                   366 passed, 3 skipped
 ruff check .                All checks passed
 compileall -q vault_search  OK
 git diff --check            OK
 canary rg                   저장소 내 fixture 정의 외 0건
-packaged venv               mcp==2.0.0 import OK (Python 3.13)
+packaged venv               mcp==1.28.1 import OK (Python 3.13)
 stdio E2E (packaged venv)   connect→call→실행 중 cancel(즉시, MCP_CALL_CANCELLED)→close→5초 후 orphan 없음
-안정성                      test_agent_fixes.py 8회 연속 통과
+안정성                      test_agent_fixes.py, test_mcp_host.py, test_lifecycle.py 연속 통과
 ```
 
 추가 회귀 테스트 40개: `test_agent_fixes.py` 신규 18(rules 활성/키 통일/런타임 변경, MCP-only/mixed/none/continue 메타데이터, out-of-band 취소·pending 마커·client id·TCP 첫 turn/승인 후 continue, 시크릿 거부/격리/rotation, 500개 tool cap/schema 총량), `test_agent_run.py` +6(예산 3종/overflow/payload 완전성 양쪽), `test_skills.py` +3(allowlist/빈 set/None), `test_mcp_host.py` +7(rotation 선택 재연결/거부/격리, 제거 서버 purge·unknown 거부·재등록 clean 시작, error 상태 rotation 재연결·신규 자식 시크릿 전달·global-disabled 무시), `test_protocol.py` +3(run_id), vitest +3(client run_id 2종/시크릿 스냅샷 갱신).
@@ -1248,9 +1255,11 @@ v0.1.57 BRAT 설치 후 사용자 피드백을 반영한 후속 변경이다.
    수정·삭제만 남기고, 구조 편집(연결 방식/명령/URL/환경 변수/도구 정책)은 모달에서
    수행한다.
 3. **원격 HTTP 전송 지원(v0.1.59)**: `transport: "http"` + `url` 필드 신설. 백엔드는
-   `streamablehttp_client`로 직접 연결하고 환경 변수를 주입하지 않는다. 상태 응답에는
-   origin+경로까지만 노출해 쿼리 스트링의 발급 토큰을 보호하고, command는 http에서
-   빈 값으로 정규화한다. 검증: `validateMcpServerForm`(TS 순수 함수) + config 파서
+   `streamablehttp_client`로 직접 연결하고 환경 변수를 주입하지 않는다. 상태 응답과
+   로그, 서비스 설정 계약은 오직 safe origin(`scheme://hostname[:port]`)만 노출하여
+   경로 및 쿼리 스트링의 발급 토큰을 엄격히 보호한다 (유일한 예외는 마이그레이션 실패
+   복구 목적으로 `data.json`에 보존되는 비활성 서버 원본 URL뿐이며, 토큰 회전 후 재설정이
+   강력히 권고된다). `command`는 HTTP에서 빈 값으로 정규화된다. 검증: `validateMcpServerForm`(TS 순수 함수) + config 파서
    격리 테스트 + fake streamable 클라이언트 E2E(연결/도구 발견/call/오류 격리).
 
 검증: vitest 143 passed(18 files, +6), pytest 354 passed/3 skipped(+6), ruff·compileall 통과.
@@ -1260,3 +1269,43 @@ v0.1.57 BRAT 설치 후 사용자 피드백을 반영한 후속 변경이다.
 - [ ] 실제 API 키를 넣은 §20 최종 시나리오(승인 카드→continue→완료 화면 흐름)
 - [ ] Obsidian GUI 육안 확인: 스킬 카탈로그 토글·"모두 선택", MCP tool-surface 경고 문구
 - [ ] 원격 URL MCP 서버 실제 연동 확인(발급 URL 형식 서비스 1곳 이상)
+
+### 22.8 후속 개선 (v0.1.64): 원격 HTTP MCP URL Secret 취급 및 트랜잭션 안전성 강화
+
+1. **원격 HTTP URL Secret 격리 및 이전 트랜잭션**:
+   - `mcpHttpUrlsMigrated` 플래그를 도입하여 1회성 마이그레이션 보장 및 0개 서버 업그레이드 시 마커 자동 영속화.
+   - legacy origin-only URL을 포함한 모든 비어있지 않은 URL을 secretStorage로 이전 및 read-back 검증.
+   - 마이그레이션 실패 시 해당 서버를 비활성화하고 원문 URL을 보존하여 유실 방지.
+   - `secretStorage` 유실 후에도 safe origin을 시크릿으로 재시드하지 않고 `awaiting_secret` 상태로 안전하게 대기.
+   - 초과/손상 URL 발생 시 빈 문자열을 전달하여 사이드카 메모리에 오래된 이전 URL이 남지 않도록 보장.
+2. **트랜잭션 코디네이터(`McpTransactionCoordinator`) 및 모달 안전성**:
+   - 설정 직접 변조 대신 `draftSettings`만 수정한 후 `applyDraftSettings()`를 통과시켜 sidecar 라이프사이클(재시작/새 세션 세대)을 정상 트리거.
+   - `saveServer` 및 `deleteServer` 시 시크릿 스냅샷, 드래프트, 영속 설정, 실행 세대를 원자적으로 롤백하는 트랜잭션 보장.
+   - 서버 삭제 시 secretStorage에서 즉시 제거하고 동일 UUID 재등록 시 과거 시크릿이 상속되지 않도록 read-back 검증.
+   - 모달 저장 중 Escape/X버튼/배경 클릭/취소 버튼 등 모든 닫기 경로 차단(`close()` override).
+   - URL 입력 중 지우기(clear) 시 원래 표시 오리진 복원 및 스테이징 취소, "URL 삭제" 클릭 시에만 삭제 스테이징.
+3. **사이드카 All-or-Nothing 검증 및 Status 계약**:
+   - `apply_secrets`에서 서버 ID/전송 방식/환경 변수 정합성을 사전 검증하여 불일치 시 어떠한 시크릿도 부분 변경하지 않고 전체 거부.
+   - `mcp_status` 응답에 전체 URL 노출 없이 safe origin `endpoint` 및 `has_url_secret: boolean` 상태 제공.
+   - `mcp==1.28.1` 손상 시 `--force-reinstall` 자동 수리 및 `MCP_SDK_UNAVAILABLE_OR_INCOMPATIBLE` 진단 코드 안전 제공.
+4. **동시성 직렬화 경계 및 롤백 단계 격리(Phase Isolation)**:
+   - 플러그인 전역 단일 직렬화 큐(`enqueueSettingsLock`)로 debounce apply, 수동 apply, MCP 트랜잭션, 모델/프로바이더 즉시 저장(hot mutations), CUDA 런타임 설치 간 상호 배제 보장(최대 동시성 1).
+   - 트랜잭션 대기 중 또는 진행 중 도착한 일반 설정 및 핫 세팅 변경은 유실 없이 트랜잭션 완료 직후 정확히 1회 적용.
+   - 롤백을 4개 독립 단계(개별 시크릿 복원 루프 → 드래프트 슬라이스 복원 → 구조적 설정 복구 적용 → 사이드카 시크릿 핸드오프)로 격리하여 한 항목의 복원 실패가 나머지 복구를 중단하지 않도록 방어.
+   - 시크릿 복원에 실패한 기존/신규 서버는 `enabled: false` 비활성화 복구 상태(`MCP_SERVER_RECOVERY_DISABLED`)로 영속 설정(data.json, service-config.json) 및 라이브 사이드카에 즉시 동기화(Phase 3 구조 복구). 신규 서버 복구 엔트리는 safe origin만 포함.
+   - 스냅샷 읽기 및 SecretStorage 오류 경계를 메인 트랜잭션 이전에 배치하여 오류 원문 내 시크릿 누출을 원천 차단하고 `MCP_SECRET_SNAPSHOT_FAILED` 코드로 안전 진단.
+   - 트랜잭션 및 모달 오류 발생 시 스테이징/과거 시크릿 값 및 URL 쿼리/인증정보를 `[redacted-secret]` 및 safe origin으로 마스킹하여 안전 노출.
+5. **최종 릴리스 차단 결함 수정 및 안전성 고도화**:
+   - **Favorite Latest-Intent FIFO 역전 방지 (`src/settings-tab.ts`, `src/main.ts`)**: UI 클릭 시점의 `desiredFavorite` 상태를 스냅샷하여 `toggleFavoriteModel(provider, model, desiredFavorite)` 및 `setFavoriteModel`에 전달하고, 실행 시점 멤버십과 비교하여 멱등/no-op 처리. 오래된 지연 실패가 최신 operation의 의도된 설정을 덮어쓰지 않도록 원자적 롤백 및 성공 후 설정/드래프트/DOM 재동기화 보장.
+   - **마이그레이션 Secret 삭제 실패 Fail-Closed 처리 (`src/mcp-secrets.ts`)**: safe origin 불일치 stale secret에 대해 삭제 후 `getMcpHttpUrl` read-back 검증을 수행하고, throw/silent no-op 시에도 서버 비활성화 유지 및 `hasMcpHttpUrl`의 origin-aware 검사(`toSafeOrigin(stored) === toSafeOrigin(server)`)로 모달 저장 차단. `buildMcpSecretPayload`에서도 safe origin 일치 및 URL 유효성을 사전 검증하여 strict handoff는 coded error로 reject, best-effort는 payload 0건 처리.
+   - **실제 `VaultSearchPlugin` 프로토타입 기반 Startup Fail-Closed 검증 (`tests/plugin/settings-tab.test.ts`)**: 테스트 내 로직 복제 없이 실제 `VaultSearchPlugin.prototype` 메서드(`onload`, `startBackend`, `startLazyBackend`, `ensureSearchStarted`, `provisionOnnx`, `provisionBackend`, `restartBackend`)를 직접 호출하여 `persistServiceConfig` 실패 시 백엔드 시작 및 시크릿 전송 0건 fail-closed 검증.
+   - **MCP 세션 즉시 제거 스트레스 검증 강화 (`backend/tests/test_mcp_host.py`)**: `_SessionTracker`에 타임스탬프 기반 open/enter 이벤트 추적을 추가하고, `host.configure(enabled=True, servers=[])`로 즉시 제거 완료된 시점(`removal_completed_at`) 이후 어떠한 `open`/`enter` 이벤트도 발생하지 않음을 엄격히 단언.
+   - **Strict Payload의 Missing HTTP URL 호환성 보장 (`src/mcp-secrets.ts`)**: URL secret이 없는 enabled HTTP 서버(합법적인 `awaiting_secret` 상태)에 대해 `buildMcpSecretPayload`가 strict mode에서도 예외를 던지지 않고 빈 tombstone(`""`)을 생성하도록 보장하여, 다른 서버의 정상 트랜잭션 rollback을 방지하고 사이드카 stale URL을 정리하도록 수정. 빈 tombstone도 32KiB budget에 정상 계산.
+
+최종 자동 검증 상태 (2026-08-23, v0.1.64 자동 검증 완료):
+- `npm test`: 263 passed / 21 files
+- `npm run build`: 통과 (결정론적 `main.js` SHA256: `98D4BE4E94A87C97F80A6AF407F363B9C8FA50B181AA13CAA0E3808D29B39E42`)
+- `pytest`: 370 passed / 3 skipped (`test_lazy_model_and_parent_eof` 10회 연속 무경합 통과)
+- `ruff`, `compileall`, `git diff --check`: 통과
+- `mcp==1.28.1` 필수 imports: 통과
+- **미완료 항목**: §22.5와 §22.7의 수동 검증 및 `release.ps1` 패키징 항목은 아직 미완료 상태이다.
