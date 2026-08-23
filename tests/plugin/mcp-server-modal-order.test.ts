@@ -40,15 +40,24 @@ vi.mock("obsidian", () => {
     children: FakeEl[] = [];
     classes: string[] = [];
     text = "";
+    attrs: Record<string, string> = {};
+    listeners: Record<string, Array<() => void>> = {};
     createDiv(options?: { cls?: string }) {
       const element = new FakeEl();
       if (options?.cls) element.classes.push(...options.cls.split(" "));
       this.children.push(element);
       return element;
     }
-    createEl(_tag: string, options?: { text?: string; attr?: unknown }) {
+    createEl(
+      _tag: string,
+      options?: { text?: string; cls?: string; attr?: Record<string, unknown> },
+    ) {
       const element = new FakeEl();
       if (options?.text !== undefined) element.text = options.text;
+      if (options?.cls) element.classes.push(...options.cls.split(" "));
+      for (const [key, value] of Object.entries(options?.attr ?? {})) {
+        element.attrs[key] = String(value);
+      }
       this.children.push(element);
       return element;
     }
@@ -65,8 +74,13 @@ vi.mock("obsidian", () => {
       this.text = text;
       return this;
     }
-    addEventListener() {}
+    addEventListener(event: string, handler: () => void) {
+      (this.listeners[event] ??= []).push(handler);
+    }
     removeEventListener() {}
+    click() {
+      for (const handler of this.listeners.click ?? []) handler();
+    }
     empty() {
       this.children = [];
     }
@@ -239,5 +253,77 @@ describe("MCP editor modal field order", () => {
     expect(h.settingOrder.indexOf("인자")).toBeGreaterThan(transportAt);
     expect(h.settingOrder.indexOf("작업 폴더")).toBeGreaterThan(transportAt);
     expect(wrappers[3]?.classes).toContain("is-hidden"); // http group
+  });
+});
+
+describe("MCP editor modal tool policy toggles", () => {
+  type NodeLike = {
+    children?: NodeLike[];
+    attrs?: Record<string, string>;
+  };
+  function collect(node: NodeLike): NodeLike[] {
+    const out: NodeLike[] = [node];
+    for (const child of node.children ?? []) out.push(...collect(child));
+    return out;
+  }
+
+
+  it("bulk row applies to every tool and single rows override one tool", async () => {
+    const working = fixture({
+      transport: "http",
+      toolPolicies: { get_law_text: "deny" },
+    });
+    const owner = {
+      app: {},
+      draftSettings: { mcpServers: [working] },
+      refreshMcpStatus: async () => ({
+        enabled: true,
+        servers: [
+          {
+            id: "srv-1",
+            name: "Korean Law MCP",
+            state: "connected" as const,
+            enabled: true,
+            command: "",
+            tools: 2,
+            tool_names: ["get_law_text", "search_law"],
+            env_names: [],
+            tool_policies: {},
+          },
+        ],
+        connected: 1,
+      }),
+    };
+    const modal = new McpServerEditorModal(
+      owner as never,
+      working,
+      {
+        onSaved: () => undefined,
+        hasEnvValue: () => false,
+        saveEnvValue: async () => undefined,
+        removeEnvValue: async () => undefined,
+      },
+    );
+    modal.onOpen();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const contentEl = (modal as unknown as { contentEl: NodeLike }).contentEl;
+    const buttons = collect(contentEl).filter(
+      (node) => node.attrs?.["aria-label"]?.includes("자동 허용") || node.attrs?.["aria-label"]?.includes("거부"),
+    );
+    const byLabel = (label: string) =>
+      buttons.find((button) => button.attrs["aria-label"] === label);
+
+    // Bulk row: 모든 도구 (2개 도구) — apply allow everywhere.
+    byLabel("2개 도구 자동 허용")!.click();
+    expect(working.toolPolicies).toEqual({
+      get_law_text: "allow",
+      search_law: "allow",
+    });
+
+    // Single row: override exactly one tool back to deny.
+    byLabel("search_law 거부")!.click();
+    expect(working.toolPolicies["search_law"]).toBe("deny");
+    expect(working.toolPolicies["get_law_text"]).toBe("allow");
   });
 });

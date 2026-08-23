@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.62";
+var BACKEND_VERSION = "0.1.63";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -4258,6 +4258,11 @@ var import_obsidian3 = require("obsidian");
 
 // src/mcp-server-form.ts
 var NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/;
+function withPolicyForAll(current, tools, policy) {
+  const next = { ...current };
+  for (const tool of tools) next[tool] = policy;
+  return next;
+}
 function validateMcpServerForm(form) {
   const name = form.name.trim();
   if (!NAME_PATTERN.test(name)) {
@@ -4480,7 +4485,7 @@ var McpServerEditorModal = class extends import_obsidian3.Modal {
       const wrap = this.contentEl.createDiv({ cls: "vault-search-mcp-tools" });
       wrap.createEl("div", {
         cls: "setting-item-name",
-        text: `\uBC1C\uACAC\uB41C \uB3C4\uAD6C (${serverStatus.tools})`
+        text: `\uBC1C\uACAC\uB41C \uB3C4\uAD6C (${serverStatus.tools}) \u2014 \uC2E4\uD589 \uC804 \uC2B9\uC778 \uC5EC\uBD80`
       });
       const allTools = Array.from(
         /* @__PURE__ */ new Set([
@@ -4488,32 +4493,56 @@ var McpServerEditorModal = class extends import_obsidian3.Modal {
           ...serverStatus.tool_names || []
         ])
       ).sort();
-      for (const tool of allTools) {
-        const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
-        row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
-        const select = document.createElement("select");
-        select.setAttribute("aria-label", `${tool} \uC2E4\uD589 \uC815\uCC45`);
-        for (const [value, label] of [
-          ["deny", "\uAC70\uBD80 (\uC228\uAE40)"],
-          ["ask", "\uC2B9\uC778 \uC694\uAD6C"],
-          ["allow", "\uC790\uB3D9 \uD5C8\uC6A9"]
+      const renderSegmented = (parent, tools, current) => {
+        const seg = parent.createDiv({ cls: "vault-search-policy-seg" });
+        for (const [value, label, icon] of [
+          ["allow", "\uC790\uB3D9 \uD5C8\uC6A9", "\u2713"],
+          ["ask", "\uC2B9\uC778 \uC694\uAD6C", "\u270B"],
+          ["deny", "\uAC70\uBD80", "\u2298"]
         ]) {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = label;
-          select.appendChild(option);
+          const button = seg.createEl("button", {
+            text: `${icon} ${label}`,
+            cls: `vault-search-policy-option seg-${value}${current === value ? " is-active" : ""}`,
+            attr: {
+              type: "button",
+              "aria-label": `${tools.length > 1 ? `${tools.length}\uAC1C \uB3C4\uAD6C` : tools[0]} ${label}`,
+              "aria-pressed": String(current === value)
+            }
+          });
+          button.addEventListener("click", () => {
+            this.working.toolPolicies = tools.length === 1 ? { ...this.working.toolPolicies, [tools[0]]: value } : withPolicyForAll(this.working.toolPolicies, tools, value);
+            renderRows();
+          });
         }
-        select.value = this.working.toolPolicies[tool] || "ask";
-        select.addEventListener("change", () => {
-          this.working.toolPolicies = {
-            ...this.working.toolPolicies,
-            [tool]: select.value
-          };
-        });
-        row.appendChild(select);
-      }
+      };
+      const renderRows = () => {
+        wrap.querySelectorAll(".vault-search-mcp-tool-row,.vault-search-mcp-tools-all").forEach((row) => row.remove());
+        const allRow = wrap.createDiv({ cls: "vault-search-mcp-tools-all" });
+        allRow.createEl("span", { text: "\uBAA8\uB4E0 \uB3C4\uAD6C", cls: "vault-search-mcp-tool-name" });
+        renderSegmented(allRow, allTools, this.majorityPolicy(allTools));
+        for (const tool of allTools) {
+          const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
+          row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
+          renderSegmented(row, [tool], this.working.toolPolicies[tool] || "ask");
+        }
+      };
+      renderRows();
     } catch {
     }
+  }
+  /** The policy shown on the bulk row: the common value across tools, or
+   *  "ask" when they disagree (safe default wins ties). */
+  majorityPolicy(tools) {
+    let allow = true;
+    let deny = true;
+    for (const tool of tools) {
+      const policy = this.working.toolPolicies[tool] || "ask";
+      if (policy !== "allow") allow = false;
+      if (policy !== "deny") deny = false;
+    }
+    if (allow) return "allow";
+    if (deny) return "deny";
+    return "ask";
   }
   renderActions() {
     const bar = this.contentEl.createDiv({

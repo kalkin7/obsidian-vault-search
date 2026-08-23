@@ -944,6 +944,52 @@ input.vault-answer-task-checkbox:disabled {
   border: 1px solid var(--background-modifier-border);
   border-radius: var(--radius-s);
 }
+
+/* Claude-style per-tool policy toggles (✓ / ✋ / ⊘) */
+.vault-search-mcp-tool-row,
+.vault-search-mcp-tools-all {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+  padding: var(--size-4-1) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+.vault-search-mcp-tools-all {
+  font-weight: var(--font-medium);
+}
+.vault-search-policy-seg {
+  display: inline-flex;
+  gap: 2px;
+}
+.vault-search-policy-option {
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-s);
+  background: none;
+  box-shadow: none;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+.vault-search-policy-option:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+.vault-search-policy-option.is-active {
+  border-color: var(--background-modifier-border);
+  font-weight: var(--font-medium);
+}
+.vault-search-policy-option.seg-allow.is-active {
+  color: var(--text-success, var(--text-accent));
+}
+.vault-search-policy-option.seg-ask.is-active {
+  color: var(--text-normal);
+  background: var(--background-modifier-active-hover);
+}
+.vault-search-policy-option.seg-deny.is-active {
+  color: var(--text-error);
+}
 .vault-search-mcp-status,
 .vault-search-skill-status {
   white-space: pre-wrap;

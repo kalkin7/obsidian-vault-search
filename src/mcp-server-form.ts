@@ -13,6 +13,19 @@ export interface McpServerFormData {
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/;
 
+export type McpToolPolicyValue = "allow" | "ask" | "deny";
+
+/** Bulk-apply one policy to every tool, preserving unrelated entries. */
+export function withPolicyForAll(
+  current: Record<string, McpToolPolicyValue>,
+  tools: string[],
+  policy: McpToolPolicyValue,
+): Record<string, McpToolPolicyValue> {
+  const next = { ...current };
+  for (const tool of tools) next[tool] = policy;
+  return next;
+}
+
 export function validateMcpServerForm(form: McpServerFormData): string | null {
   const name = form.name.trim();
   if (!NAME_PATTERN.test(name)) {

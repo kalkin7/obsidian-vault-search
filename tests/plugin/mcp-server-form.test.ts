@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   describeMcpServer,
   validateMcpServerForm,
+  withPolicyForAll,
 } from "../../src/mcp-server-form";
 import type { McpServerSettings } from "../../src/types";
 
@@ -124,5 +125,20 @@ describe("MCP server list summary", () => {
         serverFixture({ transport: "http", url: "::bad::" }),
       ),
     ).toBe("(잘못된 URL)");
+  });
+});
+
+describe("bulk tool policy helper", () => {
+  it("applies one policy to every tool while preserving unrelated entries", () => {
+    expect(
+      withPolicyForAll({ other: "deny" }, ["a", "b"], "allow"),
+    ).toEqual({ other: "deny", a: "allow", b: "allow" });
+  });
+
+  it("overwrites previous per-tool values", () => {
+    expect(
+      withPolicyForAll({ a: "ask", b: "deny" }, ["a", "b"], "allow"),
+    ).toEqual({ a: "allow", b: "allow" });
+    expect(withPolicyForAll({}, [], "allow")).toEqual({});
   });
 });

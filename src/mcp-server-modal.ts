@@ -3,6 +3,7 @@ import { MAX_MCP_URL_CHARS } from "./constants";
 import {
   describeMcpServer,
   validateMcpServerForm,
+  withPolicyForAll,
 } from "./mcp-server-form";
 import type { McpStatusResponse, McpServerSettings } from "./types";
 
@@ -266,7 +267,7 @@ export class McpServerEditorModal extends Modal {
       const wrap = this.contentEl.createDiv({ cls: "vault-search-mcp-tools" });
       wrap.createEl("div", {
         cls: "setting-item-name",
-        text: `발견된 도구 (${serverStatus.tools})`,
+        text: `발견된 도구 (${serverStatus.tools}) — 실행 전 승인 여부`,
       });
       const allTools = Array.from(
         new Set([
@@ -274,33 +275,71 @@ export class McpServerEditorModal extends Modal {
           ...(serverStatus.tool_names || []),
         ]),
       ).sort();
-      for (const tool of allTools) {
-        const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
-        row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
-        const select = document.createElement("select");
-        select.setAttribute("aria-label", `${tool} 실행 정책`);
-        for (const [value, label] of [
-          ["deny", "거부 (숨김)"],
-          ["ask", "승인 요구"],
-          ["allow", "자동 허용"],
+
+      // Claude-style segmented ✓/✋/⊘ toggles instead of per-tool dropdowns:
+      // policy decisions belong in settings, not in repeated approval cards.
+      const renderSegmented = (
+        parent: HTMLElement,
+        tools: string[],
+        current: string,
+      ): void => {
+        const seg = parent.createDiv({ cls: "vault-search-policy-seg" });
+        for (const [value, label, icon] of [
+          ["allow", "자동 허용", "✓"],
+          ["ask", "승인 요구", "✋"],
+          ["deny", "거부", "⊘"],
         ] as const) {
-          const option = document.createElement("option");
-          option.value = value;
-          option.textContent = label;
-          select.appendChild(option);
+          const button = seg.createEl("button", {
+            text: `${icon} ${label}`,
+            cls: `vault-search-policy-option seg-${value}${
+              current === value ? " is-active" : ""
+            }`,
+            attr: {
+              type: "button",
+              "aria-label": `${tools.length > 1 ? `${tools.length}개 도구` : tools[0]} ${label}`,
+              "aria-pressed": String(current === value),
+            },
+          });
+          button.addEventListener("click", () => {
+            this.working.toolPolicies =
+              tools.length === 1
+                ? { ...this.working.toolPolicies, [tools[0]]: value }
+                : withPolicyForAll(this.working.toolPolicies, tools, value);
+            renderRows();
+          });
         }
-        select.value = this.working.toolPolicies[tool] || "ask";
-        select.addEventListener("change", () => {
-          this.working.toolPolicies = {
-            ...this.working.toolPolicies,
-            [tool]: select.value as McpServerSettings["toolPolicies"][string],
-          };
-        });
-        row.appendChild(select);
-      }
+      };
+
+      const renderRows = (): void => {
+        wrap.querySelectorAll(".vault-search-mcp-tool-row,.vault-search-mcp-tools-all").forEach((row) => row.remove());
+        const allRow = wrap.createDiv({ cls: "vault-search-mcp-tools-all" });
+        allRow.createEl("span", { text: "모든 도구", cls: "vault-search-mcp-tool-name" });
+        renderSegmented(allRow, allTools, this.majorityPolicy(allTools));
+        for (const tool of allTools) {
+          const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
+          row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
+          renderSegmented(row, [tool], this.working.toolPolicies[tool] || "ask");
+        }
+      };
+      renderRows();
     } catch {
       // Backend offline: tool policies simply stay untouched.
     }
+  }
+
+  /** The policy shown on the bulk row: the common value across tools, or
+   *  "ask" when they disagree (safe default wins ties). */
+  private majorityPolicy(tools: string[]): string {
+    let allow = true;
+    let deny = true;
+    for (const tool of tools) {
+      const policy = this.working.toolPolicies[tool] || "ask";
+      if (policy !== "allow") allow = false;
+      if (policy !== "deny") deny = false;
+    }
+    if (allow) return "allow";
+    if (deny) return "deny";
+    return "ask";
   }
 
   private renderActions(): void {
