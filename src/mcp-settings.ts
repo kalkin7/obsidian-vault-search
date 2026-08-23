@@ -66,9 +66,11 @@ function renderServerRow(
   owner: VaultSearchPlugin,
   server: VaultSearchPlugin["draftSettings"]["mcpServers"][number],
 ): void {
+  const kindLabel =
+    server.transport === "http" ? "원격 URL" : "로컬 명령";
   new Setting(containerEl)
     .setName(server.name || "(이름 없음)")
-    .setDesc(describeMcpServer(server))
+    .setDesc(`${kindLabel} · ${describeMcpServer(server)}`)
     .addToggle((toggle) =>
       toggle.setValue(server.enabled).onChange((value) => {
         server.enabled = value;
@@ -100,6 +102,11 @@ function renderStatusLine(
   box.empty();
   const problems = status.config_problems || [];
   const lines: string[] = [];
+  if (!status.enabled) {
+    lines.push(
+      "MCP가 전역적으로 꺼져 있습니다 — 위의 '로컬/원격 MCP 서버 사용' 스위치를 켜고 저장하세요.",
+    );
+  }
   for (const server of status.servers) {
     const label = STATE_LABELS[server.state] || server.state;
     lines.push(

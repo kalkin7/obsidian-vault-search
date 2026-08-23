@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.59";
+var BACKEND_VERSION = "0.1.60";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -4801,7 +4801,8 @@ function renderMcpSettings(containerEl, owner, draft) {
   );
 }
 function renderServerRow(containerEl, owner, server) {
-  new import_obsidian5.Setting(containerEl).setName(server.name || "(\uC774\uB984 \uC5C6\uC74C)").setDesc(describeMcpServer(server)).addToggle(
+  const kindLabel = server.transport === "http" ? "\uC6D0\uACA9 URL" : "\uB85C\uCEEC \uBA85\uB839";
+  new import_obsidian5.Setting(containerEl).setName(server.name || "(\uC774\uB984 \uC5C6\uC74C)").setDesc(`${kindLabel} \xB7 ${describeMcpServer(server)}`).addToggle(
     (toggle) => toggle.setValue(server.enabled).onChange((value) => {
       server.enabled = value;
     })
@@ -4820,6 +4821,11 @@ function renderStatusLine(box, status) {
   box.empty();
   const problems = status.config_problems || [];
   const lines = [];
+  if (!status.enabled) {
+    lines.push(
+      "MCP\uAC00 \uC804\uC5ED\uC801\uC73C\uB85C \uAEBC\uC838 \uC788\uC2B5\uB2C8\uB2E4 \u2014 \uC704\uC758 '\uB85C\uCEEC/\uC6D0\uACA9 MCP \uC11C\uBC84 \uC0AC\uC6A9' \uC2A4\uC704\uCE58\uB97C \uCF1C\uACE0 \uC800\uC7A5\uD558\uC138\uC694."
+    );
+  }
   for (const server of status.servers) {
     const label = STATE_LABELS[server.state] || server.state;
     lines.push(
