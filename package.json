@@ -1,6 +1,6 @@
 {
   "name": "obsidian-vault-search",
-  "version": "0.1.57",
+  "version": "0.1.58",
   "private": true,
   "description": "Plugin-managed local hybrid search service for Obsidian vaults",
   "main": "main.js",

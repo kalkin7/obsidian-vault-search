@@ -892,6 +892,25 @@ input.vault-answer-task-checkbox:disabled {
 }
 
 /* Settings: API agent sections */
+/* Full-width control (textarea) must wrap below its info column — same
+ * pattern as .vault-search-textarea. Without wrapping, the non-shrinking
+ * control absorbs all row width, collapsing the info column to zero width
+ * and exploding the card height through char-per-line description wrap. */
+.vault-search-settings-panel .setting-item.vault-search-project-rules {
+  flex-wrap: wrap;
+  align-items: flex-start;
+}
+.vault-search-settings-panel
+  .setting-item.vault-search-project-rules
+  .setting-item-info {
+  flex-basis: 100%;
+}
+.vault-search-settings-panel
+  .setting-item.vault-search-project-rules
+  .setting-item-control {
+  flex-basis: 100%;
+  justify-content: flex-start;
+}
 .vault-search-project-rules-control {
   display: block !important;
   width: 100%;
@@ -908,6 +927,7 @@ input.vault-answer-task-checkbox:disabled {
   font-size: var(--font-ui-smaller);
   margin-bottom: 4px;
   white-space: pre-wrap;
+  text-align: right;
 }
 .vault-search-mcp-status,
 .vault-search-skill-status {
