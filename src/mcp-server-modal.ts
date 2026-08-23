@@ -56,18 +56,23 @@ export class McpServerEditorModal extends Modal {
     const container = this.contentEl.createDiv({
       cls: "vault-search-mcp-editor-basics",
     });
+    // Field order matters (user feedback v0.1.60): the transport selector must
+    // sit DIRECTLY below the display name because it swaps everything below
+    // it. Append it to the container BEFORE creating the field wrappers.
     new Setting(container).setName("표시명").addText((text) =>
       text.setValue(this.working.name).onChange((value) => {
         this.working.name = value;
       }),
     );
-    const stdioFields = container.createDiv();
-    const httpFields = container.createDiv();
 
     const applyTransportVisibility = (): void => {
       const isHttp = this.working.transport === "http";
       stdioFields.toggleClass("is-hidden", isHttp);
       httpFields.toggleClass("is-hidden", !isHttp);
+      // The custom-path input belongs to the "직접 지정" mode only.
+      const isCustom =
+        this.working.cwd !== "vault" && this.working.cwd !== "plugin";
+      cwdCustomField.toggleClass("is-hidden", !isCustom);
     };
 
     new Setting(container)
@@ -85,6 +90,9 @@ export class McpServerEditorModal extends Modal {
             applyTransportVisibility();
           }),
       );
+
+    const stdioFields = container.createDiv();
+    const httpFields = container.createDiv();
 
     new Setting(stdioFields)
       .setName("실행 명령")
@@ -108,25 +116,40 @@ export class McpServerEditorModal extends Modal {
         });
         text.inputEl.rows = 3;
       });
-    new Setting(stdioFields)
-      .setName("작업 폴더")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("vault", "볼트 루트")
-          .addOption("plugin", "플러그인 폴더")
-          .addOption("custom", "직접 지정")
-          .setValue(
-            this.working.cwd === "vault" || this.working.cwd === "plugin"
-              ? this.working.cwd
-              : "custom",
-          )
-          .onChange((value) => {
-            this.working.cwd = value === "custom" ? "" : value;
-          }),
-      )
+    const cwdSetting = new Setting(stdioFields).setName("작업 폴더");
+    const cwdCustomField = stdioFields.createDiv();
+    cwdSetting.addDropdown((dropdown) =>
+      dropdown
+        .addOption("vault", "볼트 루트")
+        .addOption("plugin", "플러그인 폴더")
+        .addOption("custom", "직접 지정")
+        .setValue(
+          this.working.cwd === "vault" || this.working.cwd === "plugin"
+            ? this.working.cwd
+            : "custom",
+        )
+        .onChange((value) => {
+          if (value === "custom") {
+            // Keep any previously typed absolute path; only clear the
+            // sentinel when arriving here from a preset folder.
+            if (
+              this.working.cwd === "vault" ||
+              this.working.cwd === "plugin"
+            ) {
+              this.working.cwd = "";
+            }
+          } else {
+            this.working.cwd = value;
+          }
+          applyTransportVisibility();
+        }),
+    );
+    new Setting(cwdCustomField)
+      .setName("작업 폴더 경로")
+      .setDesc("직접 지정 시 사용할 절대 경로입니다.")
       .addText((text) =>
         text
-          .setPlaceholder("절대 경로 (직접 지정 시)")
+          .setPlaceholder("예: C:\\tools\\mcp-server")
           .setValue(
             this.working.cwd !== "vault" && this.working.cwd !== "plugin"
               ? this.working.cwd

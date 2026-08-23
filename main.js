@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.60";
+var BACKEND_VERSION = "0.1.61";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -4290,12 +4290,12 @@ var McpServerEditorModal = class extends import_obsidian3.Modal {
         this.working.name = value;
       })
     );
-    const stdioFields = container.createDiv();
-    const httpFields = container.createDiv();
     const applyTransportVisibility = () => {
       const isHttp = this.working.transport === "http";
       stdioFields.toggleClass("is-hidden", isHttp);
       httpFields.toggleClass("is-hidden", !isHttp);
+      const isCustom = this.working.cwd !== "vault" && this.working.cwd !== "plugin";
+      cwdCustomField.toggleClass("is-hidden", !isCustom);
     };
     new import_obsidian3.Setting(container).setName("\uC5F0\uACB0 \uBC29\uC2DD").setDesc(
       "\uB85C\uCEEC \uBA85\uB839\uC740 \uC774 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uC790\uC2DD \uD504\uB85C\uC138\uC2A4\uB85C \uC2E4\uD589\uB429\uB2C8\uB2E4. \uC6D0\uACA9 URL\uC740 \uC2A4\uD2B8\uB9AC\uBC0D HTTP MCP \uC11C\uBC84\uC5D0 \uC9C1\uC811 \uC5F0\uACB0\uD569\uB2C8\uB2E4."
@@ -4305,6 +4305,8 @@ var McpServerEditorModal = class extends import_obsidian3.Modal {
         applyTransportVisibility();
       })
     );
+    const stdioFields = container.createDiv();
+    const httpFields = container.createDiv();
     new import_obsidian3.Setting(stdioFields).setName("\uC2E4\uD589 \uBA85\uB839").setDesc(
       "\uC608: python, npx, C:\\tools\\server.exe \u2014 \uC178\uC744 \uAC70\uCE58\uC9C0 \uC54A\uACE0 \uC9C1\uC811 \uC2E4\uD589\uB429\uB2C8\uB2E4."
     ).addText(
@@ -4318,14 +4320,24 @@ var McpServerEditorModal = class extends import_obsidian3.Modal {
       });
       text.inputEl.rows = 3;
     });
-    new import_obsidian3.Setting(stdioFields).setName("\uC791\uC5C5 \uD3F4\uB354").addDropdown(
+    const cwdSetting = new import_obsidian3.Setting(stdioFields).setName("\uC791\uC5C5 \uD3F4\uB354");
+    const cwdCustomField = stdioFields.createDiv();
+    cwdSetting.addDropdown(
       (dropdown) => dropdown.addOption("vault", "\uBCFC\uD2B8 \uB8E8\uD2B8").addOption("plugin", "\uD50C\uB7EC\uADF8\uC778 \uD3F4\uB354").addOption("custom", "\uC9C1\uC811 \uC9C0\uC815").setValue(
         this.working.cwd === "vault" || this.working.cwd === "plugin" ? this.working.cwd : "custom"
       ).onChange((value) => {
-        this.working.cwd = value === "custom" ? "" : value;
+        if (value === "custom") {
+          if (this.working.cwd === "vault" || this.working.cwd === "plugin") {
+            this.working.cwd = "";
+          }
+        } else {
+          this.working.cwd = value;
+        }
+        applyTransportVisibility();
       })
-    ).addText(
-      (text) => text.setPlaceholder("\uC808\uB300 \uACBD\uB85C (\uC9C1\uC811 \uC9C0\uC815 \uC2DC)").setValue(
+    );
+    new import_obsidian3.Setting(cwdCustomField).setName("\uC791\uC5C5 \uD3F4\uB354 \uACBD\uB85C").setDesc("\uC9C1\uC811 \uC9C0\uC815 \uC2DC \uC0AC\uC6A9\uD560 \uC808\uB300 \uACBD\uB85C\uC785\uB2C8\uB2E4.").addText(
+      (text) => text.setPlaceholder("\uC608: C:\\tools\\mcp-server").setValue(
         this.working.cwd !== "vault" && this.working.cwd !== "plugin" ? this.working.cwd : ""
       ).onChange((value) => {
         if (value.trim()) this.working.cwd = value.trim();
