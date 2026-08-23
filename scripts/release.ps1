@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 #
 # Steps:
 #   1. Validate version consistency across manifest/package/pyproject/__init__/constants
-#   2. npm run build + backend pytest
+#   2. npm run build + npm test + backend pytest
 #   3. Build obsidian-vault-search-v<ver>.zip with backend/
 #   4. Create annotated tag v<ver> and push it
 #   5. gh release create with zip + main.js + manifest.json + styles.css + versions.json
@@ -76,6 +76,8 @@ try {
     if (-not $SkipBuild) {
         Write-Host "==> Building" -ForegroundColor Cyan
         Invoke-Checked { npm run build } "npm run build"
+        Write-Host "==> Plugin tests" -ForegroundColor Cyan
+        Invoke-Checked { npm test } "npm test"
         Write-Host "==> Backend tests" -ForegroundColor Cyan
         Invoke-Checked { python -X utf8 -m pytest backend/tests -q } "backend pytest"
     }

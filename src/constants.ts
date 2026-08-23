@@ -3,8 +3,18 @@ import type { LLMProviderId, VaultSearchSettings } from "./types";
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-export const BACKEND_VERSION = "0.1.56";
+export const BACKEND_VERSION = "0.1.57";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
+
+/** Bounds mirrored by the Python side (plan §6.2/§6.3). */
+export const MAX_PROJECT_RULES_CHARS = 32_000;
+export const MAX_MCP_SERVERS = 20;
+export const MAX_MCP_ARGS = 64;
+export const MAX_MCP_ARG_CHARS = 2_048;
+export const MAX_SKILL_ROOTS = 20;
+export const MCP_SECRET_PAYLOAD_LIMIT_BYTES = 32 * 1024;
+export const MCP_SECRET_NAME_MAX = 128;
+export const MCP_SECRET_VALUE_MAX = 8 * 1024;
 
 export const MODEL_PROFILES: Record<
   string,
@@ -86,6 +96,14 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   historyMaxEntries: 0,
   // Persisted fetched model lists (see VaultSearchSettings.fetchedProviderModels).
   fetchedProviderModels: {},
+  // --- API agent extensions (all off by default) ---
+  answerProjectRules: "",
+  answerProjectRulesSource: "custom",
+  mcpEnabled: false,
+  mcpServers: [],
+  skillsEnabled: false,
+  skillRoots: [],
+  enabledSkills: [],
 };
 
 export const LLM_PROVIDER_DEFAULTS = {

@@ -9,16 +9,33 @@ import socketserver
 import sys
 import threading
 import time
-from pathlib import Path
 from typing import Any
 
 from . import __version__
 from .config import load_config
-from .protocol import MAX_MESSAGE_BYTES, PROTOCOL_VERSION, ProtocolError, validate_answer_params
+from .protocol import (
+    MAX_MESSAGE_BYTES,
+    PROTOCOL_VERSION,
+    ProtocolError,
+    validate_answer_cancel_params,
+    validate_answer_continue_params,
+    validate_answer_params,
+    validate_answer_start_params,
+    validate_mcp_secrets_params,
+)
 from .runtime import atomic_write_json, vault_id
 from .service import SearchService, ServiceError
 from .service_lock import ServiceLock, ServiceLockError
 from .indexing import IndexManager
+
+# Methods whose params are validated before entering the task queue.
+_PARAM_VALIDATORS = {
+    "answer": validate_answer_params,
+    "answer_start": validate_answer_start_params,
+    "answer_continue": validate_answer_continue_params,
+    "answer_cancel": validate_answer_cancel_params,
+    "set_mcp_secrets": validate_mcp_secrets_params,
+}
 
 try:
     sys.stdout.reconfigure(encoding="utf-8")
@@ -73,10 +90,16 @@ class RequestHandler(socketserver.StreamRequestHandler):
             params = payload.get("params") or {}
             if not isinstance(params, dict):
                 raise ProtocolError("params must be an object")
-            if method == "answer":
-                params = validate_answer_params(params)
+            validator = _PARAM_VALIDATORS.get(method)
+            if validator is not None:
+                params = validator(params)
             if method in {"health", "status", "heartbeat", "load_model"}:
                 result = server.service.call(method, params)
+            elif method == "answer_cancel":
+                # Out-of-band: cancellation must not wait behind a long-running
+                # answer on the serialized task queue. cancel_answer only
+                # touches lock-guarded state and is safe on this thread.
+                result = server.service.cancel_answer(str(params.get("run_id", "")))
             else:
                 task = BackendTask(method, params)
                 server.tasks.put(task)
@@ -287,6 +310,15 @@ def run_server(args: argparse.Namespace) -> int:
             server.shutdown()
             server_thread.join(timeout=2.0)
         server.server_close()
+        # Every shutdown path (clean stop, parent disconnect, heartbeat
+        # timeout, exception) must tear down MCP sessions/children and runs.
+        try:
+            service.close()
+        except Exception as close_error:
+            emit("warning", {
+                "code": "SERVICE_CLOSE_FAILED",
+                "message": f"{type(close_error).__name__}: {close_error}",
+            })
         try:
             if config.runtime_path.exists():
                 current = json.loads(config.runtime_path.read_text(encoding="utf-8"))

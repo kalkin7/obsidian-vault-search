@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,45 @@ from typing import Any
 DEFAULT_INCLUDES = ["**/*.md"]
 DEFAULT_EXCLUDES = [".obsidian/**", "**/node_modules/**"]
 DEFAULT_WIKI_FOLDERS = ["5_Wiki/issues", "5_Wiki/entities", "5_Wiki/decisions"]
+
+# Agent-extension bounds (plan §6.3). A malformed single entry must never
+# prevent the search service from starting: invalid items are dropped and
+# reported through SearchConfig.config_problems instead.
+MAX_PROJECT_RULES_CHARS = 32_000
+MAX_MCP_SERVERS = 20
+MAX_MCP_ARGS = 64
+MAX_MCP_ARG_CHARS = 2_048
+MAX_TOOL_POLICIES_PER_SERVER = 500
+MAX_SKILL_ROOTS = 20
+MAX_ENV_NAMES_PER_SERVER = 32
+MAX_ENV_NAME_CHARS = 128
+MCP_SERVER_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$")
+ENV_NAME_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,127}$")
+_CONTROL_CHARS = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
+def has_control_chars(value: str) -> bool:
+    return bool(_CONTROL_CHARS.search(value))
+
+
+@dataclass(slots=True)
+class McpServerConfig:
+    id: str
+    name: str
+    command: str
+    args: list[str] = field(default_factory=list)
+    cwd: str = "vault"  # "vault" | "plugin" | absolute directory
+    env_names: list[str] = field(default_factory=list)
+    tool_policies: dict[str, str] = field(default_factory=dict)
+    enabled: bool = True
+    transport: str = "stdio"
+
+
+@dataclass(slots=True)
+class SkillRootConfig:
+    id: str
+    path: str  # vault-relative preferred; explicit absolute allowed
+    enabled: bool = True
 
 
 @dataclass(slots=True)
@@ -47,6 +87,16 @@ class SearchConfig:
     llm_max_context_chars: int = 24000
     llm_max_output_tokens: int = 4000
     llm_timeout_seconds: float = 45.0
+    # --- API agent extensions (MCP / skills / project rules) ---
+    project_rules: str = ""
+    mcp_enabled: bool = False
+    mcp_servers: list[McpServerConfig] = field(default_factory=list)
+    skills_enabled: bool = False
+    skill_roots: list[SkillRootConfig] = field(default_factory=list)
+    enabled_skills: set[str] = field(default_factory=set)
+    plugin_path: Path | None = None
+    # Human-readable problems for dropped/isolated config entries (never fatal).
+    config_problems: list[str] = field(default_factory=list)
 
     @property
     def index_dir(self) -> Path:
@@ -128,6 +178,193 @@ def _as_reasoning_effort(value: Any) -> str:
     return effort if effort in _REASONING_EFFORTS else ""
 
 
+def _as_project_rules(value: Any, problems: list[str]) -> str:
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        problems.append("project rules ignored: not a string")
+        return ""
+    if has_control_chars(value.replace("\t", "").replace("\n", "").replace("\r", "")):
+        problems.append("project rules ignored: control characters")
+        return ""
+    if len(value) > MAX_PROJECT_RULES_CHARS:
+        problems.append(
+            f"project rules truncated to {MAX_PROJECT_RULES_CHARS} characters"
+        )
+        return value[:MAX_PROJECT_RULES_CHARS]
+    return value
+
+
+def _as_mcp_servers(
+    raw: Any, plugin_path: Path | None, problems: list[str]
+) -> list[McpServerConfig]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        problems.append("MCP servers ignored: expected a list")
+        return []
+    if len(raw) > MAX_MCP_SERVERS:
+        problems.append(
+            f"MCP servers beyond {MAX_MCP_SERVERS} entries are dropped"
+        )
+        raw = raw[:MAX_MCP_SERVERS]
+    servers: list[McpServerConfig] = []
+    seen_ids: set[str] = set()
+    seen_names: set[str] = set()
+    for index, entry in enumerate(raw):
+        label = f"MCP server #{index + 1}"
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("entry must be an object")
+            server_id = str(entry.get("id", "")).strip()
+            name = str(entry.get("name", "")).strip()
+            command = str(entry.get("command", "")).strip()
+            if not server_id or len(server_id) > 64:
+                raise ValueError("id must be 1-64 characters")
+            if has_control_chars(server_id):
+                raise ValueError("id contains control characters")
+            if not name or len(name) > 64 or not MCP_SERVER_NAME_PATTERN.match(name):
+                raise ValueError(
+                    "name must be 1-64 characters (letters, numbers, space, ., _, -)"
+                )
+            if has_control_chars(name):
+                raise ValueError("name contains control characters")
+            if server_id in seen_ids:
+                raise ValueError(f"duplicate server id: {server_id}")
+            if name.lower() in seen_names:
+                raise ValueError(f"duplicate server name: {name}")
+            if not command:
+                raise ValueError("command is required")
+            if has_control_chars(command):
+                raise ValueError("command contains control characters")
+            raw_args = entry.get("args", [])
+            if not isinstance(raw_args, list) or len(raw_args) > MAX_MCP_ARGS:
+                raise ValueError(f"args must be a list of at most {MAX_MCP_ARGS} items")
+            args = [str(a) for a in raw_args]
+            if any(len(a) > MAX_MCP_ARG_CHARS for a in args):
+                raise ValueError(f"each arg must be at most {MAX_MCP_ARG_CHARS} chars")
+            if any(has_control_chars(a) for a in args):
+                raise ValueError("args contain control characters")
+            cwd_value = str(entry.get("cwd", "vault")).strip() or "vault"
+            if cwd_value == "vault":
+                cwd = "vault"
+            elif cwd_value == "plugin":
+                if plugin_path is None or not plugin_path.is_dir():
+                    raise ValueError('cwd="plugin" requires a valid plugin path')
+                cwd = "plugin"
+            else:
+                cwd_dir = Path(cwd_value)
+                if not cwd_dir.is_absolute():
+                    raise ValueError("custom cwd must be an absolute directory")
+                if has_control_chars(cwd_value):
+                    raise ValueError("cwd contains control characters")
+                resolved = Path(str(cwd_value))
+                if not (resolved.exists() and resolved.is_dir()):
+                    raise ValueError(f"custom cwd does not exist: {cwd_value}")
+                cwd = str(resolved)
+            env_names_raw = entry.get("envNames", [])
+            if not isinstance(env_names_raw, list):
+                raise ValueError("envNames must be a list of names")
+            if len(env_names_raw) > MAX_ENV_NAMES_PER_SERVER:
+                raise ValueError(f"at most {MAX_ENV_NAMES_PER_SERVER} env names")
+            env_names: list[str] = []
+            for env_name in env_names_raw:
+                cleaned = str(env_name).strip()
+                if not ENV_NAME_PATTERN.match(cleaned):
+                    raise ValueError(f"invalid env name: {cleaned!r}")
+                if cleaned in env_names:
+                    raise ValueError(f"duplicate env name: {cleaned}")
+                env_names.append(cleaned)
+            policies_raw = entry.get("toolPolicies", {})
+            if not isinstance(policies_raw, dict):
+                raise ValueError("toolPolicies must be an object")
+            if len(policies_raw) > MAX_TOOL_POLICIES_PER_SERVER:
+                raise ValueError(
+                    f"at most {MAX_TOOL_POLICIES_PER_SERVER} tool policy entries"
+                )
+            tool_policies: dict[str, str] = {}
+            for tool_name, policy in list(policies_raw.items())[
+                :MAX_TOOL_POLICIES_PER_SERVER
+            ]:
+                tool_key = str(tool_name)[:256]
+                if policy in {"deny", "ask", "allow"}:
+                    tool_policies[tool_key] = str(policy)
+            transport = str(entry.get("transport", "stdio")).lower()
+            if transport != "stdio":
+                raise ValueError("only stdio transport is supported")
+            servers.append(
+                McpServerConfig(
+                    id=server_id,
+                    name=name,
+                    command=command,
+                    args=args,
+                    cwd=cwd,
+                    env_names=env_names,
+                    tool_policies=tool_policies,
+                    enabled=bool(entry.get("enabled", True)),
+                    transport="stdio",
+                )
+            )
+            seen_ids.add(server_id)
+            seen_names.add(name.lower())
+        except ValueError as exc:
+            problems.append(f"{label} isolated: {exc}")
+    return servers
+
+
+def _as_skill_roots(raw: Any, problems: list[str]) -> list[SkillRootConfig]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        problems.append("skill roots ignored: expected a list")
+        return []
+    if len(raw) > MAX_SKILL_ROOTS:
+        problems.append(f"skill roots beyond {MAX_SKILL_ROOTS} entries are dropped")
+        raw = raw[:MAX_SKILL_ROOTS]
+    roots: list[SkillRootConfig] = []
+    seen_ids: set[str] = set()
+    for index, entry in enumerate(raw):
+        label = f"skill root #{index + 1}"
+        try:
+            if not isinstance(entry, dict):
+                raise ValueError("entry must be an object")
+            root_id = str(entry.get("id", "")).strip()
+            path_value = str(entry.get("path", "")).strip().replace("\\", "/")
+            if not root_id or len(root_id) > 64:
+                raise ValueError("id must be 1-64 characters")
+            if root_id in seen_ids:
+                raise ValueError(f"duplicate root id: {root_id}")
+            if not path_value:
+                raise ValueError("path is required")
+            if has_control_chars(path_value):
+                raise ValueError("path contains control characters")
+            roots.append(
+                SkillRootConfig(
+                    id=root_id,
+                    path=path_value,
+                    enabled=bool(entry.get("enabled", True)),
+                )
+            )
+            seen_ids.add(root_id)
+        except ValueError as exc:
+            problems.append(f"{label} isolated: {exc}")
+    return roots
+
+
+def _as_enabled_skills(raw: Any, problems: list[str]) -> set[str]:
+    if raw is None:
+        return set()
+    if not isinstance(raw, list):
+        problems.append("enabledSkills ignored: expected a list")
+        return set()
+    skills: set[str] = set()
+    for item in raw[:1000]:
+        value = str(item).strip()
+        if value:
+            skills.add(value[:512])
+    return skills
+
+
 def load_config(
     path: str | Path,
     vault_override: str | None = None,
@@ -148,6 +385,22 @@ def load_config(
     data_dir = Path(data_dir_value).resolve()
     if not vault.is_dir():
         raise ValueError(f"Vault path does not exist: {vault}")
+
+    problems: list[str] = []
+    plugin_path_value = raw.get("pluginPath")
+    plugin_path: Path | None = None
+    if isinstance(plugin_path_value, str) and plugin_path_value.strip():
+        candidate = Path(plugin_path_value.strip())
+        if candidate.is_dir():
+            plugin_path = candidate
+        else:
+            problems.append("pluginPath ignored: directory does not exist")
+    project_rules = _as_project_rules(raw.get("answerProjectRules"), problems)
+    mcp_servers = _as_mcp_servers(
+        raw.get("mcpServers"), plugin_path, problems
+    )
+    skill_roots = _as_skill_roots(raw.get("skillRoots"), problems)
+    enabled_skills = _as_enabled_skills(raw.get("enabledSkills"), problems)
 
     profile = str(raw.get("modelProfile", "multilingual-e5-base"))
     model_id = str(raw.get("modelId", "intfloat/multilingual-e5-base"))
@@ -238,6 +491,14 @@ def load_config(
                 ),
             ),
         ),
+        project_rules=project_rules,
+        mcp_enabled=bool(raw.get("mcpEnabled", False)),
+        mcp_servers=mcp_servers,
+        skills_enabled=bool(raw.get("skillsEnabled", False)),
+        skill_roots=skill_roots,
+        enabled_skills=enabled_skills,
+        plugin_path=plugin_path,
+        config_problems=problems,
     )
     if cfg.llm_provider not in {"openai", "opencode-go", "deepseek"}:
         cfg.llm_provider = "openai"

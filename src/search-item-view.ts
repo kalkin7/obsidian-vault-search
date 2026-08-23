@@ -11,7 +11,13 @@ import { AnswerRenderer, toNoteMarkdown } from "./answer-renderer";
 import {
   AnswerSession,
   type AnswerConversationMessage,
+  type AnswerTransport,
 } from "./answer-session";
+import {
+  renderToolApprovalCard,
+  renderToolRunning,
+  renderToolActivity,
+} from "./tool-approval-renderer";
 import {
   copyMarkdownToClipboard,
   createNoteFromMarkdown,
@@ -24,11 +30,14 @@ import {
 import type {
   AnswerEvidence,
   AnswerResult,
+  AnswerStartResponse,
   AnswerState,
   BackendStatus,
   Citation,
   FavoriteAnswerModel,
   LLMProviderId,
+  PendingToolCall,
+  ToolActivityEntry,
   VaultSearchSettings,
 } from "./types";
 import { VIEW_TYPE_VAULT_AI_SEARCH } from "./constants";
@@ -165,6 +174,10 @@ export class VaultSearchItemView extends ItemView {
   private sessionCreated = "";
   private sessionTitle = "";
   private lastCitations: Citation[] | null = null;
+  /** Safe tool-activity metadata of the latest answer (history saves this —
+   *  raw arguments/results never reach the transcript). */
+  private lastToolActivity: ToolActivityEntry[] = [];
+  private lastGroundingKind: AnswerResult["groundingKind"];
 
   /** Close the history popover when clicking anywhere outside it. */
   private readonly onDocClick = (event: MouseEvent): void => {
@@ -223,7 +236,7 @@ export class VaultSearchItemView extends ItemView {
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
     this.session = new AnswerSession(
-      (query, conversation) => this.answer(query, conversation),
+      this.buildTransport(),
       (state) => this.renderAnswerState(state),
     );
     const footer = this.contentEl.createDiv({ cls: "vault-ai-search-footer" });
@@ -327,6 +340,8 @@ export class VaultSearchItemView extends ItemView {
       this.sessionCreated = "";
       this.sessionTitle = "";
       this.lastCitations = null;
+      this.lastToolActivity = [];
+      this.lastGroundingKind = undefined;
       this.hideHistoryPopover();
     };
     clear.addEventListener("click", clearQuery);
@@ -437,43 +452,46 @@ export class VaultSearchItemView extends ItemView {
     el.style.overflowY = el.scrollHeight > INPUT_MAX_HEIGHT ? "auto" : "hidden";
   }
 
-  private async answer(
-    query: string,
-    conversation: AnswerConversationMessage[],
-  ): Promise<AnswerResult> {
-    await this.owner.ensureSearchStarted();
-    const params = {
-      query,
-      top_k: 12,
-      max_context_chars: this.owner.settings.answerMaxContextChars,
-      conversation,
-      // Agentic mode: the model iteratively searches / reads / greps the
-      // vault (same quality as a CLI agent) before answering.
-      deep: true,
-    };
-    // The agent loop takes multiple LLM round-trips; give it a generous
-    // transport budget (per-call timeout x turns) instead of the single-shot
-    // timeout.
+  /** Stateful answer transport over the loopback protocol. `answer_start`
+   *  may hit MODEL_LOADING on a lazy sidecar — retry once after ensuring the
+   *  model actually started (same behavior as the legacy one-shot path). */
+  private buildTransport(): AnswerTransport {
     const timeoutMs =
       this.owner.settings.answerTimeoutSeconds * 1000 * 12 +
       ANSWER_TRANSPORT_MARGIN_MS;
-    try {
-      return await this.owner.backend.call<AnswerResult>(
-        "answer",
+    const startOnce = async (
+      params: Record<string, unknown>,
+    ): Promise<AnswerStartResponse> =>
+      this.owner.backend.call<AnswerStartResponse>(
+        "answer_start",
         params,
         timeoutMs,
       );
-    } catch (error) {
-      if (error instanceof BackendCallError && error.code === "MODEL_LOADING") {
+    return {
+      start: async (params) => {
         await this.owner.ensureSearchStarted();
-        return await this.owner.backend.call<AnswerResult>(
-          "answer",
-          params,
+        try {
+          return await startOnce({ ...params });
+        } catch (error) {
+          if (
+            error instanceof BackendCallError &&
+            error.code === "MODEL_LOADING"
+          ) {
+            await this.owner.ensureSearchStarted();
+            return await startOnce({ ...params });
+          }
+          throw error;
+        }
+      },
+      continue: (runId, decisions) =>
+        this.owner.backend.call<AnswerStartResponse>(
+          "answer_continue",
+          { run_id: runId, decisions },
           timeoutMs,
-        );
-      }
-      throw error;
-    }
+        ),
+      cancel: (runId) =>
+        this.owner.backend.call("answer_cancel", { run_id: runId }, 5_000),
+    };
   }
 
   private renderAnswerState(state: AnswerState): void {
@@ -489,11 +507,52 @@ export class VaultSearchItemView extends ItemView {
       this.setPending("답변을 작성하는 중…");
       return;
     }
+    if (state.kind === "tool-approval") {
+      this.clearPending();
+      this.renderApprovalCards(state.calls);
+      return;
+    }
+    if (state.kind === "tool-running") {
+      this.clearPending();
+      this.pendingEl = renderToolRunning(this.answerEl, state.calls, () => {
+        void this.session.cancelActive();
+        this.appendCancelledNotice();
+      });
+      this.scrollToBottom();
+      return;
+    }
     if (state.kind === "answer") {
       this.renderAnswer(state.result);
       return;
     }
     this.renderUnavailable(state);
+  }
+
+  private renderApprovalCards(calls: PendingToolCall[]): void {
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant",
+    });
+    block.createDiv({
+      cls: "vault-ai-search-thought",
+      text: "도구 실행 승인 대기",
+    });
+    for (const call of calls) {
+      renderToolApprovalCard(block, call, {
+        onDecide: (decision) => this.session.decide([decision]),
+        onCancel: () => void this.session.cancelActive(),
+      });
+    }
+    this.scrollToBottom();
+  }
+
+  private appendCancelledNotice(): void {
+    const block = this.answerEl.createDiv({
+      cls: "vault-ai-search-assistant",
+    });
+    block
+      .createDiv({ cls: "vault-ai-search-thought" })
+      .setText("도구 실행이 취소되었습니다.");
+    this.scrollToBottom();
   }
 
   private appendUserMessage(text: string): void {
@@ -583,6 +642,15 @@ export class VaultSearchItemView extends ItemView {
     // Answers reuse [S#] ids across turns; keep one merged session map so
     // history saves real citations (fresh saves previously stored none).
     this.lastCitations = mergeCitations(this.lastCitations, result.citations);
+    if (result.toolActivity?.length) {
+      this.lastToolActivity = [
+        ...this.lastToolActivity,
+        ...result.toolActivity,
+      ];
+    }
+    if (result.groundingKind) {
+      this.lastGroundingKind = result.groundingKind;
+    }
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant",
     });
@@ -590,8 +658,14 @@ export class VaultSearchItemView extends ItemView {
       ? ` · 조사 ${result.diagnostics.turns ?? 0}턴`
       : "";
     const meta = block.createDiv({ cls: "vault-ai-search-thought" });
+    const groundingLabel =
+      result.groundingKind === "tool"
+        ? " · 도구 근거"
+        : result.groundingKind === "mixed"
+          ? " · 볼트+도구 근거"
+          : "";
     meta.setText(
-      `${result.provider} · ${result.model}${result.grounded ? " · 근거 있음" : " · 근거 부족"}${deep}`,
+      `${result.provider} · ${result.model}${result.grounded ? " · 근거 있음" : " · 근거 부족"}${groundingLabel}${deep}`,
     );
     const body = block.createDiv({ cls: "vault-ai-search-answer-body" });
     const renderer = new AnswerRenderer(body, {
@@ -609,6 +683,9 @@ export class VaultSearchItemView extends ItemView {
         ),
       onInsertToActive: () => this.insertAnswerToActive(noteMarkdown),
     });
+    if (result.toolActivity?.length) {
+      renderToolActivity(block, result.toolActivity);
+    }
     if (result.evidence.length) {
       this.renderMessageEvidence(block, result.evidence);
     }
@@ -732,6 +809,10 @@ export class VaultSearchItemView extends ItemView {
     this.sessionCreated = session.created;
     this.sessionTitle = session.title;
     this.lastCitations = session.citations;
+    this.lastToolActivity = session.toolActivity
+      ? [...session.toolActivity]
+      : [];
+    this.lastGroundingKind = session.groundingKind;
     for (const message of messages) {
       if (message.role === "user") {
         this.appendUserMessage(message.content);
@@ -798,6 +879,10 @@ export class VaultSearchItemView extends ItemView {
       reasoningEffort: settings.answerReasoningEffort,
       messages,
       citations: this.lastCitations ?? [],
+      toolActivity: this.lastToolActivity.length
+        ? this.lastToolActivity
+        : undefined,
+      groundingKind: this.lastGroundingKind,
     };
     await saveHistory(
       this.app.vault,
@@ -823,6 +908,8 @@ export class VaultSearchItemView extends ItemView {
     this.sessionCreated = "";
     this.sessionTitle = "";
     this.lastCitations = null;
+    this.lastToolActivity = [];
+    this.lastGroundingKind = undefined;
     this.lastQuery = "";
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant",

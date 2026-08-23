@@ -301,7 +301,7 @@ def test_title_channel_can_add_file_outside_body_vector(tmp_path: Path):
 
 
 def test_file_and_body_share_no_duplicate_chunk(tmp_path: Path):
-    cfg = config(tmp_path)
+    config(tmp_path)
     connection = init_db(tmp_path / "shared.db")
     try:
         row_id = insert_chunk(connection, "shared.md", 0, "설치 경과 본문", ["설치"])

@@ -172,3 +172,62 @@ The provider receives bounded source snippets, not the whole vault. Source text
 is treated as untrusted data, and citations such as `[S1]` open the
 corresponding note and line in Obsidian. Missing keys affect only answer
 generation; ordinary vault search remains available.
+
+## API 에이전트 (MCP · 스킬 · 프로젝트 규칙)
+
+Desktop 전용 확장으로, API provider 모델이 CLI 에이전트처럼 로컬 MCP 도구와 볼트
+스킬을 활용할 수 있게 합니다. 설정 탭의 **API 에이전트** 탭에서 관리합니다. 세
+기능은 모두 기본적으로 꺼져 있으며, 기존 답변 동작은 바뀌지 않습니다.
+
+### 프로젝트 규칙
+
+- 최대 32,000자의 텍스트를 시스템 지침의 한 구획(`<project_rules>`)으로 전송합니다.
+- **AGENTS.md 가져오기**는 볼트 루트의 `AGENTS.md` 내용을 스냅샷으로 복사합니다 —
+  이후 파일이 변경되어도 자동 반영되지 않고, 가져온 시각과 SHA-256 앞 12자리가
+  표시됩니다. 재가입하면 새 내용으로 갱신됩니다.
+- 프로젝트 규칙은 제품 보안 지침(도구 승인, 볼트 경계, 비밀값 보호)보다 우선하지
+  못합니다. 규칙에 등록되지 않은 CLI/도구가 언급되어도 실제 도구로 취급되지 않습니다.
+- 이 내용은 provider로 전송되므로 민감한 값을 넣지 마세요.
+
+### MCP 서버
+
+- **stdio 방식의 로컬 서버만** 지원합니다(원격/HTTP/OAuth 미지원). 최대 20개.
+- 실행 명령은 셸을 거치지 않고 직접 실행되며, 작업 폴더는 볼트 루트 / 플러그인
+  폴더 / 사용자가 지정한 절대 경로 중 하나입니다.
+- 환경 변수 **값은 Obsidian `secretStorage`에만** 저장됩니다. plugin data,
+  `service-config.json`, 요청·응답, 로그, 히스토리에는 이름만 남습니다. 값은
+  sidecar 연결 후 인증된 loopback 프로토콜(`set_mcp_secrets`)로 한 번 전달되며,
+  응답·로그에 절대 기록되지 않습니다. 전체 payload는 32 KiB, 이름 128자, 값 8 KiB로
+  제한됩니다. 서버 삭제 시 해당 secret도 함께 삭제됩니다.
+- MCP 자식 프로세스에는 SDK 기본 safe environment + 해당 서버 env만 전달됩니다 —
+  provider API 키나 다른 서버의 secret, 부모의 전체 환경은 들어가지 않습니다.
+  자식의 stderr는 폐기됩니다(서버가 secret을 stderr로 출력해도 기록되지 않음).
+- 도구 정책: 새 도구는 항상 **ask**(실행 전 승인). `deny`는 목록에서 숨기고,
+  `allow`는 자동 실행입니다. annotations(readOnlyHint 등)로 자동 승인하지 않습니다.
+  승인 카드에서 **한 번 허용 / 이 대화에서 허용 / 거부**를 선택하며, "이 대화에서
+  허용"은 현재 대화에만 유효하고 재시작·새 대화·히스토리 복원 시 사라집니다.
+  항상 허용으로 바꾸려면 설정 화면에서만 가능합니다.
+- 타임아웃: 연결/목록 10초, 호출 기본 30최대 120초. 실행 중 호출과 run은 패널에서
+  취소할 수 있습니다(provider HTTP 요청 자체는 현재 즉시 중단되지 않을 수 있음).
+- 백엔드 종료 시 모든 MCP 자식 프로세스가 정리됩니다.
+
+### 스킬
+
+- `.agents/skills`, `.claude/skills`, `.opencode/skills`(프로젝트 루트)와 사용자가
+  추가한 루트(최대 20개)에서 `*/SKILL.md`를 탐색합니다.
+- 카탈로그에는 id·이름·설명만 제공되고 본문은 모델이 `skill_load`로 선택할 때만
+  로드됩니다(점진적 로딩). 참조 파일은 `skill_read_resource`로 스킬 폴더 안에서만
+  읽히며, 파일당 64 KiB, run당 총 256 KiB, `.env`·인증서·키 파일은 거부합니다.
+  스크립트는 **읽기만** 하고 실행하지 않습니다.
+- SKILL.md 64 KiB, 루트당 200개, 전체 활성 100개, 설명 2,000자로 제한되며,
+  잘못된 프론트매터·루트 탈출(junction/symlink)·중복 이름은 개별 경고로 격리됩니다.
+- 하나의 malformed 스킬 때문에 검색 서비스 전체가 망가지지 않습니다.
+
+### 데이터 경계 (공통)
+
+- 검색 결과, read 결과, MCP 결과, 스킬 본문은 항상 **데이터**로 전달되며 시스템
+  지침으로 승격되지 않습니다("ignore previous instructions" 무효).
+- 히스토리에는 도구 **활동 메타데이터**(도구명/상태/시간)만 저장되고, 인자 원문과
+  결과 원문은 저장되지 않습니다. `groundingKind`(vault/tool/mixed/none)로 답변의
+  근거 출처를 구분할 수 있습니다.
+- 모바일에서는 MCP subprocess 실행이 불가합니다(Desktop 전용).

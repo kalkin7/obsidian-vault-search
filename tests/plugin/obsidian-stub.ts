@@ -25,23 +25,45 @@ export class Notice {
 }
 
 class StubElement {
+  tag = "div";
   children: StubElement[] = [];
+  parent: StubElement | null = null;
+  attributes: Record<string, string> = {};
+  listeners: Record<string, Array<() => void>> = {};
   textContent = "";
   value = "";
+  disabled = false;
   classList = {
     add: (..._names: string[]) => undefined,
     remove: (..._names: string[]) => undefined,
   };
-  createEl(_tag: string, options?: { text?: string }): StubElement {
+  createEl(tag: string, options?: { text?: string; cls?: string; attr?: Record<string, string | number> }): StubElement {
     const child = new StubElement();
-    child.textContent = options?.text || "";
+    child.tag = tag;
+    child.parent = this;
+    if (options?.text !== undefined) child.textContent = options.text;
+    if (options?.cls) child.classList.add(options.cls);
+    for (const [key, val] of Object.entries(options?.attr || {})) {
+      child.attributes[key] = String(val);
+    }
+    if (tag === "button") {
+      // Mirror the disabled semantics real buttons need for the approval
+      // double-click guard.
+      let currentDisabled = false;
+      Object.defineProperty(child, "disabled", {
+        get: () => currentDisabled,
+        set: (value: boolean) => {
+          currentDisabled = value;
+        },
+      });
+    }
     this.children.push(child);
     return child;
   }
-  createDiv(options?: { text?: string }): StubElement {
+  createDiv(options?: { text?: string; cls?: string }): StubElement {
     return this.createEl("div", options);
   }
-  createSpan(options?: { text?: string }): StubElement {
+  createSpan(options?: { text?: string; cls?: string }): StubElement {
     return this.createEl("span", options);
   }
   empty(): void {
@@ -57,8 +79,41 @@ class StubElement {
   removeClass(...names: string[]): void {
     this.classList.remove(...names);
   }
-  addEventListener(): void {}
-  removeEventListener(): void {}
+  addEventListener(type: string, handler: () => void): void {
+    (this.listeners[type] ||= []).push(handler);
+  }
+  removeEventListener(type: string, handler: () => void): void {
+    this.listeners[type] = (this.listeners[type] || []).filter(
+      (entry) => entry !== handler,
+    );
+  }
+  /** Test helper: fire registered handlers without a real DOM event. */
+  dispatch(type: string): void {
+    for (const handler of [...(this.listeners[type] || [])]) handler();
+  }
+  setAttribute(name: string, value: string): void {
+    this.attributes[name] = value;
+  }
+  getAttribute(name: string): string | null {
+    return this.attributes[name] ?? null;
+  }
+  /** Recursive text content (mirrors DOM textContent aggregation). */
+  get flattenedText(): string {
+    const parts: string[] = [this.textContent];
+    for (const child of this.children) parts.push(child.flattenedText);
+    return parts.join("");
+  }
+  querySelectorAll(selector: string): StubElement[] {
+    const found: StubElement[] = [];
+    const walk = (node: StubElement): void => {
+      for (const child of node.children) {
+        if (selector === "button" && child.tag === "button") found.push(child);
+        walk(child);
+      }
+    };
+    walk(this);
+    return found;
+  }
   focus(): void {}
   setSelectionRange(): void {}
 }
@@ -84,3 +139,6 @@ export class ItemView {
   }
   async setState(_state: unknown, _result: unknown): Promise<void> {}
 }
+
+/** Exposed for DOM-behavior tests of pure renderer modules. */
+export { StubElement };

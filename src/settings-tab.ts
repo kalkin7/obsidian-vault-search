@@ -7,8 +7,11 @@ import type { AgentIntegrationStatus } from "./agent-integration";
 import { validateProviderApiKey } from "./llm-secrets";
 import type { BackendStatus, LLMProviderId } from "./types";
 import { chooseProviderModel } from "./model-catalog";
+import { renderApiAgentSettings } from "./api-agent-settings";
+import { renderMcpSettings } from "./mcp-settings";
+import { renderSkillSettings } from "./skill-settings";
 
-type SettingsTabId = "general" | "answer" | "search";
+type SettingsTabId = "general" | "answer" | "agent" | "search";
 
 export class VaultSearchSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = "general";
@@ -483,6 +486,11 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }),
       );
 
+    // --- API agent extensions: project rules / MCP servers / skills ---
+    renderApiAgentSettings(containerEl, this.owner, draft);
+    renderMcpSettings(containerEl, this.owner, draft);
+    renderSkillSettings(containerEl, this.owner, draft);
+
     new Setting(containerEl).setName("임베딩 모델").addDropdown((dropdown) => {
       for (const [id, profile] of Object.entries(MODEL_PROFILES))
         dropdown.addOption(id, profile.name);
@@ -887,11 +895,13 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     const panels = {
       general: root.createDiv({ cls: "vault-search-settings-panel" }),
       answer: root.createDiv({ cls: "vault-search-settings-panel" }),
+      agent: root.createDiv({ cls: "vault-search-settings-panel" }),
       search: root.createDiv({ cls: "vault-search-settings-panel" }),
     } satisfies Record<SettingsTabId, HTMLElement>;
     const labels: Record<SettingsTabId, string> = {
       general: "일반",
       answer: "AI 답변",
+      agent: "API 에이전트",
       search: "검색·런타임",
     };
     const buttons = new Map<SettingsTabId, HTMLButtonElement>();
@@ -934,6 +944,12 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       const element = child as HTMLElement;
       if (element.tagName === "H3") {
         if (element.textContent?.includes("AI Vault")) panel = "answer";
+        if (
+          element.textContent?.includes("API 에이전트") ||
+          element.textContent?.includes("MCP 서버") ||
+          element.textContent?.includes("스킬")
+        )
+          panel = "agent";
         if (element.textContent?.includes("고급")) panel = "search";
       }
       const settingName = element

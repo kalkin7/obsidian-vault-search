@@ -73,14 +73,33 @@ def _start(tmp_path: Path, lazy: bool = False,
 
 def _wait_ready(runtime: dict, timeout: float = 10) -> dict:
     deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        response = request(runtime["host"], runtime["port"], runtime["token"], "status", timeout=1)
-        if response["data"]["state"] in {"ready", "ready_no_index"}:
-            return response["data"]
-        if response["data"]["state"] == "error":
-            raise AssertionError(response["data"]["error"])
+    last_transport_error: Exception | None = None
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if last_transport_error is not None:
+                raise AssertionError(
+                    "backend did not become ready; last transport error: "
+                    f"{type(last_transport_error).__name__}: {last_transport_error}"
+                )
+            raise AssertionError("backend did not become ready")
+        try:
+            response = request(runtime["host"], runtime["port"], runtime["token"],
+                               "status", timeout=1)
+        except (TimeoutError, ConnectionResetError) as exc:
+            # A cold full-suite run can stall the accept/serve path for over
+            # the 1s socket budget once; retry inside the deadline instead of
+            # failing a healthy backend.
+            last_transport_error = exc
+            time.sleep(0.1)
+            continue
+        last_transport_error = None
+        data = response["data"]
+        if data["state"] in {"ready", "ready_no_index"}:
+            return data
+        if data["state"] == "error":
+            raise AssertionError(data["error"])
         time.sleep(0.05)
-    raise AssertionError("backend did not become ready")
 
 
 def test_service_build_search_auth_and_shutdown(tmp_path: Path):

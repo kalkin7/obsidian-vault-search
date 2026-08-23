@@ -180,6 +180,53 @@ describe("buildHistoryNote / parseHistoryNote", () => {
     expect(parseHistoryNote("# 그냥 노트\n\n내용")).toBeNull();
     expect(parseHistoryNote("")).toBeNull();
   });
+
+  it("round-trips safe tool activity and grounding kind", () => {
+    const session = sampleSession();
+    session.groundingKind = "mixed";
+    session.toolActivity = [
+      {
+        toolName: "mcp__github__create_issue",
+        serverName: "github",
+        status: "success",
+        durationMs: 1234,
+      },
+      { toolName: "vault_read", status: "rejected" },
+      { toolName: "vault_grep", status: "error", truncated: true },
+    ];
+    const parsed = parseHistoryNote(buildHistoryNote(session));
+    expect(parsed!.groundingKind).toBe("mixed");
+    expect(parsed!.toolActivity).toEqual([
+      {
+        toolName: "mcp__github__create_issue",
+        serverName: "github",
+        status: "success",
+        durationMs: 1234,
+      },
+      { toolName: "vault_read", status: "rejected" },
+      { toolName: "vault_grep", status: "error", truncated: true },
+    ]);
+  });
+
+  it("never stores raw arguments or tool results in the note", () => {
+    const session = sampleSession();
+    // The result payload only ever contains metadata; simulate an attempt to
+    // smuggle a secret through the fields the schema supports.
+    session.toolActivity = [
+      {
+        toolName: "MCP_CANARY_SECRET_TOOL",
+        serverName: "srv",
+        status: "success",
+      },
+    ];
+    const note = buildHistoryNote(session);
+    expect(note).not.toContain("arguments");
+    expect(note).not.toContain("result_text");
+    expect(note).toContain("MCP_CANARY_SECRET_TOOL"); // name is safe metadata
+    const parsed = parseHistoryNote(note)!;
+    expect(parsed.toolActivity?.[0]).not.toHaveProperty("arguments");
+    expect(parsed.toolActivity?.[0]).not.toHaveProperty("rawResult");
+  });
 });
 
 describe("vault I/O", () => {

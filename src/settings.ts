@@ -33,6 +33,13 @@ const SCOPE_KEYS: (keyof VaultSearchSettings)[] = [
 const RESTART_KEYS: (keyof VaultSearchSettings)[] = [
   "pythonExecutable",
   "modelIdleTimeoutSeconds",
+  // MCP/skills lifecycle lives in the sidecar; structural changes need a
+  // restart so sessions and registries rebuild cleanly.
+  "mcpEnabled",
+  "mcpServers",
+  "skillsEnabled",
+  "skillRoots",
+  "enabledSkills",
 ];
 const HOT_KEYS: (keyof VaultSearchSettings)[] = [
   "bm25TopK",
@@ -50,6 +57,9 @@ const HOT_KEYS: (keyof VaultSearchSettings)[] = [
   "answerMaxContextChars",
   "answerMaxOutputTokens",
   "answerTimeoutSeconds",
+  // Project rules ride the hot config path (system-instruction section).
+  "answerProjectRules",
+  "answerProjectRulesSource",
 ];
 
 function equal(a: unknown, b: unknown): boolean {
@@ -94,6 +104,16 @@ export function cloneSettings(
     favoriteAnswerModels: (settings.favoriteAnswerModels || []).map(
       (favorite) => ({ ...favorite }),
     ),
+    // Nested agent-extension structures must never alias the source object:
+    // draft edits would otherwise mutate saved settings in place.
+    mcpServers: (settings.mcpServers || []).map((server) => ({
+      ...server,
+      args: [...server.args],
+      envNames: [...server.envNames],
+      toolPolicies: { ...server.toolPolicies },
+    })),
+    skillRoots: (settings.skillRoots || []).map((root) => ({ ...root })),
+    enabledSkills: [...(settings.enabledSkills || [])],
   };
 }
 
@@ -117,11 +137,12 @@ export function hotConfig(
     answerMaxContextChars: settings.answerMaxContextChars,
     answerMaxOutputTokens: settings.answerMaxOutputTokens,
     answerTimeoutSeconds: settings.answerTimeoutSeconds,
+    answerProjectRules: settings.answerProjectRules,
   };
 }
 
 /** Latest settings layout version. Bump when legacy defaults need to migrate. */
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 const LEGACY_DEFAULT_TOP = { bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
 
 /** Migrate untouched legacy defaults to the benchmarked defaults.
@@ -132,7 +153,27 @@ const LEGACY_DEFAULT_TOP = { bm25TopK: 30, vectorTopK: 30, finalTopK: 20 };
  * default changes do not keep rewriting user settings. Returns true when a
  * change was applied so the caller can persist it once. */
 export function migrateSettings(settings: VaultSearchSettings): boolean {
-  if ((settings.settingsVersion ?? 0) >= SETTINGS_VERSION) return false;
+  let changed = false;
+  if ((settings.settingsVersion ?? 0) < 3) {
+    // v3: agent-extension fields. Missing arrays/strings get defaults; the
+    // extensions stay OFF so existing users see zero behavior change.
+    settings.answerProjectRules = settings.answerProjectRules ?? "";
+    settings.answerProjectRulesSource =
+      settings.answerProjectRulesSource ?? "custom";
+    settings.mcpEnabled = settings.mcpEnabled ?? false;
+    settings.mcpServers = Array.isArray(settings.mcpServers)
+      ? settings.mcpServers
+      : [];
+    settings.skillsEnabled = settings.skillsEnabled ?? false;
+    settings.skillRoots = Array.isArray(settings.skillRoots)
+      ? settings.skillRoots
+      : [];
+    settings.enabledSkills = Array.isArray(settings.enabledSkills)
+      ? settings.enabledSkills
+      : [];
+    changed = true;
+  }
+  if ((settings.settingsVersion ?? 0) >= SETTINGS_VERSION) return changed;
   const top = {
     bm25TopK: settings.bm25TopK,
     vectorTopK: settings.vectorTopK,
@@ -146,6 +187,7 @@ export function migrateSettings(settings: VaultSearchSettings): boolean {
     settings.bm25TopK = 80;
     settings.vectorTopK = 80;
     settings.finalTopK = 40;
+    changed = true;
   }
   // The legacy default for the idle-unload timeout was 0 (model stays
   // resident). A stored 0 is indistinguishable from an untouched default, so
@@ -153,9 +195,10 @@ export function migrateSettings(settings: VaultSearchSettings): boolean {
   // can set 0 again explicitly.
   if (settings.modelIdleTimeoutSeconds === 0) {
     settings.modelIdleTimeoutSeconds = 300;
+    changed = true;
   }
   settings.settingsVersion = SETTINGS_VERSION;
-  return true;
+  return changed;
 }
 
 /** Whether the stored pythonExecutable means "auto": an empty value or the

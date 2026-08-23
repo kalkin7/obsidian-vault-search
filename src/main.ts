@@ -1,4 +1,6 @@
 import { FileSystemAdapter, Notice, Plugin, requestUrl, TFile } from "obsidian";
+import { createHash } from "crypto";
+import { randomUUID } from "crypto";
 import * as path from "path";
 import {
   agentIntegrationNotice,
@@ -44,7 +46,20 @@ import {
   setProviderSecret,
   validateProviderApiKey,
 } from "./llm-secrets";
-import type { FavoriteAnswerModel, LLMProviderId } from "./types";
+import {
+  buildMcpSecretPayload,
+  deleteMcpSecret,
+  deleteServerSecrets,
+  getMcpSecret,
+  setMcpSecret,
+} from "./mcp-secrets";
+import type {
+  FavoriteAnswerModel,
+  LLMProviderId,
+  McpStatusResponse,
+  McpToolPolicy,
+  SkillsStatusResponse,
+} from "./types";
 import { normalizeProviderModels } from "./model-catalog";
 import { ICON_LIGHTNING, registerLightningIcon } from "./icons";
 
@@ -86,7 +101,7 @@ export default class VaultSearchPlugin extends Plugin {
   draftSettings!: VaultSearchSettings;
   backend!: BackendManager;
   private queue!: VaultEventQueue;
-  private settingTab!: VaultSearchSettingTab;
+  settingTab!: VaultSearchSettingTab;
   private startupPrepared = false;
   private startupInProgress = false;
   private searchModal: VaultSearchModal | null = null;
@@ -138,6 +153,7 @@ export default class VaultSearchPlugin extends Plugin {
       (status) => this.handleStatus(status),
       this.manifest.version,
       () => providerEnvironment(this.app),
+      () => buildMcpSecretPayload(this.app, this.settings.mcpServers || []),
     );
     const machinePython = await this.backend.readMachinePython();
     if (machinePython) this.settings.pythonExecutable = machinePython;
@@ -294,6 +310,7 @@ export default class VaultSearchPlugin extends Plugin {
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
+    this.normalizeAgentSettings();
     this.initDraft(this.settings);
     if (migrated || loaded?.loadPolicy === undefined) {
       await this.saveSettings();
@@ -880,6 +897,174 @@ export default class VaultSearchPlugin extends Plugin {
     );
     new Notice(`벡터 재구축 완료: 청크 ${result.chunks}개`, 10000);
     this.settingTab?.display();
+  }
+
+  /** Clamp the agent-extension settings to their protocol bounds so a
+   *  hand-edited data.json can never produce an invalid sidecar config. */
+  private normalizeAgentSettings(): void {
+    const s = this.settings;
+    s.answerProjectRules = String(s.answerProjectRules || "").slice(0, 32_000);
+    if (s.answerProjectRulesSource !== "agents-md")
+      s.answerProjectRulesSource = "custom";
+    s.mcpEnabled = Boolean(s.mcpEnabled);
+    s.mcpServers = (Array.isArray(s.mcpServers) ? s.mcpServers : []).slice(
+      0,
+      20,
+    );
+    for (const server of s.mcpServers) {
+      server.id = String(server.id || "").slice(0, 64);
+      server.name = String(server.name || "").slice(0, 64);
+      server.command = String(server.command || "");
+      server.args = (Array.isArray(server.args) ? server.args : [])
+        .map((arg) => String(arg))
+        .slice(0, 64);
+      server.envNames = (Array.isArray(server.envNames) ? server.envNames : [])
+        .map((name) => String(name))
+        .slice(0, 32);
+      server.cwd = String(server.cwd || "vault");
+      server.transport = "stdio";
+      server.enabled = server.enabled !== false;
+      const policies: Record<string, McpToolPolicy> = {};
+      for (const [tool, policy] of Object.entries(
+        server.toolPolicies || {},
+      )) {
+        if (policy === "deny" || policy === "ask" || policy === "allow") {
+          policies[tool] = policy;
+        }
+      }
+      server.toolPolicies = policies;
+    }
+    s.skillsEnabled = Boolean(s.skillsEnabled);
+    s.skillRoots = (Array.isArray(s.skillRoots) ? s.skillRoots : []).slice(
+      0,
+      20,
+    );
+    for (const root of s.skillRoots) {
+      root.id = String(root.id || "").slice(0, 64);
+      root.path = String(root.path || "");
+      root.enabled = root.enabled !== false;
+    }
+    s.enabledSkills = (Array.isArray(s.enabledSkills) ? s.enabledSkills : [])
+      .map((id) => String(id))
+      .slice(0, 1000);
+  }
+
+  // -------------------------------------------------------------------------
+  // API agent extensions: project rules / MCP / skills
+  // -------------------------------------------------------------------------
+
+  /** Snapshot-import the vault-root AGENTS.md into the project rules draft.
+   *  Deliberately a snapshot: later file edits never auto-apply (plan §7.1). */
+  async importAgentsMd(): Promise<void> {
+    const file = this.app.vault.getAbstractFileByPath("AGENTS.md");
+    if (!(file instanceof TFile)) {
+      throw new Error("볼트 루트에 AGENTS.md 파일이 없습니다.");
+    }
+    const content = await this.app.vault.read(file);
+    if (!content.trim()) {
+      throw new Error("AGENTS.md가 비어 있습니다.");
+    }
+    const hash = createHash("sha256").update(content, "utf8").digest("hex");
+    this.draftSettings.answerProjectRules = content.slice(0, 32_000);
+    this.draftSettings.answerProjectRulesSource = "agents-md";
+    this.draftSettings.answerProjectRulesImportedAt = new Date().toISOString();
+    this.draftSettings.answerProjectRulesHash = hash.slice(0, 12);
+    new Notice("AGENTS.md 내용을 가져왔습니다. 설정 적용 후 저장됩니다.", 6000);
+  }
+
+  clearProjectRules(): void {
+    this.draftSettings.answerProjectRules = "";
+    this.draftSettings.answerProjectRulesSource = "custom";
+    this.draftSettings.answerProjectRulesImportedAt = undefined;
+    this.draftSettings.answerProjectRulesHash = undefined;
+  }
+
+  addMcpServer(): string {
+    const id = randomUUID();
+    const servers = [...(this.draftSettings.mcpServers || [])];
+    servers.push({
+      id,
+      name: `서버 ${servers.length + 1}`,
+      enabled: true,
+      transport: "stdio",
+      command: "",
+      args: [],
+      cwd: "vault",
+      envNames: [],
+      toolPolicies: {},
+    });
+    this.draftSettings.mcpServers = servers;
+    return id;
+  }
+
+  /** Remove a server from the draft and purge its secrets. The exact server
+   *  object is captured first so env names cannot drift mid-delete. */
+  async deleteMcpServer(serverId: string): Promise<void> {
+    const server = (this.draftSettings.mcpServers || []).find(
+      (entry) => entry.id === serverId,
+    );
+    if (!server) return;
+    deleteServerSecrets(this.app, server);
+    this.draftSettings.mcpServers = (
+      this.draftSettings.mcpServers || []
+    ).filter((entry) => entry.id !== serverId);
+    await this.notifyMcpSecretsChanged();
+  }
+
+  async saveMcpEnvValue(
+    serverId: string,
+    envName: string,
+    value: string,
+  ): Promise<void> {
+    setMcpSecret(this.app, serverId, envName, value);
+    // Live rotation: push the fresh snapshot so a connected server picks up
+    // the new value without waiting for a settings-triggered restart. The
+    // sidecar reconnects only the server whose values changed.
+    await this.backend.sendMcpSecrets().catch(() => undefined);
+  }
+
+  /** Delete one env value from secret storage and drop it from the sidecar's
+   *  in-memory snapshot immediately (fix §5). */
+  async removeMcpEnvValue(serverId: string, envName: string): Promise<void> {
+    deleteMcpSecret(this.app, serverId, envName);
+    await this.backend.sendMcpSecrets().catch(() => undefined);
+  }
+
+  /** Best-effort snapshot push after any secret lifecycle change. */
+  private async notifyMcpSecretsChanged(): Promise<void> {
+    try {
+      await this.backend.sendMcpSecrets();
+    } catch {
+      /* the next start pushes the snapshot anyway */
+    }
+  }
+
+  hasMcpEnvValue(serverId: string, envName: string): boolean {
+    return Boolean(getMcpSecret(this.app, serverId, envName));
+  }
+
+  async refreshMcpStatus(): Promise<McpStatusResponse> {
+    return this.backend.call<McpStatusResponse>("mcp_status", {}, 15_000);
+  }
+
+  async refreshMcpTools(): Promise<McpStatusResponse> {
+    return this.backend.call<McpStatusResponse>("mcp_refresh", {}, 60_000);
+  }
+
+  async refreshSkillsStatus(): Promise<SkillsStatusResponse> {
+    return this.backend.call<SkillsStatusResponse>(
+      "skills_status",
+      {},
+      30_000,
+    );
+  }
+
+  async rescanSkills(): Promise<SkillsStatusResponse> {
+    return this.backend.call<SkillsStatusResponse>(
+      "skills_refresh",
+      {},
+      60_000,
+    );
   }
 
   private registerCommands(): void {

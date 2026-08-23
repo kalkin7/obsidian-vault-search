@@ -30,6 +30,7 @@ import { BACKEND_VERSION, GITHUB_REPO, PROTOCOL_VERSION } from "./constants";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
 import { mergeProviderEnvironment } from "./llm-secrets";
+import type { McpSecretPayloadResult } from "./mcp-secrets";
 
 interface BackendEvent {
   event: string;
@@ -62,6 +63,11 @@ export class BackendManager {
     private readonly statusChanged: (status: BackendStatus) => void,
     private readonly manifestVersion = BACKEND_VERSION,
     private readonly getEnvironment: () => Record<string, string> = () => ({}),
+    /** Builds the one-shot MCP secret handoff; invoked right after the
+     *  sidecar starts listening so servers waiting for env values connect. */
+    private readonly getMcpSecretPayload:
+      | (() => McpSecretPayloadResult | null)
+      | null = null,
   ) {}
 
   get dataDir(): string {
@@ -744,6 +750,19 @@ export class BackendManager {
     await this.waitUntilReady();
   }
 
+  /** Push MCP env values to the sidecar over the authenticated protocol.
+   *  Values never touch disk, logs, or the spawn environment. The payload is
+   *  a FULL snapshot of every enabled server (possibly with empty maps) so
+   *  rotations AND deletions propagate; the sidecar replaces each listed
+   *  server's stored mapping wholesale and reconnects only changed ones. */
+  async sendMcpSecrets(): Promise<void> {
+    if (!this.getMcpSecretPayload || !this.runtime) return;
+    if (!this.getSettings().mcpEnabled) return;
+    const built = this.getMcpSecretPayload();
+    if (!built) return;
+    await this.call("set_mcp_secrets", built.payload, 10_000);
+  }
+
   async call<T>(
     method: string,
     params: Record<string, unknown> = {},
@@ -813,6 +832,8 @@ export class BackendManager {
     const payload = {
       vaultPath: this.vaultPath,
       dataDir: this.dataDir,
+      // Resolved for MCP servers configured with cwd="plugin" (plan §6.1).
+      pluginPath: this.pluginDir,
       ...configSettings,
       lazyModel: lazyOverride ?? settings.loadPolicy === "first-search",
     };
@@ -880,6 +901,9 @@ export class BackendManager {
       void this.readRuntime().then((runtime) => {
         if (runtime) this.runtime = runtime;
         this.startHeartbeat();
+        // MCP env values travel over the authenticated loopback only, right
+        // after the sidecar is reachable (plan §6.2).
+        void this.sendMcpSecrets().catch(() => undefined);
       });
       return;
     }

@@ -21,6 +21,30 @@ export type FavoriteAnswerModel = {
   model: string;
 };
 export type ChunkingStrategy = "paragraph-v1" | "markdown-v2";
+export type McpToolPolicy = "deny" | "ask" | "allow";
+
+/** A registered local stdio MCP server. Env VALUES live only in Obsidian
+ *  secret storage — data.json carries the names exclusively. */
+export interface McpServerSettings {
+  id: string;
+  name: string;
+  enabled: boolean;
+  transport: "stdio";
+  command: string;
+  args: string[];
+  /** "vault" | "plugin" | absolute directory chosen explicitly by the user. */
+  cwd: string;
+  envNames: string[];
+  toolPolicies: Record<string, McpToolPolicy>;
+}
+
+export interface SkillRootSettings {
+  id: string;
+  /** Vault-relative preferred; explicit absolute paths are opt-in. */
+  path: string;
+  enabled: boolean;
+}
+
 export type BackendState =
   | "stopped"
   | "starting"
@@ -81,6 +105,21 @@ export interface VaultSearchSettings {
   /** Last fetched model lists per provider, persisted so the settings model
    *  list and its stars survive restarts (refresh with "모델 최신화"). */
   fetchedProviderModels?: Partial<Record<LLMProviderId, string[]>>;
+  // --- API agent extensions ---
+  /** Project rules sent as a bounded system-instruction section. Snapshot
+   *  semantics: imported AGENTS.md content is copied here verbatim. */
+  answerProjectRules: string;
+  /** Where the current rules text came from (custom textarea or import). */
+  answerProjectRulesSource: "custom" | "agents-md";
+  /** Metadata of the last AGENTS.md import (UI display only). */
+  answerProjectRulesImportedAt?: string;
+  answerProjectRulesHash?: string;
+  mcpEnabled: boolean;
+  mcpServers: McpServerSettings[];
+  skillsEnabled: boolean;
+  skillRoots: SkillRootSettings[];
+  /** Canonical skill ids ("root-id:normalized-name") the user enabled. */
+  enabledSkills: string[];
   settingsVersion?: number;
 }
 
@@ -216,6 +255,98 @@ export interface AnswerResult {
     turns?: number;
     tool_calls?: number;
   };
+  /** Safe tool-usage metadata only — never raw arguments or results. */
+  toolActivity?: ToolActivityEntry[];
+  /** What actually grounded the answer: vault citations, external tools,
+   *  both, or neither. `grounded` stays for backward compatibility. */
+  groundingKind?: "vault" | "tool" | "mixed" | "none";
+}
+
+export interface ToolActivityEntry {
+  toolName: string;
+  serverName?: string;
+  status: "success" | "error" | "rejected" | "cancelled";
+  durationMs?: number;
+  truncated?: boolean;
+}
+
+/** One MCP call awaiting user approval (plan §11.1). Arguments are shown in
+ *  the UI but never persisted to history or logs. */
+export interface PendingToolCall {
+  call_id: string;
+  tool_name: string;
+  server_name: string;
+  display_name: string;
+  description?: string;
+  arguments: Record<string, unknown>;
+  annotations?: Record<string, unknown>;
+}
+
+export type AnswerStartResponse =
+  | { status: "complete"; run_id?: string; result: AnswerResult }
+  | {
+      status: "approval_required";
+      run_id: string;
+      expires_at: string;
+      calls: PendingToolCall[];
+    };
+
+export type ToolDecision = "allow_once" | "allow_session" | "reject";
+
+/** Live MCP host state reported by `mcp_status` (plan §9.1). */
+export interface McpServerStatus {
+  id: string;
+  name: string;
+  state: "disabled" | "awaiting_secret" | "connecting" | "connected" | "error";
+  message?: string | null;
+  enabled: boolean;
+  command: string;
+  tools: number;
+  tool_names?: string[];
+  env_names: string[];
+  tool_policies: Record<string, McpToolPolicy>;
+}
+
+/** Deterministic tool-surface bounds measured by the backend (fix §6). */
+export interface McpToolSurfaceStatus {
+  discovered_tools: number;
+  exposed_mcp_tools: number;
+  tools_truncated: boolean;
+  schema_bytes: number;
+  schema_truncated: boolean;
+}
+
+export interface McpStatusResponse {
+  enabled: boolean;
+  servers: McpServerStatus[];
+  connected: number;
+  config_problems?: string[];
+  tool_surface?: McpToolSurfaceStatus;
+}
+
+export interface SkillRootStatus {
+  id: string;
+  path: string;
+  enabled: boolean;
+  state: "ok" | "disabled" | "missing" | "error";
+  message?: string | null;
+  skills: number;
+}
+
+export interface SkillCatalogEntry {
+  id: string;
+  name: string;
+  description: string;
+  path: string;
+}
+
+export interface SkillsStatusResponse {
+  roots: SkillRootStatus[];
+  skills: SkillCatalogEntry[];
+  problems: string[];
+  conflicts: string[];
+  active_count: number;
+  catalog_chars: number;
 }
 
 export type AnswerState =
@@ -223,6 +354,8 @@ export type AnswerState =
   | { kind: "retrieving" }
   | { kind: "answering" }
   | { kind: "answer"; result: AnswerResult }
+  | { kind: "tool-approval"; runId: string; calls: PendingToolCall[] }
+  | { kind: "tool-running"; runId: string; calls: PendingToolCall[] }
   | {
       kind: "unavailable";
       message: string;

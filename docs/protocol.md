@@ -98,3 +98,101 @@ Answer-specific errors are coded as `ANSWER_INVALID_PARAMS`, `GROUNDING_EMPTY`,
 `LLM_NOT_CONFIGURED`, `LLM_API_KEY_MISSING`, `LLM_AUTH_FAILED`,
 `LLM_RATE_LIMITED`, `LLM_TIMEOUT`, `LLM_PROVIDER_UNAVAILABLE`, `LLM_BAD_RESPONSE`,
 and `ANSWER_TOO_LARGE`.
+
+## Stateful agent answer (plan §11)
+
+`answer_start` / `answer_continue` / `answer_cancel` are additive protocol-v1
+methods implementing the structured agent run (native tool calling, MCP tools,
+skills, project rules). The legacy one-shot `answer` contract above is
+unchanged; when both extensions are off, `answer_start` returns the legacy
+deep-answer result wrapped as a `complete` union.
+
+### `answer_start`
+
+```json
+{
+  "query": "...",
+  "conversation": [],
+  "max_context_chars": 24000,
+  "session_allowed_tools": ["mcp__server__tool"],
+  "client_conversation_id": "uuid"
+}
+```
+
+Response union — either:
+
+```json
+{ "status": "complete", "run_id": "...", "result": { "answer": "...", "citations": [], "toolActivity": [] } }
+```
+
+or:
+
+```json
+{
+  "status": "approval_required",
+  "run_id": "uuid",
+  "expires_at": "ISO-8601",
+  "calls": [
+    {
+      "call_id": "provider-call-id",
+      "tool_name": "mcp__github__create_issue",
+      "server_name": "github",
+      "display_name": "create_issue",
+      "arguments": {},
+      "annotations": {}
+    }
+  ]
+}
+```
+
+`arguments` is shown in the UI for approval decisions but never persisted to
+history, logs, or responses beyond the approval card itself.
+
+### `answer_continue`
+
+```json
+{
+  "run_id": "uuid",
+  "decisions": [
+    { "call_id": "...", "decision": "allow_once" },
+    { "call_id": "...", "decision": "allow_session" },
+    { "call_id": "...", "decision": "reject" }
+  ]
+}
+```
+
+Decisions must cover exactly the pending calls — unknown, duplicate, or
+missing ids reject the whole request (`ANSWER_INVALID_PARAMS`). `reject`
+feeds the model a structured `USER_REJECTED_TOOL_CALL` result and the loop
+continues. `allow_session` grants the tool alias for the current conversation
+only. A continue may return another `approval_required` or a `complete`.
+Runs expire after 10 minutes (`RUN_EXPIRED`), at most 4 runs are active
+(`TOO_MANY_RUNS`), and every provider call id executes at most once even
+across duplicate continues.
+
+### `answer_cancel`
+
+`{ "run_id": "..." }` cancels the run and any in-flight MCP call. Returns
+`{ "cancelled": bool }`. Cancelling an unknown/expired run reports
+`cancelled: false` without error.
+
+## MCP / skills management methods
+
+- `set_mcp_secrets` — one-shot handoff of per-server env values over the
+  authenticated loopback: `{ "servers": { "<server-uuid>": { "NAME": "value" } } }`.
+  Bounds: 32 KiB total payload, name ≤128 chars, value ≤8 KiB. Values are
+  never echoed back; the response lists received server ids + env names only.
+- `mcp_status` — `{ enabled, servers: [{id, name, state, message, command,
+  tools, tool_names, env_names, tool_policies}], connected, config_problems }`.
+  States: `disabled | awaiting_secret | connecting | connected | error`.
+- `mcp_refresh` — reconnect changed servers and re-list their tools.
+- `skills_status` / `skills_refresh` — skill registry scan state: roots with
+  `{state, skills}` counts, discovered catalog entries, conflicts, problems,
+  active count, and estimated catalog size.
+
+New error codes: `MCP_INVALID_SECRETS` (invalid handoff shape),
+`RUN_NOT_FOUND`, `RUN_EXPIRED`, `RUN_CANCELLED`, `RUN_NOT_WAITING`,
+`DECISION_MISMATCH`, `DUPLICATE_DECISION`, `INVALID_DECISION`, `TOO_MANY_RUNS`,
+`ANSWER_CANCELLED`, `LLM_TOOLS_UNSUPPORTED` (the provider rejected native
+tool calling with HTTP 400/422), `MCP_RESULT_TYPE_UNSUPPORTED`
+(image/audio/resource-only results).

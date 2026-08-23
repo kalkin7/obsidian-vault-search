@@ -108,6 +108,29 @@ The command palette offers "AI Vault Search: 목록 렌더링 샘플 미리보�
 list rendering without the model. See
 [Settings](docs/settings.md#ai-vault-답변) for the full behavior.
 
+## API 에이전트 확장 (MCP · 스킬 · 프로젝트 규칙)
+
+설정 탭의 **API 에이전트** 탭에서 켤 수 있는 Desktop 전용 확장입니다. 세 기능 모두
+기본값은 꺼짐이며, 끄면 기존 답변 동작이 그대로 유지됩니다.
+
+- **프로젝트 규칙** — 최대 32,000자의 규칙을 시스템 지침 구획으로 전송하거나, 볼트
+  루트 `AGENTS.md`를 스냅샷으로 가져옵니다(자동 동기화 없음, 해시 표시). 제품 보안
+  지침보다 우선하지 않습니다.
+- **로컬 MCP 서버** — stdio 방식 로컬 서버를 등록하면 API 모델이 도구를 발견하고,
+  기본 정책 `ask`에 따라 실행 전 서버/도구/인자를 보여주며 승인을 요구합니다.
+  환경 변수 값은 Obsidian 보안 저장소에만 저장되고 로그·설정·히스토리에 남지
+  않습니다. 실행 중 호출은 취소할 수 있고, 백엔드 종료 시 자식 프로세스가
+  정리됩니다.
+- **스킬** — `.claude/skills` 등 프로젝트 루트와 사용자 지정 루트의 `SKILL.md`를
+  카탈로그로 제공하고, 모델이 필요한 스킬만 점진적으로 불러옵니다. 참조 파일은
+  스킬 폴더 안에서만 읽히며 스크립트는 실행하지 않습니다.
+
+보안 경고: MCP 서버 등록과 스킬 활성화는 명시적인 사용자 행동입니다. 새 외부 도구는
+항상 승인 후 실행되며, annotations는 자동 승인 근거로 사용되지 않습니다. 프로젝트
+규칙에는 민감한 값을 넣지 마세요(내용은 provider로 전송됩니다). 자세한 내용은
+[Settings](docs/settings.md#api-에이전트-mcp--스킬--프로젝트-규칙)와
+[Protocol](docs/protocol.md) 문서를 참고하세요.
+
 ## Lifecycle guarantees
 
 - dynamic loopback port and per-run authentication token

@@ -1,5 +1,5 @@
 import { normalizePath, type Vault } from "obsidian";
-import type { Citation } from "./types";
+import type { Citation, ToolActivityEntry } from "./types";
 import { toNoteMarkdown } from "./answer-renderer";
 
 /** Default folder (relative to vault root) for AI search history notes. */
@@ -17,7 +17,9 @@ export interface HistoryMessage {
 
 /** A saved AI-search conversation. `messages` holds the RAW transcript
  *  ([S#] markers intact) — the lossless source for reloading the panel;
- *  the note body shows the converted, note-ready markdown for humans. */
+ *  the note body shows the converted, note-ready markdown for humans.
+ *  `toolActivity` stores SAFE metadata only (tool name / status / duration):
+ *  raw arguments and results are never persisted. */
 export interface HistorySession {
   title: string;
   created: string; // ISO timestamp
@@ -26,6 +28,8 @@ export interface HistorySession {
   reasoningEffort: string;
   messages: HistoryMessage[];
   citations: Citation[];
+  toolActivity?: ToolActivityEntry[];
+  groundingKind?: "vault" | "tool" | "mixed" | "none";
 }
 
 export interface HistoryMeta {
@@ -112,9 +116,9 @@ function unquote(value: string): string {
 }
 
 /** Serialize a session into a history note: YAML frontmatter (raw transcript
- *  + citations — the machine-readable source of truth) plus a human-readable
- *  body (question headings and the converted note-ready answer with ①
- *  wikilinks and a 근거 list). */
+ *  + citations + safe tool activity — the machine-readable source of truth)
+ *  plus a human-readable body (question headings and the converted
+ *  note-ready answer with ① wikilinks and a 근거 list). */
 export function buildHistoryNote(session: HistorySession): string {
   const messages = session.messages
     .map(
@@ -134,6 +138,20 @@ export function buildHistoryNote(session: HistorySession): string {
       ].join("\n"),
     )
     .join("\n");
+  const toolLines = (session.toolActivity || [])
+    .map((entry) => {
+      const parts = [
+        `  - tool: ${yamlQuote(entry.toolName)}`,
+        `    status: ${entry.status}`,
+      ];
+      if (entry.serverName)
+        parts.push(`    server: ${yamlQuote(entry.serverName)}`);
+      if (typeof entry.durationMs === "number")
+        parts.push(`    duration_ms: ${entry.durationMs}`);
+      if (entry.truncated) parts.push(`    truncated: true`);
+      return parts.join("\n");
+    })
+    .join("\n");
   const frontmatter = [
     "---",
     `ai_vault_search_history: ${HISTORY_SCHEMA}`,
@@ -142,10 +160,14 @@ export function buildHistoryNote(session: HistorySession): string {
     `model: ${yamlQuote(session.model)}`,
     `effort: ${yamlQuote(session.reasoningEffort)}`,
     `created: ${yamlQuote(session.created)}`,
+    ...(session.groundingKind
+      ? [`grounding_kind: ${session.groundingKind}`]
+      : []),
     "messages:",
     messages,
     "citations:",
     citations,
+    ...(toolLines ? ["tool_activity:", toolLines] : []),
     "---",
     "",
   ].join("\n");
@@ -177,6 +199,7 @@ export function parseHistoryNote(text: string): HistorySession | null {
   };
   let message: HistoryMessage | null = null;
   let citation: Partial<Citation> | null = null;
+  let toolEntry: Partial<ToolActivityEntry> | null = null;
   let block: string[] | null = null;
   let blockTarget: HistoryMessage | null = null;
   for (const line of match[1].split("\n")) {
@@ -192,6 +215,11 @@ export function parseHistoryNote(text: string): HistorySession | null {
     if (line === "messages:" || line === "citations:") {
       message = null;
       citation = null;
+      continue;
+    }
+    if (line === "tool_activity:") {
+      citation = null;
+      toolEntry = null;
       continue;
     }
     const messageStart = /^ {2}- role: (user|assistant)$/.exec(line);
@@ -221,6 +249,29 @@ export function parseHistoryNote(text: string): HistorySession | null {
       session.citations.push(citation as Citation);
       continue;
     }
+    const toolStart = /^ {2}- tool: (.*)$/.exec(line);
+    if (toolStart) {
+      toolEntry = { toolName: unquote(toolStart[1]) } as ToolActivityEntry;
+      session.toolActivity = session.toolActivity || [];
+      session.toolActivity.push(toolEntry as ToolActivityEntry);
+      continue;
+    }
+    if (toolEntry) {
+      const field = /^ {4}(status|server|duration_ms|truncated): (.*)$/.exec(
+        line,
+      );
+      if (field) {
+        const key = field[1];
+        const raw = field[2].trim();
+        if (key === "status")
+          toolEntry.status = raw as ToolActivityEntry["status"];
+        else if (key === "server") toolEntry.serverName = unquote(raw);
+        else if (key === "duration_ms")
+          toolEntry.durationMs = Number(raw);
+        else if (key === "truncated") toolEntry.truncated = raw === "true";
+      }
+      continue;
+    }
     if (citation) {
       const field = /^ {4}(file|line|headings|rank|score): (.*)$/.exec(line);
       if (field) {
@@ -240,7 +291,7 @@ export function parseHistoryNote(text: string): HistorySession | null {
       }
       continue;
     }
-    const top = /^([a-zA-Z]+): (.*)$/.exec(line);
+    const top = /^([a-zA-Z_]+): (.*)$/.exec(line);
     if (top) {
       const key = top[1];
       const raw = top[2];
@@ -249,6 +300,8 @@ export function parseHistoryNote(text: string): HistorySession | null {
       else if (key === "model") session.model = unquote(raw);
       else if (key === "effort") session.reasoningEffort = unquote(raw);
       else if (key === "created") session.created = unquote(raw);
+      else if (key === "grounding_kind")
+        session.groundingKind = unquote(raw) as HistorySession["groundingKind"];
     }
   }
   if (block && blockTarget) {

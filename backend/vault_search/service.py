@@ -2,12 +2,28 @@ from __future__ import annotations
 
 import contextlib
 import fnmatch
+import json
 import sqlite3
 import threading
 import time
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from .agent_prompt import build_agent_system_prompt
+from .agent_run import (
+    AgentRunError,
+    AgentRunRegistry,
+    StructuredAgentRun,
+    new_run_state,
+)
+from .agent_tools import (
+    MAX_SCHEMA_BYTES,
+    MAX_TOTAL_SCHEMA_BYTES,
+    ToolAliasMap,
+    ToolDefinition,
+    builtin_tool_definitions,
+)
 from .config import SearchConfig
 from .database import index_counts
 from .deep_answer import (  # pyright: ignore[reportMissingImports] — resolves fine (verified via basedpyright CLI); stale LSP module map
@@ -19,13 +35,27 @@ from .deep_answer import (  # pyright: ignore[reportMissingImports] — resolves
 from .errors import (
     ServiceError,  # pyright: ignore[reportMissingImports] — resolves fine (verified via basedpyright CLI); stale LSP module map
 )
-from .grounding import build_grounding_context, build_prompt, normalize_citations
+from .grounding import (
+    GroundingSource,
+    build_grounding_context,
+    build_prompt,
+    normalize_citations,
+)
 from .index_metadata import classify_index_problems, validate_index_files
 from .indexing import IndexManager
 from .llm import ProviderError, create_provider
+from .mcp_host import SERVER_STATE_CONNECTED, McpHost
 from .model_manager import ModelManager
-from .protocol import ProtocolError, validate_answer_params
+from .protocol import (
+    ProtocolError,
+    validate_answer_cancel_params,
+    validate_answer_continue_params,
+    validate_answer_start_params,
+    validate_answer_params,
+    validate_mcp_secrets_params,
+)
 from .search import IndexCompatibilityError, SearchEngine
+from .skills import SkillRegistry
 
 
 class SearchService:
@@ -64,6 +94,35 @@ class SearchService:
         if self.config.model_idle_timeout_seconds > 0:
             self._idle_watchdog = threading.Thread(target=self._watchdog, daemon=True)
             self._idle_watchdog.start()
+        # --- API agent extensions (MCP / skills / project rules) ---
+        # Objects are created lazily-cheap; the MCP event-loop thread only
+        # starts when configure_extensions finds an enabled server.
+        self.mcp_host = McpHost(config.vault_path, config.plugin_path)
+        self.skills = SkillRegistry(config.vault_path)
+        self.run_registry = AgentRunRegistry()
+        # Last provider-facing tool surface measurement (fix §6 status).
+        self._last_tool_surface: dict[str, Any] = {
+            "discovered_tools": 0,
+            "exposed_mcp_tools": 0,
+            "tools_truncated": False,
+            "schema_bytes": 0,
+            "schema_truncated": False,
+        }
+        # Cancels that arrive before their run is registered (client-supplied
+        # run ids racing answer_start) are parked here and consumed at
+        # registration time. Bounded by the registry TTL discipline.
+        self._pending_cancels: set[str] = set()
+        self._pending_cancel_lock = threading.Lock()
+        if config.skills_enabled:
+            try:
+                self._refresh_skills()
+            except Exception as exc:
+                self.event_sink(
+                    "warning",
+                    {"code": "SKILLS_SCAN_FAILED", "message": str(exc)},
+                )
+        if config.mcp_enabled and any(s.enabled for s in config.mcp_servers):
+            self._configure_mcp()
         # Warm the capability cache at startup: runtime_capabilities() imports
         # torch (~1.5 s cold), which would otherwise delay the first status()
         # response past request timeouts. The cost is paid once, before the
@@ -273,6 +332,7 @@ class SearchService:
             "index_rebuild_required": self.index_rebuild_reason is not None,
             "index_problems": self.index_problems,
             "recommended_action": self.recommended_action,
+            "agent_tool_surface": dict(self._last_tool_surface),
             **self._cached_counts,
         }
 
@@ -292,6 +352,21 @@ class SearchService:
                 params = validate_answer_params(params)
             except ProtocolError as exc:
                 raise ServiceError("ANSWER_INVALID_PARAMS", str(exc)) from exc
+        for method_name, validator in (
+            ("answer_start", validate_answer_start_params),
+            ("answer_continue", validate_answer_continue_params),
+            ("answer_cancel", validate_answer_cancel_params),
+            ("set_mcp_secrets", validate_mcp_secrets_params),
+        ):
+            if method == method_name:
+                try:
+                    params = validator(params)
+                except ProtocolError as exc:
+                    raise ServiceError("ANSWER_INVALID_PARAMS", str(exc)) from exc
+                break
+        if method in {"mcp_status", "mcp_refresh", "skills_status", "skills_refresh"}:
+            # Extension status/refresh work without the embedding model.
+            return self._call_extension_method(method, params)
 
         # Everything below touches mutable ready-state references (index,
         # search_engine, state). Re-check under the operation lock so an
@@ -304,6 +379,14 @@ class SearchService:
                 # (lazy sidecar), so hot setting changes reach a live service
                 # regardless of state.
                 return self._apply_search_config(params)
+            if method == "set_mcp_secrets":
+                return self._set_mcp_secrets(params)
+            if method == "answer_cancel":
+                return self._answer_cancel(params)
+            if method == "answer_continue":
+                # Approvals must be answerable even while a parallel request
+                # triggered the lazy model load.
+                return self._answer_continue(params)
             if self.state == "idle":
                 if method in {"search", "answer"}:
                     if self.index_rebuild_reason:
@@ -391,6 +474,8 @@ class SearchService:
                 }
             if method == "answer":
                 return self._answer(params)
+            if method == "answer_start":
+                return self._answer_start(params)
             if method == "preview_scope":
                 return self.index.preview_scope()
             if method == "reconcile":
@@ -609,6 +694,443 @@ class SearchService:
             },
         }
 
+    # ------------------------------------------------------------------
+    # API agent extensions (MCP / skills / project rules / structured runs)
+    # ------------------------------------------------------------------
+
+    def close(self) -> None:
+        """Release every extension resource; safe to call multiple times."""
+        self.run_registry.close_all()
+        self.mcp_host.close()
+
+    def _call_extension_method(
+        self, method: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        if method == "mcp_status":
+            return {
+                **self.mcp_host.status(),
+                "config_problems": list(self.config.config_problems),
+                "tool_surface": dict(self._last_tool_surface),
+            }
+        if method == "mcp_refresh":
+            self._configure_mcp()
+            refreshed = self.mcp_host.refresh_tools()
+            return {"ok": True, **refreshed}
+        if method == "skills_status":
+            return self.skills.status()
+        if method == "skills_refresh":
+            self._refresh_skills()
+            return {"ok": True, **self.skills.status()}
+        raise ServiceError("UNKNOWN_METHOD", f"Unknown method: {method}")
+
+    def _refresh_skills(self) -> None:
+        roots = [
+            (root.id, root.path, root.enabled)
+            for root in self.config.skill_roots
+        ]
+        self.skills.refresh(
+            user_roots=roots,
+            enabled_skills=set(self.config.enabled_skills),
+        )
+
+    def _configure_mcp(self) -> dict[str, Any]:
+        """Push current MCP settings into the host (connects asynchronously)."""
+        return self.mcp_host.configure(
+            enabled=self.config.mcp_enabled,
+            servers=list(self.config.mcp_servers),
+        )
+
+    def _wait_for_connections(self) -> None:
+        for server in self.config.mcp_servers:
+            if server.enabled:
+                self.mcp_host.wait_connected(server.id, timeout=12.0)
+
+    def _set_mcp_secrets(self, params: dict[str, Any]) -> dict[str, Any]:
+        try:
+            payload = validate_mcp_secrets_params(params)
+        except ProtocolError as exc:
+            raise ServiceError("ANSWER_INVALID_PARAMS", str(exc)) from exc
+        try:
+            received = self.mcp_host.apply_secrets(payload)
+        except ValueError as exc:
+            # Unknown server ids are rejected outright: values for servers
+            # outside the current config must never be staged in memory.
+            raise ServiceError("MCP_UNKNOWN_SERVER", str(exc)) from exc
+        # Names only — values are never echoed back nor logged (plan §6.2).
+        names_by_server = {
+            server_id: sorted(values.keys())
+            for server_id, values in payload["servers"].items()
+        }
+        rejected = [
+            {"server_id": entry["server_id"], "name": entry["name"]}
+            for entry in received.get("rejected", [])
+        ]
+        return {
+            "ok": True,
+            "applied": received.get("applied", 0),
+            "servers": names_by_server,
+            **({"rejected_envs": rejected} if rejected else {}),
+        }
+
+    def _extensions_active(self) -> bool:
+        # Project rules alone justify the structured path: they are injected
+        # into the agent system prompt, which the legacy loop never sees.
+        return bool(
+            self.config.mcp_enabled
+            or self.config.skills_enabled
+            or self.config.project_rules.strip()
+        )
+
+    def _prepare_agent_context(
+        self,
+    ) -> tuple[
+        Any, ToolAliasMap, list[ToolDefinition], SkillRegistry | None, bool, bool
+    ]:
+        """Wait briefly for MCP sessions then assemble the tool surface."""
+        mcp_tools_available = False
+        aliases: ToolAliasMap = ToolAliasMap()
+        if (
+            self.config.mcp_enabled
+            and any(server.enabled for server in self.config.mcp_servers)
+        ):
+            self._configure_mcp()
+            self._wait_for_connections()
+            aliases = self.mcp_host.build_alias_map()
+            connected = {
+                summary["id"]
+                for summary in self.mcp_host.status()["servers"]
+                if summary["state"] == SERVER_STATE_CONNECTED
+            }
+            mcp_tools_available = bool(connected) and len(aliases) > 0
+        skills_registry: SkillRegistry | None = None
+        if self.config.skills_enabled:
+            self._refresh_skills()
+            if self.skills.catalog_entries():
+                skills_registry = self.skills
+        tools = builtin_tool_definitions(has_skills=skills_registry is not None)
+        surface = {
+            "discovered_tools": self.mcp_host.alias_surface_info.get("discovered", 0)
+            if mcp_tools_available
+            else 0,
+            "exposed_mcp_tools": len(aliases.aliases()),
+            "tools_truncated": (
+                self.mcp_host.alias_surface_info.get("truncated", False)
+                if mcp_tools_available
+                else False
+            ),
+            "schema_bytes": 0,
+            "schema_truncated": False,
+        }
+        if mcp_tools_available:
+            total_schema_bytes = 0
+            for alias, (server_id, original_name) in sorted(
+                aliases.aliases().items()
+            ):
+                schema = (
+                    self.mcp_host.list_server_tools(server_id).get(original_name)
+                    or {"type": "object", "properties": {}}
+                )
+                try:
+                    schema_size = len(
+                        json.dumps(schema, ensure_ascii=False).encode("utf-8")
+                    )
+                except (TypeError, ValueError):
+                    schema_size = MAX_SCHEMA_BYTES
+                if total_schema_bytes + schema_size > MAX_TOTAL_SCHEMA_BYTES:
+                    # Deterministic prefix cut: the remaining definitions are
+                    # not advertised (and reported via status), never silently
+                    # mixed in.
+                    surface["schema_truncated"] = True
+                    break
+                total_schema_bytes += schema_size
+                server_summary = self.mcp_host.server_summary(server_id) or {}
+                tools.append(
+                    ToolDefinition(
+                        name=alias,
+                        description=(
+                            f"MCP tool '{original_name}' from server "
+                            f"'{server_summary.get('name', server_id)}'."
+                        ),
+                        input_schema=schema,
+                    )
+                )
+            surface["schema_bytes"] = total_schema_bytes
+        self._last_tool_surface = surface
+        provider_stub = create_provider(self.config.llm_provider, self.config.llm_model)
+        return provider_stub, aliases, tools, skills_registry, mcp_tools_available, bool(skills_registry)
+
+    def _answer_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        if not self._extensions_active():
+            # Legacy text-tool loop stays the default while both extensions
+            # are off (one-release compatibility, plan §5.3).
+            result = self._deep_answer(
+                {
+                    **params,
+                    "top_k": 12,
+                    "deep": True,
+                }
+            )
+            return {"status": "complete", "result": result}
+        if self.index_rebuild_reason:
+            raise ServiceError(
+                "INDEX_REBUILD_REQUIRED",
+                self.index_rebuild_reason,
+                {
+                    "problems": self.index_problems,
+                    "recommended_action": self.recommended_action,
+                },
+            )
+        if self.search_engine is None:
+            raise ServiceError("BACKEND_NOT_READY", "Search backend is not ready")
+        search_engine = self.search_engine
+
+        try:
+            provider, aliases, tools, skills_registry, mcp_on, skills_on = (
+                self._prepare_agent_context()
+            )
+        except ProviderError as exc:
+            raise ServiceError(exc.code, exc.message) from exc
+
+        system_prompt = build_agent_system_prompt(
+            project_rules=self.config.project_rules,
+            skill_catalog_lines=(
+                skills_registry.catalog_lines() if skills_registry else []
+            ),
+            has_mcp_tools=mcp_on,
+            has_skills=skills_on,
+        )
+
+        def do_search(query_text: str) -> list[dict[str, Any]]:
+            outcome = search_engine.search_detailed(
+                query_text,
+                top_k=max(1, self.config.final_top_k or 40),
+                verbose=True,
+            )
+            return list(outcome.results)
+
+        vault_root = self.config.vault_path.resolve()
+
+        def do_read(rel_path: str) -> str:
+            rel = rel_path.replace("\\", "/")
+            if not rel or rel.startswith("/") or ".." in rel.split("/"):
+                raise ValueError(f"invalid file path: {rel_path}")
+            path = (vault_root / rel).resolve()
+            if not path.is_relative_to(vault_root):
+                raise ValueError(f"file path escapes the vault: {rel_path}")
+            if not path.is_file():
+                raise ValueError(f"file not found: {rel_path}")
+            if any(fnmatch.fnmatch(rel, g) for g in self.config.exclude_globs):
+                raise ValueError(f"file is excluded from the vault scope: {rel_path}")
+            if self.config.include_globs and not any(
+                fnmatch.fnmatch(rel, g) for g in self.config.include_globs
+            ):
+                raise ValueError(f"file is outside the vault scope: {rel_path}")
+            return path.read_text(encoding="utf-8", errors="replace")[:40000]
+
+        def do_grep(pattern: str, glob_pattern: str) -> list[dict[str, Any]]:
+            return grep_vault(
+                self.config.vault_path,
+                pattern,
+                glob_pattern,
+                include_globs=self.config.include_globs,
+                exclude_globs=self.config.exclude_globs,
+            )
+
+        def complete_turn(**kwargs: Any):
+            return provider.complete_with_tools(
+                reasoning_effort=self.config.reasoning_effort, **kwargs
+            )
+
+        state = new_run_state(params["query"])
+        # Additive protocol: the client may supply the run id so it can cancel
+        # a first-turn run before answer_start has responded (fix §3).
+        client_run_id = params.get("run_id")
+        if isinstance(client_run_id, str) and client_run_id:
+            state.run_id = client_run_id
+        state.provider = provider
+        run = StructuredAgentRun(
+            state=state,
+            system_prompt=system_prompt,
+            tools=tools,
+            aliases=aliases,
+            complete_turn=complete_turn,
+            search_fn=do_search,
+            read_file_fn=do_read,
+            grep_fn=do_grep,
+            skills=skills_registry,
+            mcp_host=self.mcp_host if mcp_on else None,
+            max_context_chars=params["max_context_chars"],
+            max_output_tokens=max(
+                self.config.llm_max_output_tokens, MIN_DEEP_OUTPUT_TOKENS
+            ),
+            timeout_seconds=self.config.llm_timeout_seconds,
+        )
+        run.session_allowed = set(params.get("session_allowed_tools") or [])
+        run.seed(list(params["conversation"]))
+        self.run_registry.add(run)
+        # A cancel that arrived between client dispatch and registration must
+        # not be lost: consume the pending marker before advancing.
+        if self._consume_pending_cancel(state.run_id):
+            self.run_registry.remove(state.run_id)
+            state.cancelled = True
+            raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
+        try:
+            outcome = run.advance()
+        except AgentRunError as exc:
+            self.run_registry.remove(state.run_id)
+            raise ServiceError(exc.code, exc.message) from exc
+        except ProviderError as exc:
+            self.run_registry.remove(state.run_id)
+            raise ServiceError(exc.code, exc.message) from exc
+        if outcome["status"] != "complete":
+            expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+            return {
+                "status": "approval_required",
+                "run_id": state.run_id,
+                "expires_at": expires.isoformat(),
+                "calls": outcome["calls"],
+            }
+        self.run_registry.remove(state.run_id)
+        return {
+            "status": "complete",
+            "run_id": state.run_id,
+            "result": self._assemble_agent_result(outcome, provider),
+        }
+
+    def _answer_continue(self, params: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(params.get("run_id", ""))
+        try:
+            run = self.run_registry.get(run_id)
+        except AgentRunError as exc:
+            raise ServiceError(exc.code, exc.message) from exc
+        try:
+            outcome = run.resume(list(params.get("decisions") or []))
+        except AgentRunError as exc:
+            if exc.code in {"RUN_NOT_WAITING", "DECISION_MISMATCH",
+                            "DUPLICATE_DECISION", "INVALID_DECISION"}:
+                raise ServiceError("ANSWER_INVALID_PARAMS", exc.message) from exc
+            self.run_registry.remove(run_id)
+            raise ServiceError(exc.code, exc.message) from exc
+        except ProviderError as exc:
+            self.run_registry.remove(run_id)
+            raise ServiceError(exc.code, exc.message) from exc
+        if outcome["status"] != "complete":
+            self.run_registry.touch(run_id)
+            expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+            return {
+                "status": "approval_required",
+                "run_id": run_id,
+                "expires_at": expires.isoformat(),
+                "calls": outcome["calls"],
+            }
+        self.run_registry.remove(run_id)
+        return {
+            "status": "complete",
+            "run_id": run_id,
+            "result": self._assemble_agent_result(outcome, run.state.provider),
+        }
+
+    def _answer_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
+        return self.cancel_answer(str(params.get("run_id", "")))
+
+    def cancel_answer(self, run_id: str) -> dict[str, Any]:
+        """Cancel a run from any thread (out-of-band fast path).
+
+        ``answer_cancel`` must never queue behind a long-running
+        ``answer_start``/``answer_continue`` on the serialized worker: this
+        method touches only lock-guarded state — the run registry, the
+        cancelled flag and the MCP host's cancel registry — so the request
+        handler thread can execute it directly.
+        """
+        if not run_id:
+            return {"cancelled": False}
+        run = self.run_registry.remove(run_id)
+        if run is None:
+            # The run may not be registered yet (cancel raced answer_start).
+            # Record the intent; registration consumes it and aborts.
+            with self._pending_cancel_lock:
+                self._pending_cancels.add(run_id)
+            return {"cancelled": False}
+        run.state.cancelled = True
+        cancelled = self.mcp_host.cancel_pending(run.state.active_calls)
+        return {"cancelled": True, "calls_cancelled": cancelled}
+
+    def _consume_pending_cancel(self, run_id: str) -> bool:
+        with self._pending_cancel_lock:
+            if run_id in self._pending_cancels:
+                self._pending_cancels.discard(run_id)
+                return True
+            return False
+
+    def _assemble_agent_result(
+        self, outcome: dict[str, Any], provider: Any | None
+    ) -> dict[str, Any]:
+        sources_raw = list(outcome.get("sources") or [])
+        sources = [
+            GroundingSource(
+                id=str(item["id"]),
+                file_path=str(item["file_path"]),
+                start_line=int(item.get("start_line") or 1),
+                heading_path=[str(h) for h in item.get("heading_path") or []],
+                content=str(item.get("content") or ""),
+                rank=int(item.get("rank") or 0),
+                score=float(item.get("score") or 0.0),
+            )
+            for item in sources_raw
+        ]
+        text = str(outcome.get("text") or "")
+        answer, citations, warning = normalize_citations(text, sources)
+        if not answer:
+            raise ServiceError("LLM_BAD_RESPONSE", "Provider returned an empty answer")
+        activity = list(outcome.get("activity") or [])
+        successful_tools = any(entry.get("status") == "success" for entry in activity)
+        # Mirror DeepAnswerEngine's insufficiency guard: without gathered
+        # evidence the model must not fall back to general knowledge. A
+        # successful external (MCP) tool is legitimate grounding too — the
+        # answer stands when the vault had nothing but a tool delivered.
+        if (
+            not sources
+            and not successful_tools
+            and "충분한 근거를 찾지 못" not in answer
+        ):
+            answer = "볼트에서 충분한 근거를 찾지 못했습니다."
+        if len(answer) > 32000:
+            raise ServiceError("ANSWER_TOO_LARGE", "Provider answer is too large")
+        if citations and successful_tools:
+            grounding_kind = "mixed"
+        elif citations:
+            grounding_kind = "vault"
+        elif successful_tools:
+            grounding_kind = "tool"
+        else:
+            grounding_kind = "none"
+        provider_id = str(
+            outcome.get("provider")
+            or getattr(provider, "provider_id", "")
+            or ""
+        )
+        model_name = str(outcome.get("model") or getattr(provider, "model", "") or "")
+        return {
+            "answer": answer,
+            "citations": citations,
+            "evidence": [source.evidence() for source in sources],
+            "provider": provider_id,
+            "model": model_name,
+            "grounded": bool(citations),
+            "groundingKind": grounding_kind,
+            "toolActivity": activity,
+            "diagnostics": {
+                "deep": True,
+                "structured": True,
+                "turns": int(outcome.get("turns") or 0),
+                "tool_calls": int(outcome.get("tool_calls") or 0),
+                "retrieved_count": len(sources),
+                "context_chars": sum(len(str(s.get("content") or "")) for s in sources_raw),
+                "answer_chars": len(answer),
+                **({"citation_warning": warning} if warning else {}),
+            },
+        }
+
     def _apply_search_config(self, params: dict[str, Any]) -> dict[str, Any]:
         integer_fields = {
             "bm25_top_k": "bm25TopK",
@@ -675,6 +1197,17 @@ class SearchService:
                 )
             except (TypeError, ValueError):
                 pass
+        if "answerProjectRules" in params or "projectRules" in params:
+            # Hot-updatable system-instruction section; bounded on both sides
+            # (plugin clamps to 32000 as well). ``answerProjectRules`` is the
+            # canonical key matching settings.answerProjectRules;
+            # ``projectRules`` stays as a one-release compatibility alias.
+            value = params.get("answerProjectRules", params.get("projectRules"))
+            if isinstance(value, str):
+                cleaned = "".join(
+                    ch for ch in value.replace("\r\n", "\n") if ch >= " " or ch in "\t\n"
+                )
+                self.config.project_rules = cleaned[:32000]
         return {"applied": True, **self.status()}
 
     def _rebuild_all(self) -> dict[str, Any]:

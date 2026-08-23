@@ -796,3 +796,171 @@ input.vault-answer-task-checkbox:disabled {
 .vault-ai-search-effort-select {
  max-width: 96px;
 }
+
+/* ---------------------------------------------------------------------------
+ * API agent extensions: tool approval cards / running state / activity
+ * ------------------------------------------------------------------------- */
+.vault-tool-approval {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin: 6px 0;
+  background: var(--background-secondary);
+}
+.vault-tool-approval-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.vault-tool-approval-name {
+  font-weight: var(--font-medium);
+  font-size: var(--font-ui-small);
+}
+.vault-tool-approval-badge {
+  color: var(--text-warning);
+  font-size: var(--font-ui-smaller);
+  white-space: nowrap;
+}
+.vault-tool-approval-description {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+.vault-tool-approval-args {
+  margin-top: 6px;
+}
+.vault-tool-approval-args summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.vault-tool-approval-args-body {
+  max-height: 180px;
+  overflow: auto;
+  font-size: var(--font-ui-smaller);
+  background: var(--background-primary);
+  border-radius: 6px;
+  padding: 6px 8px;
+  margin: 4px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.vault-tool-approval-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.vault-tool-running {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.vault-tool-running button {
+  flex-shrink: 0;
+}
+.vault-tool-activity summary,
+.vault-ai-search-evidence summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+.vault-tool-activity-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+.vault-tool-activity-row {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  font-size: var(--font-ui-smaller);
+}
+.vault-tool-activity-status {
+  color: var(--text-muted);
+}
+.vault-tool-activity-success { color: var(--text-success); }
+.vault-tool-activity-error { color: var(--text-error); }
+.vault-tool-activity-rejected,
+.vault-tool-activity-cancelled { color: var(--text-faint); }
+.vault-tool-activity-duration,
+.vault-tool-activity-truncated {
+  color: var(--text-faint);
+}
+
+/* Settings: API agent sections */
+.vault-search-project-rules-control {
+  display: block !important;
+  width: 100%;
+}
+.vault-search-project-rules-textarea {
+  width: 100%;
+  min-height: 120px;
+  resize: vertical;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+.vault-search-project-rules-meta {
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  margin-bottom: 4px;
+  white-space: pre-wrap;
+}
+.vault-search-mcp-status,
+.vault-search-skill-status {
+  white-space: pre-wrap;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin-bottom: 8px;
+}
+.vault-search-mcp-server summary {
+  cursor: pointer;
+  font-weight: var(--font-medium);
+}
+.vault-search-mcp-server .setting-item {
+  border-top: none;
+}
+.vault-search-mcp-env-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 2px 0;
+}
+.vault-search-mcp-env-name {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+}
+.vault-search-mcp-env-state.is-set { color: var(--text-success); }
+.vault-search-mcp-env-state.is-unset { color: var(--text-faint); }
+.vault-search-mcp-env-input {
+  flex: 1;
+  min-width: 0;
+}
+.vault-search-mcp-env-add {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+.vault-search-mcp-tool-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 2px 0;
+}
+.vault-search-mcp-tool-name {
+  flex: 1;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-smaller);
+  word-break: break-all;
+}
+.vault-search-skill-add-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
