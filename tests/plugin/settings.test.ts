@@ -160,6 +160,7 @@ describe("agent extension settings", () => {
     command: "python",
     args: ["-x"],
     cwd: "vault",
+    url: "",
     envNames: ["TOKEN"],
     toolPolicies: { tool_a: "ask" as const },
   });

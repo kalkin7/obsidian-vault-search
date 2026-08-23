@@ -929,6 +929,21 @@ input.vault-answer-task-checkbox:disabled {
   white-space: pre-wrap;
   text-align: right;
 }
+
+/* MCP server editor modal */
+.vault-search-mcp-editor .is-hidden {
+  display: none !important;
+}
+.vault-search-mcp-editor-basics,
+.vault-search-mcp-editor-actions {
+  margin-bottom: var(--size-4-3);
+}
+.vault-search-mcp-env {
+  margin: 0 0 var(--size-4-3);
+  padding: var(--size-4-2);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+}
 .vault-search-mcp-status,
 .vault-search-skill-status {
   white-space: pre-wrap;

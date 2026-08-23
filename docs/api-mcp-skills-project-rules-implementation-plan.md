@@ -1234,3 +1234,29 @@ stdio E2E (packaged venv)   connect→call→실행 중 cancel(즉시, MCP_CALL_
 - [ ] `release.ps1` 패키징 후 zip 내용물 검증
 
 작업 트리는 커밋하지 않은 상태로 보존되어 있다.
+
+### 22.6 후속 개선 (v0.1.58~59): 설정 카드 버그 수정 + MCP 모달 편집 + 원격 HTTP 전송
+
+v0.1.57 BRAT 설치 후 사용자 피드백을 반영한 후속 변경이다.
+
+1. **설정 카드 폭발 버그(v0.1.58)**: 프로젝트 규칙 세팅의 전폭 컨트롤이 flex 행에서
+   info 칼럼 폭을 0으로 붕괴시켜 설명이 글자 단위 줄바꿈되며 카드 높이가 폭발
+   (헤드리스 Chromium 실측 1650px/info 0px). `.vault-search-textarea` 랩 패턴
+   적용으로 해결(수정 후 253px/548px).
+2. **MCP 서버 편집 UX(v0.1.59)**: `<details>` 접힘 편집기를 폐기하고 Smart Composer
+   방식의 `McpServerEditorModal`로 이관. 설정 탭 목록은 이름·요약·사용 스위치·
+   수정·삭제만 남기고, 구조 편집(연결 방식/명령/URL/환경 변수/도구 정책)은 모달에서
+   수행한다.
+3. **원격 HTTP 전송 지원(v0.1.59)**: `transport: "http"` + `url` 필드 신설. 백엔드는
+   `streamablehttp_client`로 직접 연결하고 환경 변수를 주입하지 않는다. 상태 응답에는
+   origin+경로까지만 노출해 쿼리 스트링의 발급 토큰을 보호하고, command는 http에서
+   빈 값으로 정규화한다. 검증: `validateMcpServerForm`(TS 순수 함수) + config 파서
+   격리 테스트 + fake streamable 클라이언트 E2E(연결/도구 발견/call/오류 격리).
+
+검증: vitest 143 passed(18 files, +6), pytest 354 passed/3 skipped(+6), ruff·compileall 통과.
+
+### 22.7 남은 수동 항목 (갱신)
+
+- [ ] 실제 API 키를 넣은 §20 최종 시나리오(승인 카드→continue→완료 화면 흐름)
+- [ ] Obsidian GUI 육안 확인: 스킬 카탈로그 토글·"모두 선택", MCP tool-surface 경고 문구
+- [ ] 원격 URL MCP 서버 실제 연동 확인(발급 URL 형식 서비스 1곳 이상)

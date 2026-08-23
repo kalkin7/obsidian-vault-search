@@ -14,9 +14,11 @@ import {
   DEFAULT_SETTINGS,
   LLM_MODEL_ENDPOINTS,
   LLM_PROVIDER_DEFAULTS,
+  MAX_MCP_URL_CHARS,
   reasoningEffortLevels,
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
+import { McpServerEditorModal } from "./mcp-server-modal";
 import { VaultSearchSettingTab } from "./settings-tab";
 import {
   cloneSettings,
@@ -922,7 +924,10 @@ export default class VaultSearchPlugin extends Plugin {
         .map((name) => String(name))
         .slice(0, 32);
       server.cwd = String(server.cwd || "vault");
-      server.transport = "stdio";
+      server.transport = server.transport === "http" ? "http" : "stdio";
+      server.url = String(server.url || "")
+        .trim()
+        .slice(0, MAX_MCP_URL_CHARS);
       server.enabled = server.enabled !== false;
       const policies: Record<string, McpToolPolicy> = {};
       for (const [tool, policy] of Object.entries(
@@ -979,22 +984,53 @@ export default class VaultSearchPlugin extends Plugin {
     this.draftSettings.answerProjectRulesHash = undefined;
   }
 
-  addMcpServer(): string {
-    const id = randomUUID();
-    const servers = [...(this.draftSettings.mcpServers || [])];
-    servers.push({
-      id,
-      name: `서버 ${servers.length + 1}`,
-      enabled: true,
-      transport: "stdio",
-      command: "",
-      args: [],
-      cwd: "vault",
-      envNames: [],
-      toolPolicies: {},
-    });
-    this.draftSettings.mcpServers = servers;
-    return id;
+  /** Open the Smart-Composer-style editor modal. Without an id this edits a
+   *  fresh draft entry that is only committed to the settings list on save;
+   *  cancelling a brand-new entry also purges any env values saved while
+   *  filling the form so nothing orphaned survives (plan §12.3). */
+  openMcpServerEditor(serverId?: string): void {
+    const existing = (this.draftSettings.mcpServers || []).find(
+      (server) => server.id === serverId,
+    );
+    const isNew = !existing;
+    const working = existing
+      ? {
+          ...existing,
+          args: [...existing.args],
+          envNames: [...existing.envNames],
+          toolPolicies: { ...existing.toolPolicies },
+        }
+      : {
+          id: randomUUID(),
+          name: `서버 ${(this.draftSettings.mcpServers || []).length + 1}`,
+          enabled: true,
+          transport: "stdio" as const,
+          command: "",
+          args: [],
+          cwd: "vault",
+          url: "",
+          envNames: [],
+          toolPolicies: {},
+        };
+    new McpServerEditorModal(this, working, {
+      hasEnvValue: (name) => this.hasMcpEnvValue(working.id, name),
+      saveEnvValue: (name, value) =>
+        this.saveMcpEnvValue(working.id, name, value),
+      removeEnvValue: (name) => this.removeMcpEnvValue(working.id, name),
+      onSaved: () => {
+        const servers = [...(this.draftSettings.mcpServers || [])];
+        const index = servers.findIndex((server) => server.id === working.id);
+        if (index >= 0) servers[index] = working;
+        else servers.push(working);
+        this.draftSettings.mcpServers = servers;
+        this.settingTab?.display();
+      },
+      onCancelledNew: () => {
+        for (const name of working.envNames) {
+          void this.removeMcpEnvValue(working.id, name).catch(() => undefined);
+        }
+      },
+    }).open();
   }
 
   /** Remove a server from the draft and purge its secrets. The exact server

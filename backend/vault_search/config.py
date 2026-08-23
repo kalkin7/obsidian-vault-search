@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 DEFAULT_INCLUDES = ["**/*.md"]
 DEFAULT_EXCLUDES = [".obsidian/**", "**/node_modules/**"]
@@ -18,6 +19,7 @@ MAX_PROJECT_RULES_CHARS = 32_000
 MAX_MCP_SERVERS = 20
 MAX_MCP_ARGS = 64
 MAX_MCP_ARG_CHARS = 2_048
+MAX_MCP_URL_CHARS = 2_048
 MAX_TOOL_POLICIES_PER_SERVER = 500
 MAX_SKILL_ROOTS = 20
 MAX_ENV_NAMES_PER_SERVER = 32
@@ -41,7 +43,8 @@ class McpServerConfig:
     env_names: list[str] = field(default_factory=list)
     tool_policies: dict[str, str] = field(default_factory=dict)
     enabled: bool = True
-    transport: str = "stdio"
+    transport: str = "stdio"  # "stdio" | "http"
+    url: str = ""  # streamable-HTTP endpoint; stdio servers ignore this
 
 
 @dataclass(slots=True)
@@ -233,10 +236,6 @@ def _as_mcp_servers(
                 raise ValueError(f"duplicate server id: {server_id}")
             if name.lower() in seen_names:
                 raise ValueError(f"duplicate server name: {name}")
-            if not command:
-                raise ValueError("command is required")
-            if has_control_chars(command):
-                raise ValueError("command contains control characters")
             raw_args = entry.get("args", [])
             if not isinstance(raw_args, list) or len(raw_args) > MAX_MCP_ARGS:
                 raise ValueError(f"args must be a list of at most {MAX_MCP_ARGS} items")
@@ -290,8 +289,38 @@ def _as_mcp_servers(
                 if policy in {"deny", "ask", "allow"}:
                     tool_policies[tool_key] = str(policy)
             transport = str(entry.get("transport", "stdio")).lower()
-            if transport != "stdio":
-                raise ValueError("only stdio transport is supported")
+            if transport not in {"stdio", "http"}:
+                raise ValueError("transport must be 'stdio' or 'http'")
+            url = ""
+            if transport == "http":
+                url = str(entry.get("url", "")).strip()
+                if not url:
+                    raise ValueError("url is required for http transport")
+                if len(url) > MAX_MCP_URL_CHARS:
+                    raise ValueError(
+                        f"url must be at most {MAX_MCP_URL_CHARS} chars"
+                    )
+                if has_control_chars(url):
+                    raise ValueError("url contains control characters")
+                parsed = urlparse(url)
+                if (
+                    parsed.scheme not in {"http", "https"}
+                    or not parsed.hostname
+                    or any(ch.isspace() for ch in url)
+                ):
+                    raise ValueError(
+                        "url must be an absolute http(s) endpoint"
+                    )
+            else:
+                if not command:
+                    raise ValueError("command is required")
+                if has_control_chars(command):
+                    raise ValueError("command contains control characters")
+            # Canonicalize: an http server never carries a local command, so a
+            # stale value cannot resurrect a child process after edits.
+            if transport == "http":
+                command = ""
+                args = []
             servers.append(
                 McpServerConfig(
                     id=server_id,
@@ -302,7 +331,8 @@ def _as_mcp_servers(
                     env_names=env_names,
                     tool_policies=tool_policies,
                     enabled=bool(entry.get("enabled", True)),
-                    transport="stdio",
+                    transport=transport,
+                    url=url,
                 )
             )
             seen_ids.add(server_id)

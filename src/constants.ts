@@ -3,7 +3,7 @@ import type { LLMProviderId, VaultSearchSettings } from "./types";
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-export const BACKEND_VERSION = "0.1.58";
+export const BACKEND_VERSION = "0.1.59";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
 /** Bounds mirrored by the Python side (plan §6.2/§6.3). */
@@ -11,6 +11,7 @@ export const MAX_PROJECT_RULES_CHARS = 32_000;
 export const MAX_MCP_SERVERS = 20;
 export const MAX_MCP_ARGS = 64;
 export const MAX_MCP_ARG_CHARS = 2_048;
+export const MAX_MCP_URL_CHARS = 2_048;
 export const MAX_SKILL_ROOTS = 20;
 export const MCP_SECRET_PAYLOAD_LIMIT_BYTES = 32 * 1024;
 export const MCP_SECRET_NAME_MAX = 128;

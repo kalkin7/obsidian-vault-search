@@ -183,8 +183,11 @@ across duplicate continues.
   Bounds: 32 KiB total payload, name ≤128 chars, value ≤8 KiB. Values are
   never echoed back; the response lists received server ids + env names only.
 - `mcp_status` — `{ enabled, servers: [{id, name, state, message, command,
-  tools, tool_names, env_names, tool_policies}], connected, config_problems }`.
-  States: `disabled | awaiting_secret | connecting | connected | error`.
+  transport?, endpoint?, tools, tool_names, env_names, tool_policies}],
+  connected, config_problems }`. States: `disabled | awaiting_secret |
+  connecting | connected | error`. `transport` is `"stdio"` (default) or
+  `"http"`; `endpoint` carries the http origin+path only — query strings are
+  stripped before any status response.
 - `mcp_refresh` — reconnect changed servers and re-list their tools.
 - `skills_status` / `skills_refresh` — skill registry scan state: roots with
   `{state, skills}` counts, discovered catalog entries, conflicts, problems,

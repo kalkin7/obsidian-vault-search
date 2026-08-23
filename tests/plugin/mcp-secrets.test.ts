@@ -35,6 +35,7 @@ function serverFixture(overrides: Partial<McpServerSettings> = {}): McpServerSet
     command: "python",
     args: [],
     cwd: "vault",
+    url: "",
     envNames: ["GITHUB_TOKEN"],
     toolPolicies: {},
     ...overrides,

@@ -233,3 +233,94 @@ def test_server_cap_enforced(tmp_path: Path):
     )
     assert len(config.mcp_servers) == MAX_MCP_SERVERS
     assert any("dropped" in p for p in config.config_problems)
+
+
+def test_http_transport_servers_are_accepted(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    config = load_config(
+        write_config(
+            tmp_path,
+            {
+                "vaultPath": str(tmp_path),
+                "dataDir": str(data_dir),
+                "mcpServers": [
+                    make_server_entry(
+                        "remote-1",
+                        "Korean Law",
+                        transport="http",
+                        url="https://mcp.gomdori.app/law?oc=honggildong",
+                    ),
+                ],
+            },
+        )
+    )
+    assert not any("MCP server" in p for p in config.config_problems)
+    server = config.mcp_servers[0]
+    assert server.transport == "http"
+    assert server.url.endswith("/law?oc=honggildong")
+    assert server.command == ""
+
+
+def test_stdio_servers_default_to_stdio_transport(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    config = load_config(
+        write_config(
+            tmp_path,
+            {
+                "vaultPath": str(tmp_path),
+                "dataDir": str(data_dir),
+                "mcpServers": [make_server_entry("s1", "Local")],
+            },
+        )
+    )
+    assert config.mcp_servers[0].transport == "stdio"
+    assert config.mcp_servers[0].url == ""
+
+
+def test_invalid_http_entries_are_isolated(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    config = load_config(
+        write_config(
+            tmp_path,
+            {
+                "vaultPath": str(tmp_path),
+                "dataDir": str(data_dir),
+                "mcpServers": [
+                    {"id": "r1", "name": "No Url", "transport": "http"},
+                    {
+                        "id": "r2",
+                        "name": "Bad Scheme",
+                        "transport": "http",
+                        "url": "ftp://example.com/mcp",
+                    },
+                    {
+                        "id": "r3",
+                        "name": "Not A Url",
+                        "transport": "http",
+                        "url": "not a url at all",
+                    },
+                    make_server_entry("ok1", "Still Fine"),
+                ],
+            },
+        )
+    )
+    assert [server.id for server in config.mcp_servers] == ["ok1"]
+    assert len([p for p in config.config_problems if "MCP server" in p]) >= 3
+
+
+def test_unknown_transport_rejected(tmp_path: Path):
+    data_dir = tmp_path / "data"
+    config = load_config(
+        write_config(
+            tmp_path,
+            {
+                "vaultPath": str(tmp_path),
+                "dataDir": str(data_dir),
+                "mcpServers": [
+                    make_server_entry("s1", "Weird", transport="websocket"),
+                ],
+            },
+        )
+    )
+    assert config.mcp_servers == []
+    assert any("transport" in p for p in config.config_problems)

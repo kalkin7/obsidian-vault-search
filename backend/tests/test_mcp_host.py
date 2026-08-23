@@ -575,3 +575,142 @@ def test_apply_secrets_never_launches_while_disabled(host, monkeypatch):
     assert result["applied"] == 1  # values may be stored ahead of enabling...
     assert launched == []  # ...but nothing may start while globally off.
     assert host.status()["servers"][0]["state"] == SERVER_STATE_DISABLED
+
+
+# ---------------------------------------------------------------------------
+# Remote HTTP transport (streamable HTTP): no child process, no env injection.
+# ---------------------------------------------------------------------------
+
+
+class _FakeHttpStreams:
+    def __init__(self):
+        self.read = object()
+        self.write = object()
+
+    async def __aenter__(self):
+        return (self.read, self.write, lambda: None)
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeTool:
+    def __init__(self, name):
+        self.name = name
+        self.input_schema = {"type": "object", "properties": {}}
+        self.description = "fake tool"
+
+
+class _FakeListResult:
+    def __init__(self, tools):
+        self.tools = tools
+
+
+class _FakeTextBlock:
+    type = "text"
+    text = "ok"
+
+
+class _FakeCallResult:
+    content = [_FakeTextBlock()]
+    structured_content = None
+    is_error = False
+
+
+class _FakeSession:
+    last_instance = None
+
+    def __init__(self, read, write):
+        self.read = read
+        self.write = write
+        self.tools = [_FakeTool("search")]
+        _FakeSession.last_instance = self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def initialize(self):
+        return None
+
+    async def list_tools(self):
+        return _FakeListResult(self.tools)
+
+    async def call_tool(self, name, arguments):
+        return _FakeCallResult()
+
+
+def test_http_server_connects_via_streamable_client(host, monkeypatch):
+    import vault_search.mcp_host as host_module
+
+    opened_with: list[str] = []
+
+    def fake_client(url, **kwargs):
+        opened_with.append(url)
+        return _FakeHttpStreams()
+
+    monkeypatch.setattr(
+        host_module, "streamablehttp_client", fake_client, raising=False
+    )
+    monkeypatch.setattr(host_module, "ClientSession", _FakeSession)
+
+    server = make_server("srv-remote", "Remote", transport="http",
+                         url="https://mcp.example.com/mcp?token=canary")
+    summary = host.configure(enabled=True, servers=[server])
+    assert host.wait_connected("srv-remote", timeout=20), host.status()
+    assert summary is not None
+    assert opened_with == ["https://mcp.example.com/mcp?token=canary"]
+
+    status = host.status()["servers"][0]
+    assert status["transport"] == "http"
+    # Query strings never reach status responses.
+    assert status["endpoint"] == "https://mcp.example.com/mcp"
+    assert "token" not in status["endpoint"]
+    assert status["command"] == ""
+    assert status["tools"] == 1
+
+    aliases = host.build_alias_map()
+    assert aliases.alias_for("srv-remote", "search") == "mcp__Remote__search"
+
+    result = host.call_tool_sync(
+        server_id="srv-remote", tool_name="search", arguments={}
+    )
+    assert result.ok
+
+
+def test_http_server_failure_is_isolated_to_error_state(host, monkeypatch):
+    import vault_search.mcp_host as host_module
+
+    class _BrokenStreams:
+        async def __aenter__(self):
+            raise RuntimeError("connection refused")
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        host_module,
+        "streamablehttp_client",
+        lambda url, **kwargs: _BrokenStreams(),
+        raising=False,
+    )
+    monkeypatch.setattr(host_module, "ClientSession", _FakeSession)
+
+    broken = make_server("srv-bad", "Bad", transport="http",
+                         url="https://downstream.invalid/mcp")
+    healthy = make_server("srv-ok", "Ok", label="OK:")
+    host.configure(enabled=True, servers=[broken, healthy])
+    assert not host.wait_connected("srv-bad", timeout=10)
+    assert host.wait_connected("srv-ok", timeout=20)
+
+    bad_summary = next(
+        s for s in host.status()["servers"] if s["id"] == "srv-bad"
+    )
+    assert bad_summary["state"] == SERVER_STATE_ERROR
+    assert "connection refused" in (bad_summary["message"] or "")
+    ok_summary = next(
+        s for s in host.status()["servers"] if s["id"] == "srv-ok"
+    )
+    assert ok_summary["state"] == SERVER_STATE_CONNECTED

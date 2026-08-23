@@ -32,6 +32,7 @@ from .config import McpServerConfig
 try:  # The MCP SDK is optional at import time so unit tests can stub it.
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import get_default_environment, stdio_client
+    from mcp.client.streamable_http import streamablehttp_client
 
     MCP_SDK_AVAILABLE = True
 except Exception:  # pragma: no cover - exercised only without the SDK
@@ -408,23 +409,14 @@ class McpHost:
         config = runtime.config
         stop_event = runtime.stop_event
         assert stop_event is not None
-        cwd = self._cwd_path(config)
         try:
             if not MCP_SDK_AVAILABLE:
                 raise RuntimeError("MCP SDK is not installed in this runtime")
-            if cwd is None:
-                raise RuntimeError(f"working directory is unavailable: {config.cwd}")
-            params = StdioServerParameters(
-                command=config.command,
-                args=list(config.args),
-                cwd=str(cwd),
-                env=self._child_env(config),
-            )
-            if self._devnull is None:
-                self._devnull = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
-            # stderr of the child is discarded: a hostile/broken MCP server
-            # could echo back the very env values we passed it (plan §15.4).
-            async with stdio_client(params, errlog=self._devnull) as (read, write):
+            client_cm = self._open_client_connection(config)
+            # stdio_client yields (read, write); streamablehttp_client yields
+            # (read, write, get_session_id) — index access covers both.
+            async with client_cm as streams:
+                read, write = streams[0], streams[1]
                 async with ClientSession(read, write) as session:
                     await asyncio.wait_for(
                         session.initialize(), timeout=CONNECT_TIMEOUT_SECONDS
@@ -443,6 +435,30 @@ class McpHost:
             runtime.message = f"{type(exc).__name__}: {exc}"
             if runtime.ready is not None:
                 runtime.ready.set()
+
+    def _open_client_connection(self, config: McpServerConfig) -> Any:
+        """Return the async context manager owning the transport.
+
+        HTTP servers connect straight to their URL; a hostile remote can no
+        more see our environment than a hostile local child could (plan §15.4),
+        and stderr is discarded for the same reason.
+        """
+        if config.transport == "http":
+            return streamablehttp_client(config.url)
+        cwd = self._cwd_path(config)
+        if cwd is None:
+            raise RuntimeError(f"working directory is unavailable: {config.cwd}")
+        params = StdioServerParameters(
+            command=config.command,
+            args=list(config.args),
+            cwd=str(cwd),
+            env=self._child_env(config),
+        )
+        if self._devnull is None:
+            self._devnull = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+        # stderr of the child is discarded: a hostile/broken MCP server
+        # could echo back the very env values we passed it (plan §15.4).
+        return stdio_client(params, errlog=self._devnull)
 
     async def _reload_tools(self, runtime: _ServerRuntime, session: Any) -> None:
         result = await asyncio.wait_for(
@@ -740,12 +756,32 @@ class McpHost:
             "state": runtime.state,
             "message": runtime.message,
             "enabled": runtime.config.enabled,
-            "command": runtime.config.command,
+            "transport": runtime.config.transport,
+            # Query strings frequently carry issued tokens; only the origin
+            # plus path ever reaches a status response (plan §15.4).
+            "endpoint": (
+                McpHost._safe_endpoint(runtime.config.url)
+                if runtime.config.transport == "http"
+                else runtime.config.command
+            ),
+            "command": (
+                "" if runtime.config.transport == "http" else runtime.config.command
+            ),
             "tools": len(runtime.tool_schemas),
             "tool_names": sorted(runtime.tool_schemas.keys()),
             "env_names": list(runtime.config.env_names),
             "tool_policies": dict(runtime.config.tool_policies),
         }
+
+    @staticmethod
+    def _safe_endpoint(url: str) -> str:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(url)
+        if not parts.netloc:
+            return ""
+        path = parts.path.rstrip("/")
+        return f"{parts.scheme}://{parts.netloc}{path}"
 
     def server_summary(self, server_id: str) -> dict[str, Any] | None:
         runtime = self._servers.get(server_id)

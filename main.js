@@ -2736,7 +2736,7 @@ __export(main_exports, {
   default: () => VaultSearchPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian13 = require("obsidian");
+var import_obsidian14 = require("obsidian");
 var import_crypto5 = require("crypto");
 var import_crypto6 = require("crypto");
 var path4 = __toESM(require("path"));
@@ -3015,8 +3015,7 @@ var BACKEND_VERSION = "0.1.58";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
-var MAX_MCP_ARGS = 64;
-var MAX_MCP_ARG_CHARS = 2048;
+var MAX_MCP_URL_CHARS = 2048;
 var MAX_SKILL_ROOTS = 20;
 var MCP_SECRET_PAYLOAD_LIMIT_BYTES = 32 * 1024;
 var MCP_SECRET_NAME_MAX = 128;
@@ -4210,8 +4209,288 @@ var BackendCallError = class extends Error {
   }
 };
 
+// src/mcp-server-modal.ts
+var import_obsidian3 = require("obsidian");
+
+// src/mcp-server-form.ts
+var NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/;
+function validateMcpServerForm(form) {
+  const name = form.name.trim();
+  if (!NAME_PATTERN.test(name)) {
+    return "\uD45C\uC2DC\uBA85\uC740 \uC601\uBB38/\uC22B\uC790\uB85C \uC2DC\uC791\uD558\uB294 1-64\uC790(\uACF5\uBC31, ., _, - \uD5C8\uC6A9)\uC5EC\uC57C \uD569\uB2C8\uB2E4.";
+  }
+  if (form.transport === "http") {
+    const url = form.url.trim();
+    if (!url) return "\uC6D0\uACA9 \uC11C\uBC84 URL\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
+    if (url.length > 2048) return "URL\uC774 \uB108\uBB34 \uAE41\uB2C8\uB2E4(\uCD5C\uB300 2048\uC790).";
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      return "URL \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC804\uCCB4 URL\uC744 \uBD99\uC5EC\uB123\uC5B4 \uC8FC\uC138\uC694.";
+    }
+    if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+      return "URL\uC740 http \uB610\uB294 https\uB85C \uC2DC\uC791\uD574\uC57C \uD569\uB2C8\uB2E4.";
+    }
+    if (!parsed.hostname) return "URL\uC5D0 \uD638\uC2A4\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.";
+    return null;
+  }
+  if (!form.command.trim()) {
+    return "\uC2E4\uD589 \uBA85\uB839\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694. \uC6D0\uACA9 \uC11C\uBC84\uB77C\uBA74 \uC5F0\uACB0 \uBC29\uC2DD\uC744 '\uC6D0\uACA9 URL'\uB85C \uBC14\uAFD4 \uC8FC\uC138\uC694.";
+  }
+  return null;
+}
+function describeMcpServer(server) {
+  if (server.transport === "http") {
+    const url = server.url.trim();
+    if (!url) return "\uC6D0\uACA9 URL \uBBF8\uC9C0\uC815";
+    try {
+      const parsed = new URL(url);
+      return `${parsed.protocol}//${parsed.host}${parsed.pathname}`.replace(
+        /\/$/,
+        ""
+      );
+    } catch {
+      return "(\uC798\uBABB\uB41C URL)";
+    }
+  }
+  const command = server.command.trim();
+  if (!command) return "\uBA85\uB839 \uBBF8\uC9C0\uC815";
+  return [command, ...server.args].join(" ");
+}
+
+// src/mcp-server-modal.ts
+var McpServerEditorModal = class extends import_obsidian3.Modal {
+  constructor(editorOwner, working, callbacks) {
+    super(editorOwner.app);
+    this.editorOwner = editorOwner;
+    this.callbacks = callbacks;
+    this.working = working;
+  }
+  working;
+  onOpen() {
+    this.modalEl.addClass("vault-search-mcp-editor");
+    this.titleEl.setText("MCP \uC11C\uBC84 \uD3B8\uC9D1");
+    this.renderBasics();
+    if (this.working.transport === "stdio") {
+      this.renderEnvSection();
+    }
+    void this.renderToolPolicies();
+    this.renderActions();
+  }
+  onClose() {
+    this.contentEl.empty();
+  }
+  renderBasics() {
+    const container = this.contentEl.createDiv({
+      cls: "vault-search-mcp-editor-basics"
+    });
+    new import_obsidian3.Setting(container).setName("\uD45C\uC2DC\uBA85").addText(
+      (text) => text.setValue(this.working.name).onChange((value) => {
+        this.working.name = value;
+      })
+    );
+    const stdioFields = container.createDiv();
+    const httpFields = container.createDiv();
+    const applyTransportVisibility = () => {
+      const isHttp = this.working.transport === "http";
+      stdioFields.toggleClass("is-hidden", isHttp);
+      httpFields.toggleClass("is-hidden", !isHttp);
+    };
+    new import_obsidian3.Setting(container).setName("\uC5F0\uACB0 \uBC29\uC2DD").setDesc(
+      "\uB85C\uCEEC \uBA85\uB839\uC740 \uC774 \uCEF4\uD4E8\uD130\uC5D0\uC11C \uC790\uC2DD \uD504\uB85C\uC138\uC2A4\uB85C \uC2E4\uD589\uB429\uB2C8\uB2E4. \uC6D0\uACA9 URL\uC740 \uC2A4\uD2B8\uB9AC\uBC0D HTTP MCP \uC11C\uBC84\uC5D0 \uC9C1\uC811 \uC5F0\uACB0\uD569\uB2C8\uB2E4."
+    ).addDropdown(
+      (dropdown) => dropdown.addOption("stdio", "\uB85C\uCEEC \uBA85\uB839 (stdio)").addOption("http", "\uC6D0\uACA9 URL (HTTP)").setValue(this.working.transport).onChange((value) => {
+        this.working.transport = value === "http" ? "http" : "stdio";
+        applyTransportVisibility();
+      })
+    );
+    new import_obsidian3.Setting(stdioFields).setName("\uC2E4\uD589 \uBA85\uB839").setDesc(
+      "\uC608: python, npx, C:\\tools\\server.exe \u2014 \uC178\uC744 \uAC70\uCE58\uC9C0 \uC54A\uACE0 \uC9C1\uC811 \uC2E4\uD589\uB429\uB2C8\uB2E4."
+    ).addText(
+      (text) => text.setValue(this.working.command).onChange((value) => {
+        this.working.command = value;
+      })
+    );
+    new import_obsidian3.Setting(stdioFields).setName("\uC778\uC790").setDesc("\uD55C \uC904\uC5D0 \uD558\uB098\uC529 \uC785\uB825\uD569\uB2C8\uB2E4.").addTextArea((text) => {
+      text.setValue(this.working.args.join("\n")).onChange((value) => {
+        this.working.args = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      });
+      text.inputEl.rows = 3;
+    });
+    new import_obsidian3.Setting(stdioFields).setName("\uC791\uC5C5 \uD3F4\uB354").addDropdown(
+      (dropdown) => dropdown.addOption("vault", "\uBCFC\uD2B8 \uB8E8\uD2B8").addOption("plugin", "\uD50C\uB7EC\uADF8\uC778 \uD3F4\uB354").addOption("custom", "\uC9C1\uC811 \uC9C0\uC815").setValue(
+        this.working.cwd === "vault" || this.working.cwd === "plugin" ? this.working.cwd : "custom"
+      ).onChange((value) => {
+        this.working.cwd = value === "custom" ? "" : value;
+      })
+    ).addText(
+      (text) => text.setPlaceholder("\uC808\uB300 \uACBD\uB85C (\uC9C1\uC811 \uC9C0\uC815 \uC2DC)").setValue(
+        this.working.cwd !== "vault" && this.working.cwd !== "plugin" ? this.working.cwd : ""
+      ).onChange((value) => {
+        if (value.trim()) this.working.cwd = value.trim();
+      })
+    );
+    new import_obsidian3.Setting(httpFields).setName("\uC11C\uBC84 URL").setDesc(
+      "\uC11C\uBE44\uC2A4\uC5D0\uC11C \uBC1C\uAE09\uD55C \uC804\uCCB4 URL\uC744 \uADF8\uB300\uB85C \uBD99\uC5EC\uB123\uC73C\uC138\uC694. \uD1A0\uD070\uC774 \uCFFC\uB9AC \uBB38\uC790\uC5F4\uC5D0 \uD3EC\uD568\uB41C \uD615\uC2DD\uC774\uB77C\uBA74 \uADF8\uB300\uB85C \uC0AC\uC6A9\uB418\uBA70 \uC124\uC815 \uD30C\uC77C\uC5D0\uB9CC \uC800\uC7A5\uB429\uB2C8\uB2E4(\uBAA9\uB85D\uC5D0\uB294 \uD638\uC2A4\uD2B8\uAE4C\uC9C0\uB9CC \uD45C\uC2DC)."
+    ).addText(
+      (text) => text.setPlaceholder("https://example.com/mcp?token=...").setValue(this.working.url).onChange((value) => {
+        this.working.url = value.slice(0, MAX_MCP_URL_CHARS);
+      })
+    );
+    applyTransportVisibility();
+  }
+  renderEnvSection() {
+    const section = this.contentEl.createDiv({ cls: "vault-search-mcp-env" });
+    section.createEl("div", {
+      cls: "setting-item-name",
+      text: "\uD658\uACBD \uBCC0\uC218 (\uAC12\uC740 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0\uB9CC \uC800\uC7A5)"
+    });
+    const renderRows = () => {
+      section.querySelectorAll(".vault-search-mcp-env-row").forEach((row) => row.remove());
+      for (const envName of [...this.working.envNames]) {
+        const row = section.createDiv({ cls: "vault-search-mcp-env-row" });
+        row.createEl("span", { text: envName, cls: "vault-search-mcp-env-name" });
+        const stored = this.callbacks.hasEnvValue(envName);
+        row.createEl("span", {
+          text: stored ? "\uC800\uC7A5\uB428" : "\uBBF8\uC800\uC7A5",
+          cls: `vault-search-mcp-env-state ${stored ? "is-set" : "is-unset"}`
+        });
+        const input = document.createElement("input");
+        input.type = "password";
+        input.placeholder = stored ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (\uBCC0\uACBD \uC2DC \uC785\uB825)" : "\uAC12 \uC785\uB825";
+        input.setAttribute("aria-label", `${envName} \uAC12`);
+        input.className = "vault-search-mcp-env-input";
+        row.appendChild(input);
+        const save = row.createEl("button", {
+          text: "\uC800\uC7A5",
+          attr: { type: "button", "aria-label": `${envName} \uAC12 \uC800\uC7A5` }
+        });
+        save.addEventListener("click", () => {
+          void this.callbacks.saveEnvValue(envName, input.value).then(() => {
+            input.value = "";
+            renderRows();
+            new import_obsidian3.Notice(`${envName} \uAC12\uC744 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`, 4e3);
+          }).catch((error) => {
+            new import_obsidian3.Notice(
+              error instanceof Error ? error.message : String(error),
+              8e3
+            );
+          });
+        });
+        const remove = row.createEl("button", {
+          text: "\uC0AD\uC81C",
+          attr: { type: "button", "aria-label": `${envName} \uD658\uACBD \uBCC0\uC218 \uC81C\uAC70` }
+        });
+        remove.addEventListener("click", () => {
+          this.working.envNames = this.working.envNames.filter(
+            (name) => name !== envName
+          );
+          void this.callbacks.removeEnvValue(envName).catch(() => void 0);
+          renderRows();
+        });
+      }
+    };
+    renderRows();
+    const addRow = section.createDiv({ cls: "vault-search-mcp-env-add" });
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "\uD658\uACBD \uBCC0\uC218 \uC774\uB984 (\uC608: GITHUB_TOKEN)";
+    nameInput.setAttribute("aria-label", "\uC0C8 \uD658\uACBD \uBCC0\uC218 \uC774\uB984");
+    nameInput.className = "vault-search-mcp-env-input";
+    addRow.appendChild(nameInput);
+    addRow.createEl("button", { text: "\uBCC0\uC218 \uCD94\uAC00", attr: { type: "button" } }).addEventListener("click", () => {
+      const name = nameInput.value.trim();
+      if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
+        new import_obsidian3.Notice("\uD658\uACBD \uBCC0\uC218 \uC774\uB984 \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.", 5e3);
+        return;
+      }
+      if (this.working.envNames.includes(name)) {
+        new import_obsidian3.Notice("\uC774\uBBF8 \uB4F1\uB85D\uB41C \uC774\uB984\uC785\uB2C8\uB2E4.", 5e3);
+        return;
+      }
+      this.working.envNames = [...this.working.envNames, name];
+      nameInput.value = "";
+      renderRows();
+    });
+  }
+  async renderToolPolicies() {
+    try {
+      const status = await this.editorOwner.refreshMcpStatus();
+      const serverStatus = status.servers.find(
+        (entry) => entry.id === this.working.id
+      );
+      if (!serverStatus || serverStatus.tools === 0) return;
+      const wrap = this.contentEl.createDiv({ cls: "vault-search-mcp-tools" });
+      wrap.createEl("div", {
+        cls: "setting-item-name",
+        text: `\uBC1C\uACAC\uB41C \uB3C4\uAD6C (${serverStatus.tools})`
+      });
+      const allTools = Array.from(
+        /* @__PURE__ */ new Set([
+          ...Object.keys(this.working.toolPolicies),
+          ...serverStatus.tool_names || []
+        ])
+      ).sort();
+      for (const tool of allTools) {
+        const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
+        row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `${tool} \uC2E4\uD589 \uC815\uCC45`);
+        for (const [value, label] of [
+          ["deny", "\uAC70\uBD80 (\uC228\uAE40)"],
+          ["ask", "\uC2B9\uC778 \uC694\uAD6C"],
+          ["allow", "\uC790\uB3D9 \uD5C8\uC6A9"]
+        ]) {
+          const option = document.createElement("option");
+          option.value = value;
+          option.textContent = label;
+          select.appendChild(option);
+        }
+        select.value = this.working.toolPolicies[tool] || "ask";
+        select.addEventListener("change", () => {
+          this.working.toolPolicies = {
+            ...this.working.toolPolicies,
+            [tool]: select.value
+          };
+        });
+        row.appendChild(select);
+      }
+    } catch {
+    }
+  }
+  renderActions() {
+    const bar = this.contentEl.createDiv({
+      cls: "vault-search-mcp-editor-actions"
+    });
+    new import_obsidian3.Setting(bar).addButton(
+      (button) => button.setButtonText("\uCDE8\uC18C").onClick(() => {
+        if (!this.isCommittedEntry) this.callbacks.onCancelledNew?.();
+        this.close();
+      })
+    ).addButton(
+      (button) => button.setButtonText("\uC800\uC7A5").setCta().onClick(() => {
+        const problem = validateMcpServerForm(this.working);
+        if (problem) {
+          new import_obsidian3.Notice(problem, 5e3);
+          return;
+        }
+        this.callbacks.onSaved();
+        this.close();
+      })
+    );
+  }
+  /** True once onSaved ran (or the entry already exists in the list); a
+   *  cancel before that means the brand-new entry must be rolled back. */
+  get isCommittedEntry() {
+    return (this.editorOwner.draftSettings.mcpServers || []).some(
+      (server) => server.id === this.working.id
+    );
+  }
+};
+
 // src/settings-tab.ts
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/settings.ts
 var ALL_KEYS = [
@@ -4405,7 +4684,7 @@ function chooseProviderModel(availableModels, rememberedModel, fallbackModel) {
 }
 
 // src/api-agent-settings.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 function renderApiAgentSettings(containerEl, owner, draft) {
   containerEl.createEl("h3", { text: "API \uC5D0\uC774\uC804\uD2B8 \uADDC\uCE59" });
   const metaText = () => {
@@ -4425,7 +4704,7 @@ function renderApiAgentSettings(containerEl, owner, draft) {
     }
     return parts.join(" \xB7 ");
   };
-  const rulesSetting = new import_obsidian3.Setting(containerEl).setName("\uD504\uB85C\uC81D\uD2B8 \uADDC\uCE59").setDesc(
+  const rulesSetting = new import_obsidian4.Setting(containerEl).setName("\uD504\uB85C\uC81D\uD2B8 \uADDC\uCE59").setDesc(
     "API provider\uC5D0 \uC804\uC1A1\uB418\uB294 \uD504\uB85C\uC81D\uD2B8 \uC9C0\uCE68\uC785\uB2C8\uB2E4. \uC81C\uD488 \uBCF4\uC548 \uADDC\uCE59\xB7\uB3C4\uAD6C \uC2B9\uC778\xB7\uBCFC\uD2B8 \uACBD\uACC4\uBCF4\uB2E4 \uC6B0\uC120\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uBBFC\uAC10\uD55C \uAC12(API \uD0A4, \uBE44\uBC00\uBC88\uD638 \uB4F1)\uC740 \uB123\uC9C0 \uB9C8\uC138\uC694."
   ).setClass("vault-search-project-rules");
   const control = rulesSetting.controlEl;
@@ -4445,7 +4724,7 @@ function renderApiAgentSettings(containerEl, owner, draft) {
     if (value.length > MAX_PROJECT_RULES_CHARS) {
       value = value.slice(0, MAX_PROJECT_RULES_CHARS);
       textarea.value = value;
-      new import_obsidian3.Notice(
+      new import_obsidian4.Notice(
         `\uD504\uB85C\uC81D\uD2B8 \uADDC\uCE59\uC740 \uCD5C\uB300 ${MAX_PROJECT_RULES_CHARS}\uC790\uAE4C\uC9C0 \uC785\uB825\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.`,
         5e3
       );
@@ -4457,7 +4736,7 @@ function renderApiAgentSettings(containerEl, owner, draft) {
     counter.setText(metaText());
   });
   control.appendChild(textarea);
-  new import_obsidian3.Setting(containerEl).setName("AGENTS.md \uAC00\uC838\uC624\uAE30").setDesc(
+  new import_obsidian4.Setting(containerEl).setName("AGENTS.md \uAC00\uC838\uC624\uAE30").setDesc(
     "\uBCFC\uD2B8 \uB8E8\uD2B8\uC758 AGENTS.md \uB0B4\uC6A9\uC744 \uC704 \uC785\uB825\uCC3D\uC73C\uB85C \uBCF5\uC0AC\uD569\uB2C8\uB2E4(\uC2A4\uB0C5\uC0F7). \uC774\uD6C4 \uD30C\uC77C\uC774 \uBC14\uB00C\uC5B4\uB3C4 \uC790\uB3D9 \uBC18\uC601\uB418\uC9C0 \uC54A\uC73C\uBA70, \uC124\uC815 \uC801\uC6A9 \uC2DC \uC800\uC7A5\uB429\uB2C8\uB2E4."
   ).addButton(
     (button) => button.setButtonText("\uAC00\uC838\uC624\uAE30").onClick(async () => {
@@ -4466,7 +4745,7 @@ function renderApiAgentSettings(containerEl, owner, draft) {
         textarea.value = draft.answerProjectRules || "";
         counter.setText(metaText());
       } catch (error) {
-        new import_obsidian3.Notice(
+        new import_obsidian4.Notice(
           error instanceof Error ? error.message : String(error),
           8e3
         );
@@ -4482,7 +4761,7 @@ function renderApiAgentSettings(containerEl, owner, draft) {
 }
 
 // src/mcp-settings.ts
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 var STATE_LABELS = {
   disabled: "\uBE44\uD65C\uC131",
   awaiting_secret: "\uD658\uACBD \uBCC0\uC218 \uB300\uAE30",
@@ -4490,23 +4769,10 @@ var STATE_LABELS = {
   connected: "\uC5F0\uACB0\uB428",
   error: "\uC624\uB958"
 };
-function validateServer(server) {
-  if (!server.name.trim()) return "\uD45C\uC2DC\uBA85\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
-  if (!/^[A-Za-z0-9][A-Za-z0-9 _.-]{0,63}$/.test(server.name.trim()))
-    return "\uD45C\uC2DC\uBA85\uC740 \uC601\uBB38/\uC22B\uC790/\uACF5\uBC31/._- 64\uC790 \uC774\uB0B4\uC5EC\uC57C \uD569\uB2C8\uB2E4.";
-  if (!server.command.trim()) return "\uC2E4\uD589 \uBA85\uB839\uC744 \uC785\uB825\uD574 \uC8FC\uC138\uC694.";
-  if (server.args.length > MAX_MCP_ARGS)
-    return `\uC778\uC790\uB294 \uCD5C\uB300 ${MAX_MCP_ARGS}\uAC1C\uAE4C\uC9C0 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
-  if (server.args.some((arg) => arg.length > MAX_MCP_ARG_CHARS))
-    return `\uAC01 \uC778\uC790\uB294 \uCD5C\uB300 ${MAX_MCP_ARG_CHARS}\uC790\uC785\uB2C8\uB2E4.`;
-  if (server.cwd !== "vault" && server.cwd !== "plugin" && !/^[A-Za-z]:[\\/]/.test(server.cwd) && !server.cwd.startsWith("/"))
-    return "\uC0AC\uC6A9\uC790 \uC9C0\uC815 \uC791\uC5C5 \uD3F4\uB354\uB294 \uC808\uB300 \uACBD\uB85C\uC5EC\uC57C \uD569\uB2C8\uB2E4.";
-  return null;
-}
 function renderMcpSettings(containerEl, owner, draft) {
   containerEl.createEl("h3", { text: "MCP \uC11C\uBC84" });
-  new import_obsidian4.Setting(containerEl).setName("\uB85C\uCEEC MCP \uC11C\uBC84 \uC0AC\uC6A9").setDesc(
-    "Desktop \uC804\uC6A9. stdio \uBC29\uC2DD\uC758 \uB85C\uCEEC MCP \uC11C\uBC84\uB97C \uB4F1\uB85D\uD558\uBA74 API \uBAA8\uB378\uC774 \uD574\uB2F9 \uB3C4\uAD6C\uB97C \uBC1C\uACAC\uD558\uACE0 \uD638\uCD9C\uD569\uB2C8\uB2E4. \uC0C8 \uB3C4\uAD6C\uB294 \uAE30\uBCF8\uC801\uC73C\uB85C \uC2E4\uD589 \uC804 \uC2B9\uC778\uC744 \uC694\uAD6C\uD569\uB2C8\uB2E4."
+  new import_obsidian5.Setting(containerEl).setName("\uB85C\uCEEC/\uC6D0\uACA9 MCP \uC11C\uBC84 \uC0AC\uC6A9").setDesc(
+    "\uB4F1\uB85D\uD55C MCP \uC11C\uBC84\uC758 \uB3C4\uAD6C\uB97C API \uBAA8\uB378\uC774 \uBC1C\uACAC\uD558\uACE0 \uD638\uCD9C\uD569\uB2C8\uB2E4. \uC0C8 \uB3C4\uAD6C\uB294 \uAE30\uBCF8\uC801\uC73C\uB85C \uC2E4\uD589 \uC804 \uC2B9\uC778\uC744 \uC694\uAD6C\uD569\uB2C8\uB2E4."
   ).addToggle(
     (toggle) => toggle.setValue(draft.mcpEnabled).onChange((value) => {
       draft.mcpEnabled = value;
@@ -4521,19 +4787,31 @@ function renderMcpSettings(containerEl, owner, draft) {
   }).catch(() => {
     statusBox.setText("\uBC31\uC5D4\uB4DC\uAC00 \uC2E4\uD589 \uC911\uC774 \uC544\uB2D9\uB2C8\uB2E4. \uC2DC\uC791 \uD6C4 \uC0C1\uD0DC\uAC00 \uD45C\uC2DC\uB429\uB2C8\uB2E4.");
   });
-  const list = containerEl.createDiv({ cls: "vault-search-mcp-list" });
   for (const server of draft.mcpServers || []) {
-    renderServerEditor(list, owner, draft, server, () => {
-      owner.settingTab?.display();
-    });
+    renderServerRow(containerEl, owner, server);
   }
-  new import_obsidian4.Setting(containerEl).setName("\uC11C\uBC84 \uCD94\uAC00").setDesc(`\uCD5C\uB300 ${MAX_MCP_SERVERS}\uAC1C\uAE4C\uC9C0 \uB4F1\uB85D\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4.`).addButton(
+  new import_obsidian5.Setting(containerEl).setName("\uC11C\uBC84 \uCD94\uAC00").setDesc(`\uCD5C\uB300 ${MAX_MCP_SERVERS}\uAC1C\uAE4C\uC9C0 \uB4F1\uB85D\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC800\uC7A5\uC740 \uC785\uB825\uCC3D\uC5D0\uC11C \uC644\uB8CC\uD569\uB2C8\uB2E4.`).addButton(
     (button) => button.setButtonText("\uCD94\uAC00").onClick(() => {
       if ((draft.mcpServers || []).length >= MAX_MCP_SERVERS) {
-        new import_obsidian4.Notice(`MCP \uC11C\uBC84\uB294 \uCD5C\uB300 ${MAX_MCP_SERVERS}\uAC1C\uC785\uB2C8\uB2E4.`, 5e3);
+        new import_obsidian5.Notice(`MCP \uC11C\uBC84\uB294 \uCD5C\uB300 ${MAX_MCP_SERVERS}\uAC1C\uC785\uB2C8\uB2E4.`, 5e3);
         return;
       }
-      owner.addMcpServer();
+      owner.openMcpServerEditor();
+    })
+  );
+}
+function renderServerRow(containerEl, owner, server) {
+  new import_obsidian5.Setting(containerEl).setName(server.name || "(\uC774\uB984 \uC5C6\uC74C)").setDesc(describeMcpServer(server)).addToggle(
+    (toggle) => toggle.setValue(server.enabled).onChange((value) => {
+      server.enabled = value;
+    })
+  ).addButton(
+    (button) => button.setButtonText("\uC218\uC815").setTooltip("\uC774 \uC11C\uBC84\uC758 \uC5F0\uACB0 \uBC29\uC2DD\xB7\uBA85\uB839\xB7\uD658\uACBD \uBCC0\uC218\uB97C \uD3B8\uC9D1\uD569\uB2C8\uB2E4").onClick(() => owner.openMcpServerEditor(server.id))
+  ).addButton(
+    (button) => button.setButtonText("\uC0AD\uC81C").setWarning().onClick(async () => {
+      if (!window.confirm(`MCP \uC11C\uBC84 '${server.name}'\uC744(\uB97C) \uC0AD\uC81C\uD560\uAE4C\uC694?`))
+        return;
+      await owner.deleteMcpServer(server.id);
       owner.settingTab?.display();
     })
   );
@@ -4561,183 +4839,9 @@ function renderStatusLine(box, status) {
   }
   box.setText(lines.join("\n"));
 }
-function renderServerEditor(container, owner, draft, server, onChanged) {
-  const details = container.createEl("details", {
-    cls: "vault-search-mcp-server"
-  });
-  const summary = details.createEl("summary");
-  summary.setText(`${server.name || "(\uC774\uB984 \uC5C6\uC74C)"} \u2014 ${server.command || "\uBA85\uB839 \uBBF8\uC9C0\uC815"}`);
-  new import_obsidian4.Setting(details).setName("\uC0AC\uC6A9").addToggle(
-    (toggle) => toggle.setValue(server.enabled).onChange((value) => {
-      server.enabled = value;
-    })
-  );
-  new import_obsidian4.Setting(details).setName("\uD45C\uC2DC\uBA85").addText(
-    (text) => text.setValue(server.name).onChange((value) => {
-      server.name = value;
-      summary.setText(`${value || "(\uC774\uB984 \uC5C6\uC74C)"} \u2014 ${server.command || "\uBA85\uB839 \uBBF8\uC9C0\uC815"}`);
-    })
-  );
-  new import_obsidian4.Setting(details).setName("\uC2E4\uD589 \uBA85\uB839").setDesc("\uC608: python, npx, C:\\tools\\server.exe \u2014 \uC178\uC744 \uAC70\uCE58\uC9C0 \uC54A\uACE0 \uC9C1\uC811 \uC2E4\uD589\uB429\uB2C8\uB2E4.").addText(
-    (text) => text.setValue(server.command).onChange((value) => {
-      server.command = value;
-    })
-  );
-  new import_obsidian4.Setting(details).setName("\uC778\uC790").setDesc("\uD55C \uC904\uC5D0 \uD558\uB098\uC529 \uC785\uB825\uD569\uB2C8\uB2E4.").addTextArea((text) => {
-    text.setValue(server.args.join("\n")).onChange((value) => {
-      server.args = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    });
-    text.inputEl.rows = 3;
-  });
-  new import_obsidian4.Setting(details).setName("\uC791\uC5C5 \uD3F4\uB354").addDropdown(
-    (dropdown) => dropdown.addOption("vault", "\uBCFC\uD2B8 \uB8E8\uD2B8").addOption("plugin", "\uD50C\uB7EC\uADF8\uC778 \uD3F4\uB354").addOption("custom", "\uC9C1\uC811 \uC9C0\uC815").setValue(
-      server.cwd === "vault" || server.cwd === "plugin" ? server.cwd : "custom"
-    ).onChange((value) => {
-      server.cwd = value === "custom" ? "" : value;
-    })
-  ).addText((text) => {
-    text.setPlaceholder("\uC808\uB300 \uACBD\uB85C (\uC9C1\uC811 \uC9C0\uC815 \uC2DC)").setValue(server.cwd !== "vault" && server.cwd !== "plugin" ? server.cwd : "").onChange((value) => {
-      if (value.trim()) server.cwd = value.trim();
-    });
-  });
-  renderEnvRows(details, owner, server);
-  const toolsSetting = new import_obsidian4.Setting(details).setName("\uB3C4\uAD6C\uBCC4 \uC815\uCC45").setDesc("\uC5F0\uACB0 \uD6C4 \uBC1C\uACAC\uB41C \uB3C4\uAD6C\uC758 \uC2E4\uD589 \uC815\uCC45\uC785\uB2C8\uB2E4. \uC0C8 \uB3C4\uAD6C\uB294 \uAE30\uBCF8 'ask'\uC785\uB2C8\uB2E4.").addButton(
-    (button) => button.setButtonText("\uC0C1\uD0DC \uC0C8\uB85C\uACE0\uCE68").onClick(async () => {
-      try {
-        const status = await owner.refreshMcpTools();
-        renderToolPolicies(toolsSetting.settingEl, server, status);
-        new import_obsidian4.Notice("MCP \uB3C4\uAD6C \uBAA9\uB85D\uC744 \uAC31\uC2E0\uD588\uC2B5\uB2C8\uB2E4.", 4e3);
-      } catch (error) {
-        new import_obsidian4.Notice(
-          error instanceof Error ? error.message : String(error),
-          8e3
-        );
-      }
-    })
-  );
-  void owner.refreshMcpStatus().then((status) => {
-    renderToolPolicies(toolsSetting.settingEl, server, status);
-  }).catch(() => void 0);
-  new import_obsidian4.Setting(details).setName("\uC11C\uBC84 \uC0AD\uC81C").setDesc("\uC800\uC7A5\uB41C \uD658\uACBD \uBCC0\uC218 \uAC12\uB3C4 \uD568\uAED8 \uC0AD\uC81C\uB429\uB2C8\uB2E4.").addButton(
-    (button) => button.setButtonText("\uC0AD\uC81C").setWarning().onClick(async () => {
-      if (!window.confirm(`MCP \uC11C\uBC84 '${server.name}'\uC744(\uB97C) \uC0AD\uC81C\uD560\uAE4C\uC694?`))
-        return;
-      await owner.deleteMcpServer(server.id);
-      onChanged();
-    })
-  );
-  details.addEventListener("toggle", () => {
-    if (!details.open) return;
-    const problem = validateServer(server);
-    if (problem) new import_obsidian4.Notice(problem, 5e3);
-  });
-}
-function renderEnvRows(container, owner, server) {
-  const wrap = container.createDiv({ cls: "vault-search-mcp-env" });
-  wrap.createEl("div", {
-    cls: "setting-item-name",
-    text: "\uD658\uACBD \uBCC0\uC218 (\uAC12\uC740 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0\uB9CC \uC800\uC7A5)"
-  });
-  for (const envName of [...server.envNames]) {
-    const row = wrap.createDiv({ cls: "vault-search-mcp-env-row" });
-    row.createEl("span", { text: envName, cls: "vault-search-mcp-env-name" });
-    const stored = owner.hasMcpEnvValue(server.id, envName);
-    row.createEl("span", {
-      text: stored ? "\uC800\uC7A5\uB428" : "\uBBF8\uC800\uC7A5",
-      cls: `vault-search-mcp-env-state ${stored ? "is-set" : "is-unset"}`
-    });
-    const input = document.createElement("input");
-    input.type = "password";
-    input.placeholder = stored ? "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022 (\uBCC0\uACBD \uC2DC \uC785\uB825)" : "\uAC12 \uC785\uB825";
-    input.setAttribute("aria-label", `${envName} \uAC12`);
-    input.className = "vault-search-mcp-env-input";
-    row.appendChild(input);
-    const save = row.createEl("button", {
-      text: "\uC800\uC7A5",
-      attr: { type: "button", "aria-label": `${envName} \uAC12 \uC800\uC7A5` }
-    });
-    save.addEventListener("click", async () => {
-      try {
-        await owner.saveMcpEnvValue(server.id, envName, input.value);
-        input.value = "";
-        new import_obsidian4.Notice(`${envName} \uAC12\uC744 \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`, 4e3);
-        owner.settingTab?.display();
-      } catch (error) {
-        new import_obsidian4.Notice(error instanceof Error ? error.message : String(error), 8e3);
-      }
-    });
-    const remove = row.createEl("button", {
-      text: "\uC0AD\uC81C",
-      attr: { type: "button", "aria-label": `${envName} \uD658\uACBD \uBCC0\uC218 \uC81C\uAC70` }
-    });
-    remove.addEventListener("click", () => {
-      server.envNames = server.envNames.filter((name) => name !== envName);
-      void owner.removeMcpEnvValue(server.id, envName);
-      owner.settingTab?.display();
-    });
-  }
-  const addRow = wrap.createDiv({ cls: "vault-search-mcp-env-add" });
-  const nameInput = document.createElement("input");
-  nameInput.type = "text";
-  nameInput.placeholder = "\uD658\uACBD \uBCC0\uC218 \uC774\uB984 (\uC608: GITHUB_TOKEN)";
-  nameInput.setAttribute("aria-label", "\uC0C8 \uD658\uACBD \uBCC0\uC218 \uC774\uB984");
-  nameInput.className = "vault-search-mcp-env-input";
-  addRow.appendChild(nameInput);
-  addRow.createEl("button", { text: "\uBCC0\uC218 \uCD94\uAC00", attr: { type: "button" } }).addEventListener("click", () => {
-    const name = nameInput.value.trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(name)) {
-      new import_obsidian4.Notice("\uD658\uACBD \uBCC0\uC218 \uC774\uB984 \uD615\uC2DD\uC774 \uC62C\uBC14\uB974\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.", 5e3);
-      return;
-    }
-    if (server.envNames.includes(name)) {
-      new import_obsidian4.Notice("\uC774\uBBF8 \uB4F1\uB85D\uB41C \uC774\uB984\uC785\uB2C8\uB2E4.", 5e3);
-      return;
-    }
-    server.envNames = [...server.envNames, name];
-    owner.settingTab?.display();
-  });
-}
-function renderToolPolicies(container, server, status) {
-  const existing = container.querySelector(".vault-search-mcp-tools");
-  existing?.remove();
-  const serverStatus = status.servers.find((entry) => entry.id === server.id);
-  if (!serverStatus || serverStatus.tools === 0) return;
-  const wrap = container.createDiv({ cls: "vault-search-mcp-tools" });
-  wrap.createEl("div", {
-    cls: "setting-item-name",
-    text: `\uBC1C\uACAC\uB41C \uB3C4\uAD6C (${serverStatus.tools})`
-  });
-  const allTools = Array.from(
-    /* @__PURE__ */ new Set([...Object.keys(server.toolPolicies), ...serverStatus.tool_names || []])
-  ).sort();
-  for (const tool of allTools) {
-    const row = wrap.createDiv({ cls: "vault-search-mcp-tool-row" });
-    row.createEl("span", { text: tool, cls: "vault-search-mcp-tool-name" });
-    const select = document.createElement("select");
-    select.setAttribute("aria-label", `${tool} \uC2E4\uD589 \uC815\uCC45`);
-    for (const [value, label] of [
-      ["deny", "\uAC70\uBD80 (\uC228\uAE40)"],
-      ["ask", "\uC2B9\uC778 \uC694\uAD6C"],
-      ["allow", "\uC790\uB3D9 \uD5C8\uC6A9"]
-    ]) {
-      const option = document.createElement("option");
-      option.value = value;
-      option.textContent = label;
-      select.appendChild(option);
-    }
-    select.value = server.toolPolicies[tool] || "ask";
-    select.addEventListener("change", () => {
-      server.toolPolicies = {
-        ...server.toolPolicies,
-        [tool]: select.value
-      };
-    });
-    row.appendChild(select);
-  }
-}
 
 // src/skill-settings.ts
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 var PROJECT_ROOT_SUGGESTIONS = [
   { id: "project:.claude", path: ".claude/skills", label: "Claude Code (.claude/skills)" },
   { id: "project:.agents", path: ".agents/skills", label: "\uBC94\uC6A9 \uC5D0\uC774\uC804\uD2B8 (.agents/skills)" },
@@ -4751,7 +4855,7 @@ var STATE_LABELS2 = {
 };
 function renderSkillSettings(containerEl, owner, draft) {
   containerEl.createEl("h3", { text: "\uC2A4\uD0AC" });
-  new import_obsidian5.Setting(containerEl).setName("\uC2A4\uD0AC \uC0AC\uC6A9").setDesc(
+  new import_obsidian6.Setting(containerEl).setName("\uC2A4\uD0AC \uC0AC\uC6A9").setDesc(
     "\uBCFC\uD2B8\uC640 \uC0AC\uC6A9\uC790\uAC00 \uC9C0\uC815\uD55C \uACBD\uB85C\uC758 SKILL.md\uB97C \uCE74\uD0C8\uB85C\uADF8\uB85C \uC81C\uACF5\uD558\uACE0, \uBAA8\uB378\uC774 \uD544\uC694\uD55C \uC2A4\uD0AC\uB9CC \uC810\uC9C4\uC801\uC73C\uB85C \uBD88\uB7EC\uC635\uB2C8\uB2E4. \uC2A4\uD06C\uB9BD\uD2B8\uB294 \uC2E4\uD589\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4."
   ).addToggle(
     (toggle) => toggle.setValue(draft.skillsEnabled).onChange((value) => {
@@ -4792,10 +4896,10 @@ function renderSkillSettings(containerEl, owner, draft) {
   };
   void owner.refreshSkillsStatus().then(renderStatus).catch(() => renderStatus(null));
   renderRoots(rootsContainer, owner, draft);
-  new import_obsidian5.Setting(containerEl).setName("\uC2A4\uD0AC \uB8E8\uD2B8 \uCD94\uAC00").setDesc("\uBCFC\uD2B8 \uAE30\uC900 \uC0C1\uB300 \uACBD\uB85C(\uAD8C\uC7A5) \uB610\uB294 \uC808\uB300 \uACBD\uB85C. \uB8E8\uD2B8 \uBC14\uB85C \uC544\uB798\uC758 */SKILL.md\uC744 \uD0D0\uC0C9\uD569\uB2C8\uB2E4.").addButton(
+  new import_obsidian6.Setting(containerEl).setName("\uC2A4\uD0AC \uB8E8\uD2B8 \uCD94\uAC00").setDesc("\uBCFC\uD2B8 \uAE30\uC900 \uC0C1\uB300 \uACBD\uB85C(\uAD8C\uC7A5) \uB610\uB294 \uC808\uB300 \uACBD\uB85C. \uB8E8\uD2B8 \uBC14\uB85C \uC544\uB798\uC758 */SKILL.md\uC744 \uD0D0\uC0C9\uD569\uB2C8\uB2E4.").addButton(
     (button) => button.setButtonText("\uB8E8\uD2B8 \uCD94\uAC00").onClick(() => {
       if ((draft.skillRoots || []).length >= MAX_SKILL_ROOTS) {
-        new import_obsidian5.Notice(`\uC2A4\uD0AC \uB8E8\uD2B8\uB294 \uCD5C\uB300 ${MAX_SKILL_ROOTS}\uAC1C\uC785\uB2C8\uB2E4.`, 5e3);
+        new import_obsidian6.Notice(`\uC2A4\uD0AC \uB8E8\uD2B8\uB294 \uCD5C\uB300 ${MAX_SKILL_ROOTS}\uAC1C\uC785\uB2C8\uB2E4.`, 5e3);
         return;
       }
       const pathInput = document.createElement("input");
@@ -4817,14 +4921,14 @@ function renderSkillSettings(containerEl, owner, draft) {
       });
     })
   );
-  new import_obsidian5.Setting(containerEl).setName("\uB2E4\uC2DC \uAC80\uC0C9").setDesc("\uBC31\uC5D4\uB4DC\uC758 \uC2A4\uD0AC \uB808\uC9C0\uC2A4\uD2B8\uB9AC\uB97C \uB2E4\uC2DC \uC2A4\uCE94\uD569\uB2C8\uB2E4.").addButton(
+  new import_obsidian6.Setting(containerEl).setName("\uB2E4\uC2DC \uAC80\uC0C9").setDesc("\uBC31\uC5D4\uB4DC\uC758 \uC2A4\uD0AC \uB808\uC9C0\uC2A4\uD2B8\uB9AC\uB97C \uB2E4\uC2DC \uC2A4\uCE94\uD569\uB2C8\uB2E4.").addButton(
     (button) => button.setButtonText("\uAC80\uC0C9").onClick(async () => {
       try {
         const status = await owner.rescanSkills();
         renderStatus(status);
-        new import_obsidian5.Notice("\uC2A4\uD0AC \uD0D0\uC0C9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 4e3);
+        new import_obsidian6.Notice("\uC2A4\uD0AC \uD0D0\uC0C9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 4e3);
       } catch (error) {
-        new import_obsidian5.Notice(error instanceof Error ? error.message : String(error), 8e3);
+        new import_obsidian6.Notice(error instanceof Error ? error.message : String(error), 8e3);
       }
     })
   );
@@ -4834,7 +4938,7 @@ function renderRoots(container, owner, draft) {
     const present = (draft.skillRoots || []).some(
       (root) => root.path === suggestion.path && root.enabled
     );
-    new import_obsidian5.Setting(container).setName(suggestion.label).setDesc(present ? "\uC0AC\uC6A9 \uC911" : "\uBC1C\uACAC\uB41C \uD504\uB85C\uC81D\uD2B8 \uC2A4\uD0AC \uB8E8\uD2B8").addButton(
+    new import_obsidian6.Setting(container).setName(suggestion.label).setDesc(present ? "\uC0AC\uC6A9 \uC911" : "\uBC1C\uACAC\uB41C \uD504\uB85C\uC81D\uD2B8 \uC2A4\uD0AC \uB8E8\uD2B8").addButton(
       (button) => button.setButtonText(present ? "\uC0AC\uC6A9 \uC911" : "\uD504\uB85C\uC81D\uD2B8 \uC2A4\uD0AC \uC0AC\uC6A9").setDisabled(present).onClick(() => {
         draft.skillRoots = [
           ...draft.skillRoots || [],
@@ -4855,7 +4959,7 @@ function renderRoots(container, owner, draft) {
       continue;
     if (root.path.startsWith(".opencode/skills") && root.id === "project:.opencode")
       continue;
-    new import_obsidian5.Setting(container).setName(root.path).setDesc(root.enabled ? "\uD65C\uC131" : "\uBE44\uD65C\uC131").addToggle(
+    new import_obsidian6.Setting(container).setName(root.path).setDesc(root.enabled ? "\uD65C\uC131" : "\uBE44\uD65C\uC131").addToggle(
       (toggle) => toggle.setValue(root.enabled).onChange((value) => {
         root.enabled = value;
       })
@@ -4901,7 +5005,7 @@ function renderCatalog(container, owner, draft, status) {
     owner.settingTab?.display();
   });
   for (const skill of status.skills) {
-    const setting = new import_obsidian5.Setting(container).setName(skill.name).setDesc(`${skill.description || "(\uC124\uBA85 \uC5C6\uC74C)"}`);
+    const setting = new import_obsidian6.Setting(container).setName(skill.name).setDesc(`${skill.description || "(\uC124\uBA85 \uC5C6\uC74C)"}`);
     setting.addToggle(
       (toggle) => toggle.setValue(selected.has(skill.id)).onChange((value) => {
         const next = new Set(draft.enabledSkills || []);
@@ -4914,7 +5018,7 @@ function renderCatalog(container, owner, draft, status) {
 }
 
 // src/settings-tab.ts
-var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
+var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
   constructor(owner) {
     super(owner.app, owner);
     this.owner = owner;
@@ -4959,7 +5063,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
     statusEl.setText(this.buildStatusText(status));
     this.statusEl = statusEl;
     if (status.error) statusEl.addClass("vault-search-error");
-    new import_obsidian6.Setting(containerEl).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4").setDesc(
       "\uC124\uC815 \uBCC0\uACBD\uC740 \uC785\uB825 \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC800\uC7A5\xB7\uC801\uC6A9\uB429\uB2C8\uB2E4 (\uC57D 1\uCD08). \uBAA8\uB378\uC740 \uC774 \uBCFC\uD2B8\uC5D0\uC11C\uB9CC \uC0C1\uC8FC\uD569\uB2C8\uB2E4."
     ).addButton(
       (button) => button.setButtonText("\uC2DC\uC791").onClick(async () => {
@@ -4978,7 +5082,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         }
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uC2DC\uC791 \uC815\uCC45").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC2DC\uC791 \uC815\uCC45").setDesc(
       "\uAE30\uBCF8\uAC12\uC740 \uC5D4\uC9C4\uC5D0 \uB530\uB77C \uC790\uB3D9 \uC870\uC815\uB429\uB2C8\uB2E4: ONNX\uB294 \uCCAB \uAC80\uC0C9 \uC2DC \uB85C\uB4DC, PyTorch\uB294 \uBCFC\uD2B8 \uC5F4 \uB54C \uB85C\uB4DC. \uC5EC\uAE30\uC11C \uC9C1\uC811 \uC120\uD0DD\uD558\uBA74 \uADF8 \uAC12\uC774 \uC720\uC9C0\uB429\uB2C8\uB2E4."
     ).addDropdown(
       (dropdown) => dropdown.addOption("vault-open", "\uBCFC\uD2B8\uB97C \uC5F4 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("first-search", "\uCCAB \uAC80\uC0C9 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("manual", "\uC218\uB3D9 \uC2DC\uC791").setValue(draft.loadPolicy).onChange((value) => {
@@ -4986,7 +5090,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         this.display();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uC720\uD734 \uBAA8\uB378 \uC5B8\uB85C\uB4DC (\uCD08)").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC720\uD734 \uBAA8\uB378 \uC5B8\uB85C\uB4DC (\uCD08)").setDesc(
       "\uAE30\uBCF8\uAC12 300\uCD08. 0\uC774\uBA74 \uBE44\uD65C\uC131(\uB85C\uB4DC \uD6C4 \uC0C1\uC8FC). \uAC80\uC0C9\uC774 \uC5C6\uC73C\uBA74 \uC774 \uC2DC\uAC04 \uD6C4 \uBAA8\uB378\uC744 \uC5B8\uB85C\uB4DC\uD569\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC740 ORT \uC138\uC158\uC744 \uD574\uC81C\uD574 VRAM/RAM\uC744 \uBC18\uD658\uD558\uACE0, \uB2E4\uC74C \uAC80\uC0C9 \uC2DC \uB2E4\uC2DC \uB85C\uB4DC\uD569\uB2C8\uB2E4. PyTorch \uC5D4\uC9C4\uC740 \uCC38\uC870\uB97C \uD574\uC81C\uD558\uB418 CUDA \uCE90\uC2DC\uB85C VRAM \uC77C\uBD80\uAC00 \uB0A8\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
     ).addText(
       (text) => text.setValue(String(draft.modelIdleTimeoutSeconds)).onChange((value) => {
@@ -4997,7 +5101,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     const autoPython = isAutoPython(draft.pythonExecutable);
-    new import_obsidian6.Setting(containerEl).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc(
       "\uBE44\uC6CC\uB450\uBA74(\uB610\uB294 python) \uAD00\uB9AC\uD615 \uB7F0\uD0C0\uC784(venv)\uC744 \uC790\uB3D9\uC73C\uB85C \uCC3E\uC544 \uC124\uC815\uD569\uB2C8\uB2E4. \uC9C1\uC811 \uC785\uB825\uD558\uBA74 \uADF8 Python\uC744 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. " + (autoPython ? "\uD604\uC7AC: \uC790\uB3D9 \uC120\uD0DD" : `\uD604\uC7AC: ${draft.pythonExecutable}`)
     ).addText(
       (text) => text.setValue(autoPython ? "" : draft.pythonExecutable).setPlaceholder("\uC790\uB3D9 (\uAD00\uB9AC\uD615 venv \uC6B0\uC120)").onChange((value) => {
@@ -5006,7 +5110,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
     );
     const install = this.owner.backendInstall;
     const backendStateText = !install.expected ? "\uD655\uC778 \uC911\u2026" : !install.installed ? "\uBBF8\uC124\uCE58" : install.version === install.expected ? `\uC124\uCE58\uB428 (v${install.version}, \uCD5C\uC2E0)` : `\uC124\uCE58\uB428 (v${install.version}) \u2014 \uD50C\uB7EC\uADF8\uC778 v${install.expected}\uC640 \uBD88\uC77C\uCE58`;
-    new import_obsidian6.Setting(containerEl).setName("Python \uBC31\uC5D4\uB4DC").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("Python \uBC31\uC5D4\uB4DC").setDesc(
       `\uD604\uC7AC \uC0C1\uD0DC: ${backendStateText}. BRAT \uC124\uCE58\uB294 main.js/manifest/styles.css\uB9CC \uB123\uC73C\uBBC0\uB85C, \uBC31\uC5D4\uB4DC\uB294 GitHub \uB9B4\uB9AC\uC2A4\uC5D0\uC11C \uC790\uB3D9\uC73C\uB85C \uBC1B\uC2B5\uB2C8\uB2E4. \uC774 \uBC84\uD2BC\uC73C\uB85C \uB2E4\uC2DC \uBC1B\uAC70\uB098 \uBC84\uC804\uC744 \uB9DE\uCDA5\uB2C8\uB2E4.`
     ).addButton(
       (button) => button.setButtonText("\uBC31\uC5D4\uB4DC \uC124\uCE58/\uBCF5\uAD6C").onClick(async () => {
@@ -5018,7 +5122,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "AI Vault \uB2F5\uBCC0" });
-    new import_obsidian6.Setting(containerEl).setName("\uB2F5\uBCC0 provider").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 provider").setDesc(
       "\uAC80\uC0C9 \uADFC\uAC70\uB9CC provider\uC5D0 \uC804\uB2EC\uD569\uB2C8\uB2E4. API key\uB294 \uD50C\uB7EC\uADF8\uC778\uC5D0 \uC800\uC7A5\uD558\uC9C0 \uC54A\uACE0 sidecar\uAC00 \uD658\uACBD\uBCC0\uC218\uC5D0\uC11C \uC77D\uC2B5\uB2C8\uB2E4."
     ).addDropdown((dropdown) => {
       for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
@@ -5039,7 +5143,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
     const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
     let apiKeyInput = null;
-    new import_obsidian6.Setting(containerEl).setName(`API \uD0A4 (${answerProvider.name})`).setDesc(
+    new import_obsidian7.Setting(containerEl).setName(`API \uD0A4 (${answerProvider.name})`).setDesc(
       savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428. \uD14C\uC2A4\uD2B8\uB85C \uC720\uD6A8\uC131\uC744 \uD655\uC778\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4." : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4"
     ).addText((text) => {
       text.inputEl.type = "password";
@@ -5052,7 +5156,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       (button) => button.setButtonText("\uD14C\uC2A4\uD2B8").onClick(async () => {
         const key = apiKeyInput?.value.trim() || savedApiKey || "";
         if (!key) {
-          new import_obsidian6.Notice("\uC800\uC7A5\uB41C \uD0A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+          new import_obsidian7.Notice("\uC800\uC7A5\uB41C \uD0A4\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
           return;
         }
         button.setDisabled(true);
@@ -5069,7 +5173,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
           } else {
             message = `${answerProvider.name} \uD0A4 \uC778\uC99D\uC744 \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 (\uB124\uD2B8\uC6CC\uD06C/provider \uC0C1\uD0DC). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
           }
-          new import_obsidian6.Notice(message, 8e3);
+          new import_obsidian7.Notice(message, 8e3);
         } catch (error) {
           this.showError(error);
         } finally {
@@ -5080,12 +5184,12 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       (button) => button.setButtonText("\uC800\uC7A5").setCta().onClick(async () => {
         const value = apiKeyInput?.value.trim() || "";
         if (!value) {
-          new import_obsidian6.Notice("\uC800\uC7A5\uD560 API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.");
+          new import_obsidian7.Notice("\uC800\uC7A5\uD560 API \uD0A4\uB97C \uC785\uB825\uD574 \uC8FC\uC138\uC694.");
           return;
         }
         try {
           await this.owner.saveProviderApiKey(draft.answerProvider, value);
-          new import_obsidian6.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
+          new import_obsidian7.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.`);
           this.display();
         } catch (error) {
           this.showError(error);
@@ -5095,7 +5199,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       (button) => button.setButtonText("\uC0AD\uC81C").onClick(async () => {
         try {
           await this.owner.saveProviderApiKey(draft.answerProvider, "");
-          new import_obsidian6.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC0AD\uC81C\uD588\uC2B5\uB2C8\uB2E4.`);
+          new import_obsidian7.Notice(`${answerProvider.name} API \uD0A4\uB97C \uC0AD\uC81C\uD588\uC2B5\uB2C8\uB2E4.`);
           this.display();
         } catch (error) {
           this.showError(error);
@@ -5108,7 +5212,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       modelOptions = [draft.answerModel, ...modelOptions];
     }
     const favorites = Array.isArray(draft.favoriteAnswerModels) ? [...draft.favoriteAnswerModels] : [];
-    const modelSetting = new import_obsidian6.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
+    const modelSetting = new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
       fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uC740 \uBAA8\uB4E0 provider\uC5D0\uC11C \uBAA8\uC544\uC838 AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4.` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uC120\uD0DD\uD558\uAE30 \uC804\uC5D0\uB294 \uBAA8\uB378\uC774 \uC9C0\uC815\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.`
     ).setClass("vault-search-model-setting");
     const modelList = modelSetting.controlEl.createDiv({
@@ -5181,7 +5285,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
           );
           this.owner.setProviderModels(draft.answerProvider, models);
           this.providerModelSelections[draft.answerProvider] = draft.answerModel;
-          new import_obsidian6.Notice(
+          new import_obsidian7.Notice(
             models.length ? `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378 ${models.length}\uAC1C\uB97C \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4.` : draft.answerProvider === "openai" ? "OpenAI API\uAC00 \uC120\uD0DD \uAC00\uB2A5\uD55C \uCC44\uD305 \uBAA8\uB378\uC744 \uBC18\uD658\uD558\uC9C0 \uC54A\uC558\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694." : `${answerProvider.name}: \uC120\uD0DD \uAC00\uB2A5\uD55C \uBAA8\uB378\uC744 \uCC3E\uC9C0 \uBABB\uD588\uC2B5\uB2C8\uB2E4. API \uD0A4\uC758 \uBAA8\uB378 \uAD8C\uD55C\uC744 \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
           );
           this.display();
@@ -5192,7 +5296,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         }
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText(
+    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText(
       (text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
         draft.answerMaxContextChars = Math.max(
           8e3,
@@ -5203,7 +5307,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         );
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uB2F5\uBCC0 \uCD9C\uB825 \uD1A0\uD070").setDesc("128~8,000 \uD1A0\uD070").addText(
+    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 \uCD9C\uB825 \uD1A0\uD070").setDesc("128~8,000 \uD1A0\uD070").addText(
       (text) => text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
         draft.answerMaxOutputTokens = Math.max(
           128,
@@ -5214,7 +5318,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         );
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 60\uCD08\uC785\uB2C8\uB2E4.").addText(
+    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 60\uCD08\uC785\uB2C8\uB2E4.").addText(
       (text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
         draft.answerTimeoutSeconds = Math.max(
           5,
@@ -5226,19 +5330,19 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "AI Vault \uD788\uC2A4\uD1A0\uB9AC" });
-    new import_obsidian6.Setting(containerEl).setName("\uD788\uC2A4\uD1A0\uB9AC \uD3F4\uB354").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uD788\uC2A4\uD1A0\uB9AC \uD3F4\uB354").setDesc(
       "\uB300\uD654\uAC00 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC800\uC7A5\uB418\uB294 \uBCFC\uD2B8 \uB0B4 \uACBD\uB85C\uC785\uB2C8\uB2E4. \uB178\uD2B8\uB294 \uC5B8\uC81C\uB4E0 \uC9C1\uC811 \uC77D\uACE0 \uD3B8\uC9D1\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uCC38\uACE0: \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8\uB3C4 \uAC80\uC0C9 \uC778\uB371\uC2A4\uC5D0 \uD3EC\uD568\uB420 \uC218 \uC788\uC73C\uBBC0\uB85C \uC81C\uC678\uD558\uB824\uBA74 \uC81C\uC678 \uBAA9\uB85D\uC5D0 \uC774 \uD3F4\uB354\uB97C \uCD94\uAC00\uD558\uC138\uC694."
     ).addText(
       (text) => text.setPlaceholder("AI Vault Search/history").setValue(draft.historyFolder).onChange((value) => {
         draft.historyFolder = value.trim() || "AI Vault Search/history";
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uC790\uB3D9 \uC800\uC7A5").setDesc("\uB2F5\uBCC0\uC774 \uC644\uB8CC\uB420 \uB54C\uB9C8\uB2E4 \uD604\uC7AC \uB300\uD654\uB97C \uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC790\uB3D9 \uC800\uC7A5\uD569\uB2C8\uB2E4.").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("\uC790\uB3D9 \uC800\uC7A5").setDesc("\uB2F5\uBCC0\uC774 \uC644\uB8CC\uB420 \uB54C\uB9C8\uB2E4 \uD604\uC7AC \uB300\uD654\uB97C \uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC790\uB3D9 \uC800\uC7A5\uD569\uB2C8\uB2E4.").addToggle(
       (toggle) => toggle.setValue(draft.historyAutosave).onChange((value) => {
         draft.historyAutosave = value;
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uCD5C\uB300 \uBCF4\uC874 \uAC1C\uC218").setDesc("\uBCF4\uAD00\uD560 \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8 \uC218\uC785\uB2C8\uB2E4. 0\uC774\uBA74 \uBB34\uC81C\uD55C\uC73C\uB85C \uBCF4\uAD00\uD569\uB2C8\uB2E4.").addText(
+    new import_obsidian7.Setting(containerEl).setName("\uCD5C\uB300 \uBCF4\uC874 \uAC1C\uC218").setDesc("\uBCF4\uAD00\uD560 \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8 \uC218\uC785\uB2C8\uB2E4. 0\uC774\uBA74 \uBB34\uC81C\uD55C\uC73C\uB85C \uBCF4\uAD00\uD569\uB2C8\uB2E4.").addText(
       (text) => text.setValue(String(draft.historyMaxEntries)).onChange((value) => {
         draft.historyMaxEntries = this.nonnegativeNumber(
           value,
@@ -5247,13 +5351,13 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     const agent = this.owner.agentIntegration;
-    new import_obsidian6.Setting(containerEl).setName("\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569").setDesc(
       "AI \uC5D0\uC774\uC804\uD2B8(Claude Code, Codex, Gemini CLI \uB4F1)\uAC00 \uC774 \uBCFC\uD2B8\uC5D0\uC11C vault-search\uB97C \uC0AC\uC6A9\uD558\uB3C4\uB85D \uC9C0\uC2DC \uD30C\uC77C\uACFC \uAC80\uC0C9 \uB798\uD37C\uB97C \uC124\uCE58\uD569\uB2C8\uB2E4. \uBCFC\uD2B8 \uB8E8\uD2B8 \uD30C\uC77C\uC740 \uBA85\uC2DC\uC801\uC73C\uB85C \uC124\uCE58\uD560 \uB54C\uB9CC \uC218\uC815\uB418\uBA70, \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC73C\uBA74 \uC790\uB3D9\uC73C\uB85C \uAC74\uB108\uB701\uB2C8\uB2E4. " + (agent ? this.agentStatusText(agent) : "\uC0C1\uD0DC \uD655\uC778 \uC911\u2026")
     ).addButton(
       (button) => button.setButtonText("\uC124\uCE58/\uAC31\uC2E0").setCta().onClick(async () => {
         try {
           const result = await this.owner.runAgentIntegrationInstall();
-          new import_obsidian6.Notice(agentIntegrationNotice(result), 8e3);
+          new import_obsidian7.Notice(agentIntegrationNotice(result), 8e3);
           this.display();
         } catch (error) {
           this.showError(error);
@@ -5263,7 +5367,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
     renderApiAgentSettings(containerEl, this.owner, draft);
     renderMcpSettings(containerEl, this.owner, draft);
     renderSkillSettings(containerEl, this.owner, draft);
-    new import_obsidian6.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBAA8\uB378").addDropdown((dropdown) => {
+    new import_obsidian7.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBAA8\uB378").addDropdown((dropdown) => {
       for (const [id, profile] of Object.entries(MODEL_PROFILES))
         dropdown.addOption(id, profile.name);
       dropdown.setValue(draft.modelProfile).onChange((id) => {
@@ -5277,14 +5381,14 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         this.display();
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(
       MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID"
     ).addText(
       (text) => text.setValue(draft.modelId).onChange((value) => {
         draft.modelId = value.trim();
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc(
       "ONNX Runtime(\uAE30\uBCF8): \uC9C1\uC811 ONNX \uACBD\uB85C\uB85C \uC2DC\uC791\uC774 \uBE60\uB974\uACE0 \uC720\uD734 \uC2DC VRAM/RAM\uC744 \uD574\uC81C\uD569\uB2C8\uB2E4. GPU\uAC00 \uC788\uC73C\uBA74 TensorRT/CUDA\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC790\uB3D9 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. PyTorch: \uBC8C\uD06C \uC778\uB371\uC2F1\uC774 \uAC00\uC7A5 \uBE60\uB974\uC9C0\uB9CC \uC2DC\uC791\uC774 \uB290\uB9BD\uB2C8\uB2E4. \uBC31\uC5D4\uB4DC\uB97C \uBC14\uAFB8\uBA74 \uC2DC\uC791 \uC815\uCC45 \uAE30\uBCF8\uAC12\uB3C4 \uD568\uAED8 \uC870\uC815\uB429\uB2C8\uB2E4."
     ).addDropdown(
       (dropdown) => dropdown.addOption("onnx", "ONNX Runtime (\uAE30\uBCF8, \uAD8C\uC7A5)").addOption("pytorch", "PyTorch").setValue(draft.engine).onChange((value) => {
@@ -5297,7 +5401,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "\uACE0\uAE09 \uC124\uC815" });
-    new import_obsidian6.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc(
       "\uC790\uB3D9(\uAE30\uBCF8)\uC740 GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4. CUDA\uB97C \uBA85\uC2DC\uD558\uBA74 \uB300\uC6A9\uB7C9 \uB7F0\uD0C0\uC784 \uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uD544\uC694\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
     ).addDropdown(
       (dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
@@ -5306,7 +5410,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
     );
     const caps = status.capabilities;
     if (draft.engine === "onnx" && caps && caps.derived_model_available === false) {
-      new import_obsidian6.Setting(containerEl).setName("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC900\uBE44").setDesc(
+      new import_obsidian7.Setting(containerEl).setName("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC900\uBE44").setDesc(
         caps.model_available === false ? "e5-base \uBAA8\uB378 \uC2A4\uB0C5\uC0F7\uC774 \uB85C\uCEEC\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4. \uBA3C\uC800 intfloat/multilingual-e5-base\uB97C \uBC1B\uC544 \uC8FC\uC138\uC694." : "\uB85C\uCEEC \uC2A4\uB0C5\uC0F7\uC5D0 \uD30C\uC0DD \uD480\uB9C1 \uADF8\uB798\uD504(onnx/model-pooled-normalized.onnx)\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC0DD\uC131\uC744 \uC2E4\uD589\uD558\uBA74 ONNX \uC5D4\uC9C4\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
       ).addButton((button) => {
         button.setButtonText("\uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131").setCta();
@@ -5339,7 +5443,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       ]);
     }
     const supported = caps ? [caps.cuda_available && "CUDA", caps.tensorrt_available && "TensorRT"].filter(Boolean).join(", ") || "CPU\uB9CC" : "\uC11C\uBE44\uC2A4 \uC2DC\uC791 \uD6C4 \uD655\uC778";
-    new import_obsidian6.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc(
       `CUDA \uC2E4\uD589 \uC2DC\uC5D0\uB9CC \uC801\uC6A9\uB429\uB2C8\uB2E4 (device=cuda \uB610\uB294 auto\uAC00 CUDA\uB85C \uD574\uC11D\uB420 \uB54C). \uC774 \uBA38\uC2E0 \uC9C0\uC6D0: ${supported}. auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4.`
     ).addDropdown((dropdown) => {
       for (const [value, label] of providerOptions)
@@ -5349,7 +5453,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       });
     });
     const cudaInstalled = caps?.cuda_available === true;
-    new import_obsidian6.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc(
       cudaInstalled ? "CUDA \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC5B4 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4. \uC7AC\uC124\uCE58\uAC00 \uD544\uC694\uD558\uBA74 \uB7F0\uD0C0\uC784 \uD3F4\uB354\uB97C \uC815\uB9AC\uD55C \uB4A4 \uB2E4\uC2DC \uC124\uCE58\uD558\uC138\uC694." : "NVIDIA GPU\uC6A9 PyTorch\uC640 onnxruntime-gpu\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
     ).addButton((button) => {
       button.setButtonText(
@@ -5362,36 +5466,36 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         }
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC815\uADDC\uD654").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC815\uADDC\uD654").addToggle(
       (toggle) => toggle.setValue(draft.normalizeEmbeddings).onChange((value) => {
         draft.normalizeEmbeddings = value;
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Query prefix").addText(
+    new import_obsidian7.Setting(containerEl).setName("Query prefix").addText(
       (text) => text.setValue(draft.queryPrefix).onChange((value) => {
         draft.queryPrefix = value;
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Document prefix").addText(
+    new import_obsidian7.Setting(containerEl).setName("Document prefix").addText(
       (text) => text.setValue(draft.documentPrefix).onChange((value) => {
         draft.documentPrefix = value;
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("Include globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
+    new import_obsidian7.Setting(containerEl).setName("Include globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.includeGlobs.join("\n"));
       area.inputEl.rows = 7;
       area.onChange((value) => {
         draft.includeGlobs = this.lines(value);
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("Exclude globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
+    new import_obsidian7.Setting(containerEl).setName("Exclude globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.excludeGlobs.join("\n"));
       area.inputEl.rows = 7;
       area.onChange((value) => {
         draft.excludeGlobs = this.lines(value);
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("\uC704\uD0A4 \uD3F4\uB354").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC704\uD0A4 \uD3F4\uB354").setDesc(
       "\uD0C0\uC784\uB77C\uC778/\uAD00\uACC4 \uAC80\uC0C9\uC5D0\uC11C sources \uCC38\uC870\uB97C \uB530\uB77C\uAC00\uB294 \uC704\uD0A4 \uD3F4\uB354 \uBAA9\uB85D\uC785\uB2C8\uB2E4 (\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098). \uAE30\uBCF8\uAC12(5_Wiki/\u2026)\uC740 K_Notes \uBC30\uCE58\uC785\uB2C8\uB2E4. \uC704\uD0A4\uAC00 \uB2E4\uB978 \uD3F4\uB354\uC5D0 \uC788\uC73C\uBA74 \uC5EC\uAE30\uC11C \uC9C0\uC815\uD558\uACE0, \uC704\uD0A4\uAC00 \uC5C6\uC73C\uBA74 \uBE44\uC6CC \uB450\uBA74 \uD655\uC7A5\uC774 \uB3D9\uC791\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4."
     ).setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.wikiFolders.join("\n"));
@@ -5400,13 +5504,13 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         draft.wikiFolders = this.lines(value);
       });
     });
-    new import_obsidian6.Setting(containerEl).setName("\uC778\uB371\uC2A4 \uAD00\uB9AC").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC778\uB371\uC2A4 \uAD00\uB9AC").setDesc(
       "\uC124\uC815 \uC801\uC6A9 \uD6C4 \uBC94\uC704\uB97C \uD655\uC778\uD558\uC138\uC694. \uC7AC\uAD6C\uCD95\uC740 \uC784\uC2DC \uD30C\uC77C \uAC80\uC99D \uD6C4 \uC6D0\uC790\uC801\uC73C\uB85C \uAD50\uCCB4\uB429\uB2C8\uB2E4."
     ).addButton(
       (button) => button.setButtonText("\uBC94\uC704 \uBBF8\uB9AC\uBCF4\uAE30").onClick(async () => {
         try {
           const result = await this.owner.previewScope();
-          new import_obsidian6.Notice(`\uAC80\uC0C9 \uB300\uC0C1: ${result.count}\uAC1C \uD30C\uC77C`);
+          new import_obsidian7.Notice(`\uAC80\uC0C9 \uB300\uC0C1: ${result.count}\uAC1C \uD30C\uC77C`);
         } catch (error) {
           this.showError(error);
         }
@@ -5457,7 +5561,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
         }
       ]
     );
-    new import_obsidian6.Setting(containerEl).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc(
       "Markdown \uAD6C\uC870 \uC778\uC2DD \uC804\uB7B5\uC744 \uD3EC\uD568\uD574 \uBCC0\uACBD \uC2DC \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
     ).addDropdown(
       (dropdown) => dropdown.addOption("paragraph-v1", "\uBB38\uB2E8 \uAE30\uBC18 (\uAE30\uBCF8\uAC12)").addOption("markdown-v2", "Markdown \uAD6C\uC870 \uC778\uC2DD").setValue(draft.chunkingStrategy).onChange((value) => {
@@ -5528,24 +5632,24 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
       cls: "vault-search-setting-hint",
       text: "\u2022 maxChunksPerFile: \uD55C \uD30C\uC77C\uC774 \uCD5C\uC885 \uACB0\uACFC\uC5D0\uC11C \uCC28\uC9C0\uD560 \uC218 \uC788\uB294 \uCCAD\uD06C \uC218. 1\uC774\uBA74 \uAC01 \uD30C\uC77C\uC740 \uACB0\uACFC 1\uAC1C\uB85C \uC81C\uD55C\uB418\uC5B4 \uB2E4\uB978 \uD30C\uC77C\uB3C4 \uBCFC \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uD55C \uD30C\uC77C\uC758 \uC5EC\uB7EC \uAD6C\uC808\uC744 \uBCF4\uB824\uBA74 \uB298\uB824 \uBCF4\uC138\uC694.\n\u2022 titleRrfWeight: \uD30C\uC77C\uBA85\xB7\uACBD\uB85C\xB7\uD5E4\uB529 \uB9E4\uCE58\uAC00 \uACB0\uACFC \uC21C\uC704\uC5D0 \uBBF8\uCE58\uB294 \uAC00\uC911\uCE58. \uD30C\uC77C \uC81C\uBAA9\uC744 \uC911\uC694\uD558\uAC8C \uC5EC\uAE30\uB824\uBA74 \uC62C\uB9AC\uC138\uC694."
     });
-    new import_obsidian6.Setting(containerEl).setName("\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31").setDesc(
+    new import_obsidian7.Setting(containerEl).setName("\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31").setDesc(
       "\uC815\uD655 BM25 \uACB0\uACFC\uAC00 \uC5C6\uC744 \uB54C \uD1A0\uD070 \uC811\uB450\uC0AC \uAC80\uC0C9\uC73C\uB85C \uD55C \uBC88 \uB354 \uCC3E\uC2B5\uB2C8\uB2E4."
     ).addToggle(
       (toggle) => toggle.setValue(draft.prefixFallback).onChange((value) => {
         draft.prefixFallback = value;
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uB3D9\uAE30\uD654 debounce (ms)").addText(
+    new import_obsidian7.Setting(containerEl).setName("\uB3D9\uAE30\uD654 debounce (ms)").addText(
       (text) => text.setValue(String(draft.syncDebounceMs)).onChange((value) => {
         draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uC790\uB3D9 \uC99D\uBD84 \uB3D9\uAE30\uD654").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("\uC790\uB3D9 \uC99D\uBD84 \uB3D9\uAE30\uD654").addToggle(
       (toggle) => toggle.setValue(draft.autoSync).onChange((value) => {
         draft.autoSync = value;
       })
     );
-    new import_obsidian6.Setting(containerEl).setName("\uC2DC\uC791 \uC2DC \uC804\uCCB4 \uB300\uC870").addToggle(
+    new import_obsidian7.Setting(containerEl).setName("\uC2DC\uC791 \uC2DC \uC804\uCCB4 \uB300\uC870").addToggle(
       (toggle) => toggle.setValue(draft.startupReconcile).onChange((value) => {
         draft.startupReconcile = value;
       })
@@ -5626,7 +5730,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
    *  instead of squeezing several fields into the right control column (which
    *  runs out of space for 4+ fields). */
   numericFields(name, desc, fields) {
-    const setting = new import_obsidian6.Setting(this.containerEl).setName(name).setDesc(desc).setClass("vault-search-fields-below");
+    const setting = new import_obsidian7.Setting(this.containerEl).setName(name).setDesc(desc).setClass("vault-search-fields-below");
     const control = setting.controlEl;
     control.addClass("vault-search-num-fields");
     for (const field of fields) {
@@ -5695,7 +5799,7 @@ var VaultSearchSettingTab = class extends import_obsidian6.PluginSettingTab {
     return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
   }
   showError(error) {
-    new import_obsidian6.Notice(
+    new import_obsidian7.Notice(
       `Vault Search \uC624\uB958: ${error instanceof Error ? error.message : String(error)}`,
       8e3
     );
@@ -5764,7 +5868,7 @@ var VaultEventQueue = class {
 };
 
 // src/search-modal.ts
-var import_obsidian9 = require("obsidian");
+var import_obsidian10 = require("obsidian");
 
 // src/search-session.ts
 function selectedTextQuery(editor) {
@@ -5876,10 +5980,10 @@ var SearchApi = class {
 };
 
 // src/note-actions.ts
-var import_obsidian8 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/history.ts
-var import_obsidian7 = require("obsidian");
+var import_obsidian8 = require("obsidian");
 
 // src/answer-renderer.ts
 var HEADING_TAGS = ["h3", "h4", "h5", "h6", "h6", "h6"];
@@ -6284,7 +6388,7 @@ function normalizeHistoryFolder(folder) {
   if (cleaned === "" || cleaned === "." || cleaned === ".." || cleaned.startsWith("../") || cleaned.includes("/../")) {
     return DEFAULT_HISTORY_FOLDER;
   }
-  return (0, import_obsidian7.normalizePath)(cleaned || DEFAULT_HISTORY_FOLDER);
+  return (0, import_obsidian8.normalizePath)(cleaned || DEFAULT_HISTORY_FOLDER);
 }
 function historyFileName(query, created) {
   const date = new Date(created);
@@ -6525,7 +6629,7 @@ async function listHistory(vault, folder) {
 }
 async function saveHistory(vault, folder, session, maxEntries = 0) {
   const dir = normalizeHistoryFolder(folder);
-  const filePath = (0, import_obsidian7.normalizePath)(
+  const filePath = (0, import_obsidian8.normalizePath)(
     `${dir}/${historyFileName(session.title, session.created)}`
   );
   const content = buildHistoryNote(session);
@@ -6649,13 +6753,13 @@ ${content}`;
 function getUniqueFilePath(app, folderPath, baseTitle) {
   const cleanFolder = folderPath.trim().replace(/^[/\\]+|[/\\]+$/g, "");
   let fileName = `${baseTitle}.md`;
-  let fullPath = (0, import_obsidian8.normalizePath)(
+  let fullPath = (0, import_obsidian9.normalizePath)(
     cleanFolder ? `${cleanFolder}/${fileName}` : fileName
   );
   let counter = 1;
   while (app.vault.getAbstractFileByPath(fullPath) && counter <= 1e3) {
     fileName = `${baseTitle} ${counter}.md`;
-    fullPath = (0, import_obsidian8.normalizePath)(
+    fullPath = (0, import_obsidian9.normalizePath)(
       cleanFolder ? `${cleanFolder}/${fileName}` : fileName
     );
     counter++;
@@ -6670,7 +6774,7 @@ function resolveTargetFolder(app, explicitFolder) {
     const activeFile = app.workspace?.getActiveFile?.();
     const parent = app.fileManager?.getNewFileParent?.(activeFile?.path || "");
     if (parent && parent.path && parent.path !== "/" && parent.path !== ".") {
-      return (0, import_obsidian8.normalizePath)(parent.path);
+      return (0, import_obsidian9.normalizePath)(parent.path);
     }
   } catch {
   }
@@ -6693,7 +6797,7 @@ async function createNoteFromMarkdown(app, options) {
     }
     const fullPath = getUniqueFilePath(app, cleanFolder, cleanTitle);
     const file = await app.vault.create(fullPath, contentWithFrontmatter);
-    new import_obsidian8.Notice(`\uC0C8 \uB178\uD2B8\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4: ${file.basename}`);
+    new import_obsidian9.Notice(`\uC0C8 \uB178\uD2B8\uB97C \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4: ${file.basename}`);
     if (openInNewTab) {
       const leaf = app.workspace.getLeaf("tab");
       await leaf.openFile(file, { active: true });
@@ -6701,14 +6805,14 @@ async function createNoteFromMarkdown(app, options) {
     return file;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    new import_obsidian8.Notice(`\uC0C8 \uB178\uD2B8 \uC0DD\uC131 \uC2E4\uD328: ${msg}`, 8e3);
+    new import_obsidian9.Notice(`\uC0C8 \uB178\uD2B8 \uC0DD\uC131 \uC2E4\uD328: ${msg}`, 8e3);
     return null;
   }
 }
 function insertMarkdownToActiveNote(app, content) {
-  const activeView = app.workspace.getActiveViewOfType(import_obsidian8.MarkdownView);
+  const activeView = app.workspace.getActiveViewOfType(import_obsidian9.MarkdownView);
   if (!activeView || !activeView.editor) {
-    new import_obsidian8.Notice("\uD604\uC7AC \uC5F4\uB824 \uC788\uB294 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+    new import_obsidian9.Notice("\uD604\uC7AC \uC5F4\uB824 \uC788\uB294 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
     return false;
   }
   const editor = activeView.editor;
@@ -6728,11 +6832,11 @@ ${content}
 `, pos);
     }
   }
-  new import_obsidian8.Notice("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uB0B4\uC6A9\uC744 \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4.");
+  new import_obsidian9.Notice("\uD604\uC7AC \uB178\uD2B8\uC5D0 \uB0B4\uC6A9\uC744 \uCD94\uAC00\uD588\uC2B5\uB2C8\uB2E4.");
   return true;
 }
 async function copyMarkdownToClipboard(text, onNotify) {
-  const notify = onNotify ?? ((ok) => new import_obsidian8.Notice(ok ? "\uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4."));
+  const notify = onNotify ?? ((ok) => new import_obsidian9.Notice(ok ? "\uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4."));
   const hasNavigator = typeof navigator !== "undefined" && Boolean(navigator.clipboard);
   const isSecure = typeof window === "undefined" || window.isSecureContext;
   if (hasNavigator && isSecure) {
@@ -6770,7 +6874,7 @@ function fallbackCopyText(text, notify) {
 }
 
 // src/search-modal.ts
-var VaultSearchModal = class extends import_obsidian9.Modal {
+var VaultSearchModal = class extends import_obsidian10.Modal {
   constructor(owner, initialQuery = "") {
     super(owner.app);
     this.owner = owner;
@@ -6913,8 +7017,8 @@ var VaultSearchModal = class extends import_obsidian9.Modal {
 };
 
 // src/runtime-install-modal.ts
-var import_obsidian10 = require("obsidian");
-var RuntimeInstallModal = class extends import_obsidian10.Modal {
+var import_obsidian11 = require("obsidian");
+var RuntimeInstallModal = class extends import_obsidian11.Modal {
   constructor(app, explicitCuda, resolveChoice) {
     super(app);
     this.explicitCuda = explicitCuda;
@@ -6926,7 +7030,7 @@ var RuntimeInstallModal = class extends import_obsidian10.Modal {
     this.contentEl.createEl("p", { text: "NVIDIA GPU\uAC00 \uAC10\uC9C0\uB410\uC9C0\uB9CC CUDA\uC6A9 PyTorch \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC5B4 \uC788\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4." });
     this.contentEl.createEl("p", { text: "\uCD5C\uCD08 \uC124\uCE58\uB294 \uC218 GB\uB97C \uB2E4\uC6B4\uB85C\uB4DC\uD558\uBBC0\uB85C \uB124\uD2B8\uC6CC\uD06C\uC640 PC \uC131\uB2A5\uC5D0 \uB530\uB77C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uCE58 \uD6C4 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uB2E4\uC2DC \uAD6C\uCD95\uD569\uB2C8\uB2E4." });
     if (this.explicitCuda) this.contentEl.createEl("p", { text: "CUDA\uB97C \uBA85\uC2DC\uC801\uC73C\uB85C \uC120\uD0DD\uD588\uC73C\uBBC0\uB85C \uC124\uCE58\uD558\uC9C0 \uC54A\uC73C\uBA74 \uC124\uC815\uC744 \uC801\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." });
-    new import_obsidian10.Setting(this.contentEl).addButton((button) => button.setButtonText("\uB098\uC911\uC5D0").onClick(() => this.finish(false))).addButton((button) => button.setButtonText("\uC124\uCE58").setCta().onClick(() => this.finish(true)));
+    new import_obsidian11.Setting(this.contentEl).addButton((button) => button.setButtonText("\uB098\uC911\uC5D0").onClick(() => this.finish(false))).addButton((button) => button.setButtonText("\uC124\uCE58").setCta().onClick(() => this.finish(true)));
   }
   onClose() {
     this.contentEl.empty();
@@ -6971,7 +7075,7 @@ function selectRuntime(device, current, cpu, cuda, hasNvidiaGpu) {
 }
 
 // src/search-item-view.ts
-var import_obsidian12 = require("obsidian");
+var import_obsidian13 = require("obsidian");
 
 // src/answer-session.ts
 var import_crypto3 = require("crypto");
@@ -7257,14 +7361,14 @@ function renderToolActivity(container, entries) {
 }
 
 // src/icons.ts
-var import_obsidian11 = require("obsidian");
+var import_obsidian12 = require("obsidian");
 var ICON_LIGHTNING = "vault-search-lightning";
 var ICON_HISTORY = "vault-search-history";
 var LIGHTNING_BOLT = '<polygon points="54.2 8.3 12.5 58.3 50 58.3 45.8 91.7 87.5 41.7 50 41.7 54.2 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
 var HISTORY_CLOCK = '<path d="M12.5 50a37.5 37.5 0 1 0 37.5-37.5 40.6 40.6 0 0 0-28.1 11.4L12.5 33.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M12.5 12.5v20.8h20.8" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><path d="M50 29.2v20.8l16.7 8.3" fill="none" stroke="currentColor" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
 function registerLightningIcon() {
-  (0, import_obsidian11.addIcon)(ICON_LIGHTNING, LIGHTNING_BOLT);
-  (0, import_obsidian11.addIcon)(ICON_HISTORY, HISTORY_CLOCK);
+  (0, import_obsidian12.addIcon)(ICON_LIGHTNING, LIGHTNING_BOLT);
+  (0, import_obsidian12.addIcon)(ICON_HISTORY, HISTORY_CLOCK);
 }
 
 // src/search-item-view.ts
@@ -7325,7 +7429,7 @@ var SAMPLE_CITATIONS = [
     score: 0.03
   }
 ];
-var VaultSearchItemView = class extends import_obsidian12.ItemView {
+var VaultSearchItemView = class extends import_obsidian13.ItemView {
   constructor(viewLeaf, owner) {
     super(viewLeaf);
     this.owner = owner;
@@ -7386,7 +7490,7 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
       cls: "vault-ai-search-history-button",
       attr: { type: "button", "aria-label": "AI Vault Search \uD788\uC2A4\uD1A0\uB9AC" }
     });
-    (0, import_obsidian12.setIcon)(this.historyButton, ICON_HISTORY);
+    (0, import_obsidian13.setIcon)(this.historyButton, ICON_HISTORY);
     this.historyButton.addEventListener("click", () => {
       void this.toggleHistoryPopover();
     });
@@ -7454,7 +7558,7 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
       const query = this.inputEl.value;
       if (query.trim().length < 2) return;
       if (!this.owner.settings.answerModel) {
-        new import_obsidian12.Notice("\uB2F5\uBCC0 \uBAA8\uB378\uC744 \uBA3C\uC800 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694. (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815)");
+        new import_obsidian13.Notice("\uB2F5\uBCC0 \uBAA8\uB378\uC744 \uBA3C\uC800 \uC120\uD0DD\uD574 \uC8FC\uC138\uC694. (\uC124\uC815\uC5D0\uC11C \u2605\uB85C \uC9C0\uC815)");
         return;
       }
       this.lastQuery = query;
@@ -7785,7 +7889,7 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
     }
     if (this.owner.settings.historyAutosave) {
       void this.saveCurrentSession().catch((error) => {
-        new import_obsidian12.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
+        new import_obsidian13.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
       });
     }
     this.scrollToBottom();
@@ -7823,9 +7927,9 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
         try {
           const saved = await this.saveCurrentSession(true);
           this.hideHistoryPopover();
-          if (saved) new import_obsidian12.Notice("\uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.");
+          if (saved) new import_obsidian13.Notice("\uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC800\uC7A5\uD588\uC2B5\uB2C8\uB2E4.");
         } catch (error) {
-          new import_obsidian12.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
+          new import_obsidian13.Notice(`\uD788\uC2A4\uD1A0\uB9AC \uC800\uC7A5 \uC2E4\uD328: ${String(error)}`, 8e3);
         }
       })();
     });
@@ -7876,7 +7980,7 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
   async loadSessionFromHistory(meta) {
     const session = await loadHistory(this.app.vault, meta.file);
     if (!session) {
-      new import_obsidian12.Notice("\uD788\uC2A4\uD1A0\uB9AC\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian13.Notice("\uD788\uC2A4\uD1A0\uB9AC\uB97C \uC77D\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return;
     }
     this.restoreSession(session);
@@ -7931,7 +8035,7 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
   async saveCurrentSession(manual = false) {
     const messages = this.transcript.at(-1)?.role === "user" ? this.transcript.slice(0, -1) : this.transcript;
     if (messages.length === 0) {
-      if (manual) new import_obsidian12.Notice("\uC800\uC7A5\uD560 \uB300\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      if (manual) new import_obsidian13.Notice("\uC800\uC7A5\uD560 \uB300\uD654\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return false;
     }
     if (!this.sessionCreated) {
@@ -8009,7 +8113,7 @@ var VaultSearchItemView = class extends import_obsidian12.ItemView {
   copyAnswer(text) {
     return copyMarkdownToClipboard(
       text,
-      (ok) => new import_obsidian12.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.")
+      (ok) => new import_obsidian13.Notice(ok ? "\uB2F5\uBCC0\uC744 \uBCF5\uC0AC\uD588\uC2B5\uB2C8\uB2E4." : "\uB2F5\uBCC0 \uBCF5\uC0AC\uC5D0 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.")
     );
   }
   async createAnswerNote(title, markdown) {
@@ -8117,7 +8221,7 @@ function normalizeFavoriteModels(raw, fallbackProvider) {
   }
   return out;
 }
-var VaultSearchPlugin = class extends import_obsidian13.Plugin {
+var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   draftSettings;
   backend;
   queue;
@@ -8151,8 +8255,8 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     registerLightningIcon();
     await this.loadSettings();
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian13.FileSystemAdapter)) {
-      new import_obsidian13.Notice(
+    if (!(adapter instanceof import_obsidian14.FileSystemAdapter)) {
+      new import_obsidian14.Notice(
         "Vault Search Service\uB294 \uB370\uC2A4\uD06C\uD1B1 \uD30C\uC77C\uC2DC\uC2A4\uD15C \uBCFC\uD2B8\uB9CC \uC9C0\uC6D0\uD569\uB2C8\uB2E4."
       );
       return;
@@ -8189,22 +8293,22 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     );
     this.registerEvent(
       this.app.vault.on("create", (file) => {
-        if (file instanceof import_obsidian13.TFile) this.queue.markChanged(file.path);
+        if (file instanceof import_obsidian14.TFile) this.queue.markChanged(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("modify", (file) => {
-        if (file instanceof import_obsidian13.TFile) this.queue.markChanged(file.path);
+        if (file instanceof import_obsidian14.TFile) this.queue.markChanged(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("delete", (file) => {
-        if (file instanceof import_obsidian13.TFile) this.queue.markDeleted(file.path);
+        if (file instanceof import_obsidian14.TFile) this.queue.markDeleted(file.path);
       })
     );
     this.registerEvent(
       this.app.vault.on("rename", (file, oldPath) => {
-        if (file instanceof import_obsidian13.TFile) {
+        if (file instanceof import_obsidian14.TFile) {
           this.queue.markDeleted(oldPath);
           this.queue.markChanged(file.path);
         }
@@ -8229,14 +8333,14 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     this.app.workspace.onLayoutReady(() => {
       if (this.settings.loadPolicy === "vault-open") {
         void this.startBackend().catch(
-          (error) => new import_obsidian13.Notice(
+          (error) => new import_obsidian14.Notice(
             `Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
             1e4
           )
         );
       } else if (this.settings.loadPolicy === "first-search") {
         void this.startLazyBackend().catch(
-          (error) => new import_obsidian13.Notice(
+          (error) => new import_obsidian14.Notice(
             `Vault Search \uB300\uAE30 \uC11C\uBE44\uC2A4 \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
             1e4
           )
@@ -8362,7 +8466,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
   async fetchProviderModels(provider) {
     const apiKey = getProviderSecret(this.app, provider);
     if (!apiKey) throw new Error("\uBA3C\uC800 \uC774 provider\uC758 API \uD0A4\uB97C \uC800\uC7A5\uD574 \uC8FC\uC138\uC694.");
-    const response = await (0, import_obsidian13.requestUrl)({
+    const response = await (0, import_obsidian14.requestUrl)({
       url: LLM_MODEL_ENDPOINTS[provider],
       method: "GET",
       headers: { Authorization: `Bearer ${apiKey}` }
@@ -8446,7 +8550,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     }
     for (const view of this.aiSearchViews) view.refreshModelSelector();
     if (options?.notify ?? true) {
-      new import_obsidian13.Notice(
+      new import_obsidian14.Notice(
         provider === previousProvider ? `\uB2F5\uBCC0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.` : `\uB2F5\uBCC0 provider\uB97C ${provider}\uB85C \uC804\uD658\uD558\uACE0 \uBAA8\uB378\uC744 ${value}(\uC73C)\uB85C \uBCC0\uACBD\uD588\uC2B5\uB2C8\uB2E4.`
       );
     }
@@ -8532,7 +8636,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     this.draftApplyTimer = window.setTimeout(() => {
       this.draftApplyTimer = null;
       void this.applyDraftSettings().catch((error) => {
-        new import_obsidian13.Notice(`\uC124\uC815 \uC801\uC6A9 \uC2E4\uD328: ${this.errorMessage(error)}`, 8e3);
+        new import_obsidian14.Notice(`\uC124\uC815 \uC801\uC6A9 \uC2E4\uD328: ${this.errorMessage(error)}`, 8e3);
       });
     }, 700);
   }
@@ -8587,7 +8691,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
         this.syncDraftTo(this.settings);
       }
       if (impact === "all" || impact === "vectors" || impact === "restart") {
-        new import_obsidian13.Notice(
+        new import_obsidian14.Notice(
           impact === "all" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC804\uCCB4 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : impact === "vectors" ? "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uBCA1\uD130 \uC778\uB371\uC2A4\uB97C \uC7AC\uAD6C\uCD95\uD588\uC2B5\uB2C8\uB2E4." : "\uC124\uC815\uC744 \uC801\uC6A9\uD558\uACE0 \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4."
         );
       }
@@ -8626,7 +8730,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     );
     const cuda = await this.backend.managedRuntime("cuda");
     if (current?.cudaAvailable || cuda?.cudaAvailable) {
-      new import_obsidian13.Notice(
+      new import_obsidian14.Notice(
         current?.cudaAvailable ? "\uD604\uC7AC \uB7F0\uD0C0\uC784\uC774 \uC774\uBBF8 CUDA\uB97C \uC0AC\uC6A9 \uC911\uC785\uB2C8\uB2E4." : "\uC124\uCE58\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC774\uBBF8 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4.",
         8e3
       );
@@ -8639,7 +8743,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     if (!await confirmRuntimeInstall(this.app, true)) return;
     const cpu = await this.backend.managedRuntime("cpu");
     const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
-    new import_obsidian13.Notice(
+    new import_obsidian14.Notice(
       "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
       1e4
     );
@@ -8656,7 +8760,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     if (this.settings.device === "cpu") {
       const active = current || cpu;
       this.runtimeSummary = active ? `\uB7F0\uD0C0\uC784: CPU / PyTorch ${active.torchVersion} (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)` : "\uB7F0\uD0C0\uC784: CPU (CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uB428)";
-      new import_obsidian13.Notice(
+      new import_obsidian14.Notice(
         "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uD604\uC7AC CPU \uBA85\uC2DC \uC124\uC815\uC740 \uC720\uC9C0\uB429\uB2C8\uB2E4.",
         1e4
       );
@@ -8686,7 +8790,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
       }
       throw error;
     }
-    new import_obsidian13.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
+    new import_obsidian14.Notice("CUDA \uB7F0\uD0C0\uC784 \uC124\uCE58\uC640 \uC801\uC6A9\uC744 \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.", 1e4);
     this.settingTab?.display();
   }
   async startLazyBackend() {
@@ -8712,14 +8816,14 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     }
     const result = await this.backend.call("provision_onnx", {}, 6e5);
     if (!result.provisioned) throw new Error("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131 \uC2E4\uD328");
-    new import_obsidian13.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    new import_obsidian14.Notice("ONNX \uD30C\uC0DD \uBAA8\uB378\uC744 \uC0DD\uC131\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
   async provisionBackend() {
     await this.backend.stop();
     await this.backend.ensureBackendProvisioned({ force: true });
     await this.refreshBackendInstall();
-    new import_obsidian13.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
+    new import_obsidian14.Notice("Python \uBC31\uC5D4\uB4DC\uB97C \uC124\uCE58\uD588\uC2B5\uB2C8\uB2E4. \uC11C\uBE44\uC2A4\uB97C \uC7AC\uC2DC\uC791\uD569\uB2C8\uB2E4.", 8e3);
     await this.restartBackend();
   }
   async stopBackend() {
@@ -8733,7 +8837,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     await this.backend.restart();
     await this.completeStartup();
     this.settingTab?.display();
-    new import_obsidian13.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
+    new import_obsidian14.Notice("Vault Search Service\uB97C \uC7AC\uC2DC\uC791\uD588\uC2B5\uB2C8\uB2E4.");
   }
   async previewScope() {
     await this.ensureSearchStarted();
@@ -8746,7 +8850,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
       { mode },
       6e5
     );
-    new import_obsidian13.Notice(
+    new import_obsidian14.Notice(
       result.rebuild_required ? `\uC7AC\uAD6C\uCD95 \uD544\uC694: ${result.reason}` : "\uC778\uB371\uC2A4 \uC99D\uBD84 \uB300\uC870\uB97C \uC644\uB8CC\uD588\uC2B5\uB2C8\uB2E4.",
       8e3
     );
@@ -8754,13 +8858,13 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
   }
   async rebuildAll() {
     await this.ensureSearchStarted();
-    new import_obsidian13.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
+    new import_obsidian14.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
     const result = await this.backend.call(
       "rebuild_all",
       {},
       36e5
     );
-    new import_obsidian13.Notice(
+    new import_obsidian14.Notice(
       `\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`,
       1e4
     );
@@ -8768,13 +8872,13 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
   }
   async rebuildVectors() {
     await this.ensureSearchStarted();
-    new import_obsidian13.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
+    new import_obsidian14.Notice("\uBCA1\uD130 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4.");
     const result = await this.backend.call(
       "rebuild_vectors",
       {},
       36e5
     );
-    new import_obsidian13.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
+    new import_obsidian14.Notice(`\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uCCAD\uD06C ${result.chunks}\uAC1C`, 1e4);
     this.settingTab?.display();
   }
   /** Clamp the agent-extension settings to their protocol bounds so a
@@ -8796,7 +8900,8 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
       server.args = (Array.isArray(server.args) ? server.args : []).map((arg) => String(arg)).slice(0, 64);
       server.envNames = (Array.isArray(server.envNames) ? server.envNames : []).map((name) => String(name)).slice(0, 32);
       server.cwd = String(server.cwd || "vault");
-      server.transport = "stdio";
+      server.transport = server.transport === "http" ? "http" : "stdio";
+      server.url = String(server.url || "").trim().slice(0, MAX_MCP_URL_CHARS);
       server.enabled = server.enabled !== false;
       const policies = {};
       for (const [tool, policy] of Object.entries(
@@ -8827,7 +8932,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
    *  Deliberately a snapshot: later file edits never auto-apply (plan §7.1). */
   async importAgentsMd() {
     const file = this.app.vault.getAbstractFileByPath("AGENTS.md");
-    if (!(file instanceof import_obsidian13.TFile)) {
+    if (!(file instanceof import_obsidian14.TFile)) {
       throw new Error("\uBCFC\uD2B8 \uB8E8\uD2B8\uC5D0 AGENTS.md \uD30C\uC77C\uC774 \uC5C6\uC2B5\uB2C8\uB2E4.");
     }
     const content = await this.app.vault.read(file);
@@ -8839,7 +8944,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     this.draftSettings.answerProjectRulesSource = "agents-md";
     this.draftSettings.answerProjectRulesImportedAt = (/* @__PURE__ */ new Date()).toISOString();
     this.draftSettings.answerProjectRulesHash = hash.slice(0, 12);
-    new import_obsidian13.Notice("AGENTS.md \uB0B4\uC6A9\uC744 \uAC00\uC838\uC654\uC2B5\uB2C8\uB2E4. \uC124\uC815 \uC801\uC6A9 \uD6C4 \uC800\uC7A5\uB429\uB2C8\uB2E4.", 6e3);
+    new import_obsidian14.Notice("AGENTS.md \uB0B4\uC6A9\uC744 \uAC00\uC838\uC654\uC2B5\uB2C8\uB2E4. \uC124\uC815 \uC801\uC6A9 \uD6C4 \uC800\uC7A5\uB429\uB2C8\uB2E4.", 6e3);
   }
   clearProjectRules() {
     this.draftSettings.answerProjectRules = "";
@@ -8847,22 +8952,50 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     this.draftSettings.answerProjectRulesImportedAt = void 0;
     this.draftSettings.answerProjectRulesHash = void 0;
   }
-  addMcpServer() {
-    const id = (0, import_crypto6.randomUUID)();
-    const servers = [...this.draftSettings.mcpServers || []];
-    servers.push({
-      id,
-      name: `\uC11C\uBC84 ${servers.length + 1}`,
+  /** Open the Smart-Composer-style editor modal. Without an id this edits a
+   *  fresh draft entry that is only committed to the settings list on save;
+   *  cancelling a brand-new entry also purges any env values saved while
+   *  filling the form so nothing orphaned survives (plan §12.3). */
+  openMcpServerEditor(serverId) {
+    const existing = (this.draftSettings.mcpServers || []).find(
+      (server) => server.id === serverId
+    );
+    const isNew = !existing;
+    const working = existing ? {
+      ...existing,
+      args: [...existing.args],
+      envNames: [...existing.envNames],
+      toolPolicies: { ...existing.toolPolicies }
+    } : {
+      id: (0, import_crypto6.randomUUID)(),
+      name: `\uC11C\uBC84 ${(this.draftSettings.mcpServers || []).length + 1}`,
       enabled: true,
       transport: "stdio",
       command: "",
       args: [],
       cwd: "vault",
+      url: "",
       envNames: [],
       toolPolicies: {}
-    });
-    this.draftSettings.mcpServers = servers;
-    return id;
+    };
+    new McpServerEditorModal(this, working, {
+      hasEnvValue: (name) => this.hasMcpEnvValue(working.id, name),
+      saveEnvValue: (name, value) => this.saveMcpEnvValue(working.id, name, value),
+      removeEnvValue: (name) => this.removeMcpEnvValue(working.id, name),
+      onSaved: () => {
+        const servers = [...this.draftSettings.mcpServers || []];
+        const index = servers.findIndex((server) => server.id === working.id);
+        if (index >= 0) servers[index] = working;
+        else servers.push(working);
+        this.draftSettings.mcpServers = servers;
+        this.settingTab?.display();
+      },
+      onCancelledNew: () => {
+        for (const name of working.envNames) {
+          void this.removeMcpEnvValue(working.id, name).catch(() => void 0);
+        }
+      }
+    }).open();
   }
   /** Remove a server from the draft and purge its secrets. The exact server
    *  object is captured first so env names cannot drift mid-delete. */
@@ -8971,10 +9104,10 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
       name: "Install agent integration (AGENTS.md + wrapper + skill)",
       callback: () => {
         void this.runAgentIntegrationInstall().then((result) => {
-          new import_obsidian13.Notice(agentIntegrationNotice(result), 8e3);
+          new import_obsidian14.Notice(agentIntegrationNotice(result), 8e3);
           this.settingTab?.display();
         }).catch(
-          (error) => new import_obsidian13.Notice(
+          (error) => new import_obsidian14.Notice(
             `Vault Search \uC624\uB958: ${this.errorMessage(error)}`,
             8e3
           )
@@ -9052,7 +9185,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     }
     const basePython = current?.baseExecutable || cpu?.baseExecutable || "python";
     try {
-      new import_obsidian13.Notice(
+      new import_obsidian14.Notice(
         "CUDA \uB7F0\uD0C0\uC784\uC744 \uC124\uCE58\uD558\uACE0 \uC788\uC2B5\uB2C8\uB2E4. \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4.",
         1e4
       );
@@ -9102,7 +9235,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
         if (result.rebuild_required) {
           const status = this.backend.status;
           const action = status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95";
-          new import_obsidian13.Notice(
+          new import_obsidian14.Notice(
             `Vault Search \uC778\uB371\uC2A4\uC5D0 \uD638\uD658\uC131 \uBB38\uC81C\uAC00 \uC788\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C ${action}\uC744 \uC2E4\uD589\uD558\uC138\uC694.`,
             8e3
           );
@@ -9128,8 +9261,8 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
   }
   async openSearchResult(location, keepPanel = false) {
     const file = this.app.vault.getAbstractFileByPath(location.path);
-    if (!(file instanceof import_obsidian13.TFile)) {
-      new import_obsidian13.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
+    if (!(file instanceof import_obsidian14.TFile)) {
+      new import_obsidian14.Notice(`\uD30C\uC77C\uC744 \uCC3E\uC744 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4: ${location.path}`);
       return;
     }
     await this.app.workspace.getLeaf(keepPanel ? "tab" : false).openFile(file, {
@@ -9141,7 +9274,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
   async openAiSearchPanel(initialQuery = "") {
     const leaf = this.app.workspace.getLeavesOfType(VIEW_TYPE_VAULT_AI_SEARCH)[0] ?? this.app.workspace.getRightLeaf(false);
     if (!leaf) {
-      new import_obsidian13.Notice("AI Vault Search \uD328\uB110\uC744 \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
+      new import_obsidian14.Notice("AI Vault Search \uD328\uB110\uC744 \uC5F4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.");
       return;
     }
     const currentState = leaf.getViewState();
@@ -9166,7 +9299,7 @@ var VaultSearchPlugin = class extends import_obsidian13.Plugin {
     await this.openAiSearchPanel();
     const view = [...this.aiSearchViews][0];
     if (!view) {
-      new import_obsidian13.Notice("AI Vault Search \uD328\uB110\uC744 \uBA3C\uC800 \uC5F4\uC5B4 \uC8FC\uC138\uC694.");
+      new import_obsidian14.Notice("AI Vault Search \uD328\uB110\uC744 \uBA3C\uC800 \uC5F4\uC5B4 \uC8FC\uC138\uC694.");
       return;
     }
     view.renderSample();

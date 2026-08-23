@@ -29,11 +29,14 @@ export interface McpServerSettings {
   id: string;
   name: string;
   enabled: boolean;
-  transport: "stdio";
+  /** "stdio": local child process; "http": remote streamable-HTTP server. */
+  transport: "stdio" | "http";
   command: string;
   args: string[];
   /** "vault" | "plugin" | absolute directory chosen explicitly by the user. */
   cwd: string;
+  /** Remote endpoint for http servers (stdio servers ignore this). */
+  url: string;
   envNames: string[];
   toolPolicies: Record<string, McpToolPolicy>;
 }
@@ -300,6 +303,10 @@ export interface McpServerStatus {
   state: "disabled" | "awaiting_secret" | "connecting" | "connected" | "error";
   message?: string | null;
   enabled: boolean;
+  /** Additive since 0.1.59: "stdio" (default when absent) or "http". */
+  transport?: "stdio" | "http";
+  /** stdio: command; http: origin+path only — query strings are stripped. */
+  endpoint?: string;
   command: string;
   tools: number;
   tool_names?: string[];
