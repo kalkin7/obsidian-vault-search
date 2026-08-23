@@ -3,7 +3,7 @@ import type { LLMProviderId, VaultSearchSettings } from "./types";
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-export const BACKEND_VERSION = "0.1.61";
+export const BACKEND_VERSION = "0.1.62";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
 /** Bounds mirrored by the Python side (plan §6.2/§6.3). */
@@ -12,6 +12,10 @@ export const MAX_MCP_SERVERS = 20;
 export const MAX_MCP_ARGS = 64;
 export const MAX_MCP_ARG_CHARS = 2_048;
 export const MAX_MCP_URL_CHARS = 2_048;
+/** Must match the mcp pin in backend/requirements*.txt. The official SDK 1.x
+ *  line is required: the unrelated PyPI "mcp" 2.0.0 distro ships a different
+ *  API (streamable_http_client) that this plugin cannot drive. */
+export const MCP_SDK_SPEC = "mcp==1.28.1";
 export const MAX_SKILL_ROOTS = 20;
 export const MCP_SECRET_PAYLOAD_LIMIT_BYTES = 32 * 1024;
 export const MCP_SECRET_NAME_MAX = 128;

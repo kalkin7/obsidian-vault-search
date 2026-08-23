@@ -26,7 +26,12 @@ import type {
   RuntimeInfo,
   VaultSearchSettings,
 } from "./types";
-import { BACKEND_VERSION, GITHUB_REPO, PROTOCOL_VERSION } from "./constants";
+import { BACKEND_VERSION, GITHUB_REPO, MCP_SDK_SPEC, PROTOCOL_VERSION } from "./constants";
+/** Deeper than a bare import: the pinned SDK must expose the streamable-HTTP
+ *  client the McpHost drives. Catches wrong-distro installs (e.g. "mcp" 2.x).
+ *  Must stay in sync with mcp_host.py's guarded imports (plan §12.3). */
+const MCP_SDK_IMPORT_PROBE =
+  "from mcp.client.streamable_http import streamablehttp_client";
 import { requestBackend } from "./backend-protocol";
 import { vaultDataDir } from "./runtime-paths";
 import { mergeProviderEnvironment } from "./llm-secrets";
@@ -309,13 +314,55 @@ export class BackendManager {
     return info;
   }
 
+  /** Ensure the pinned mcp SDK is importable in the runtime interpreter.
+   *  Probe-first so healthy venvs pay one ~100ms import; install failures
+   *  must never block a plain search session — the MCP server simply keeps
+   *  its error state and the status surface explains why. */
+  private async ensureMcpSdk(python: string): Promise<void> {
+    try {
+      await this.execFileText(
+        python,
+        ["-X", "utf8", "-c", "import mcp"],
+        15_000,
+      );
+      return;
+    } catch {
+      /* missing or broken SDK: fall through to the targeted install */
+    }
+    try {
+      await this.execFileText(
+        python,
+        [
+          "-X",
+          "utf8",
+          "-m",
+          "pip",
+          "install",
+          "--disable-pip-version-check",
+          MCP_SDK_SPEC,
+        ],
+        300_000,
+      );
+      await this.execFileText(
+        python,
+        ["-X", "utf8", "-c", `import mcp; ${MCP_SDK_IMPORT_PROBE}`],
+        15_000,
+      );
+    } catch (error) {
+      console.warn(
+        `[vault-search] MCP SDK auto-install failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
   private execFileText(
     executable: string,
     args: string[],
     timeout: number,
     extraEnv?: Record<string, string>,
-  ): Promise<string> {
-    return new Promise((resolve, reject) => {
+  ): Promise<string> {    return new Promise((resolve, reject) => {
       execFile(
         executable,
         args,
@@ -539,6 +586,12 @@ export class BackendManager {
       explicit && explicit !== "python"
         ? explicit
         : ((await this.resolveDefaultPython()) ?? "python");
+    if (settings.mcpEnabled) {
+      // Venvs provisioned before 0.1.57 lack the mcp SDK (or hold an
+      // incompatible 2.0.0 distro). Heal once per start so MCP servers get a
+      // real connection instead of a permanent error state (plan §12.3).
+      await this.ensureMcpSdk(python);
+    }
     const args = [
       "-X",
       "utf8",

@@ -3011,11 +3011,12 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.61";
+var BACKEND_VERSION = "0.1.62";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
 var MAX_MCP_URL_CHARS = 2048;
+var MCP_SDK_SPEC = "mcp==1.28.1";
 var MAX_SKILL_ROOTS = 20;
 var MCP_SECRET_PAYLOAD_LIMIT_BYTES = 32 * 1024;
 var MCP_SECRET_NAME_MAX = 128;
@@ -3299,6 +3300,7 @@ var PROVIDER_ENV_VARS = [
   "OPENCODE_GO_API_KEY",
   "DEEPSEEK_API_KEY"
 ];
+var MCP_SDK_IMPORT_PROBE = "from mcp.client.streamable_http import streamablehttp_client";
 var BackendManager = class {
   constructor(vaultPath, pluginDir, getSettings, statusChanged, manifestVersion = BACKEND_VERSION, getEnvironment = () => ({}), getMcpSecretPayload = null) {
     this.vaultPath = vaultPath;
@@ -3523,6 +3525,45 @@ var BackendManager = class {
     await this.writeManagedRuntime(kind, executable);
     return info;
   }
+  /** Ensure the pinned mcp SDK is importable in the runtime interpreter.
+   *  Probe-first so healthy venvs pay one ~100ms import; install failures
+   *  must never block a plain search session — the MCP server simply keeps
+   *  its error state and the status surface explains why. */
+  async ensureMcpSdk(python) {
+    try {
+      await this.execFileText(
+        python,
+        ["-X", "utf8", "-c", "import mcp"],
+        15e3
+      );
+      return;
+    } catch {
+    }
+    try {
+      await this.execFileText(
+        python,
+        [
+          "-X",
+          "utf8",
+          "-m",
+          "pip",
+          "install",
+          "--disable-pip-version-check",
+          MCP_SDK_SPEC
+        ],
+        3e5
+      );
+      await this.execFileText(
+        python,
+        ["-X", "utf8", "-c", `import mcp; ${MCP_SDK_IMPORT_PROBE}`],
+        15e3
+      );
+    } catch (error) {
+      console.warn(
+        `[vault-search] MCP SDK auto-install failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+  }
   execFileText(executable, args, timeout, extraEnv) {
     return new Promise((resolve3, reject) => {
       (0, import_child_process.execFile)(
@@ -3708,6 +3749,9 @@ var BackendManager = class {
     const settings = this.getSettings();
     const explicit = settings.pythonExecutable?.trim();
     const python = explicit && explicit !== "python" ? explicit : await this.resolveDefaultPython() ?? "python";
+    if (settings.mcpEnabled) {
+      await this.ensureMcpSdk(python);
+    }
     const args = [
       "-X",
       "utf8",
