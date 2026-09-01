@@ -43,6 +43,7 @@ from .grounding import (
 )
 from .index_metadata import classify_index_problems, validate_index_files
 from .indexing import IndexManager
+from .kiwi_user_dict import prepare_for_search
 from .llm import ProviderError, create_provider
 from .mcp_host import SERVER_STATE_CONNECTED, McpHost
 from .model_manager import ModelManager
@@ -226,6 +227,7 @@ class SearchService:
             from kiwipiepy import Kiwi
 
             self.kiwi = Kiwi()
+            prepare_for_search(self.kiwi, self.config)
             self.event_sink("model_stage", {"stage": "loading_embedding_model"})
             started = time.time()
             self.model.load()

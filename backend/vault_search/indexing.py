@@ -45,6 +45,7 @@ from .index_metadata import (
     validate_metadata,
     write_metadata,
 )
+from .kiwi_user_dict import prepare_for_full_rebuild
 from .model_manager import ModelManager
 from .scope import (
     is_in_scope,
@@ -298,6 +299,14 @@ class IndexManager:
             self.config.vault_path, self.config.include_globs, self.config.exclude_globs
         )
         self.progress("rebuild_started", {"files": len(files)})
+        snapshots: list[tuple[str, str, os.stat_result]] = []
+        for relative in files:
+            target = resolve_inside_vault(self.config.vault_path, relative)
+            text, stat = self._read_stable(target)
+            snapshots.append((relative, text, stat))
+        prepare_for_full_rebuild(
+            self.kiwi, self.config, [text for _relative, text, _stat in snapshots]
+        )
         db_temp = self._operation_temp("chunks.db.building")
         vector_temp = self._operation_temp("vectors.usearch.building")
         metadata_temp = self._operation_temp("metadata.json.building")
@@ -311,9 +320,7 @@ class IndexManager:
         chunk_ids: list[int] = []
         chunk_contents: list[str] = []
         try:
-            for number, relative in enumerate(files, 1):
-                target = resolve_inside_vault(self.config.vault_path, relative)
-                text, stat = self._read_stable(target)
+            for number, (relative, text, stat) in enumerate(snapshots, 1):
                 chunks = self._chunks(text, relative)
                 for chunk_index, chunk in enumerate(chunks):
                     lexical_only = chunk.lexical_only
