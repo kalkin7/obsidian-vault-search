@@ -172,7 +172,11 @@ export default class VaultSearchPlugin extends Plugin {
       this.manifest.version,
       () => providerEnvironment(this.app),
       (options) =>
-        buildMcpSecretPayload(this.app, this.settings.mcpServers || [], options),
+        buildMcpSecretPayload(
+          this.app,
+          this.settings.mcpServers || [],
+          options,
+        ),
     );
     // Atomically ensure service-config.json exists in sanitized form (safe origins only)
     try {
@@ -350,10 +354,7 @@ export default class VaultSearchPlugin extends Plugin {
           DEFAULT_SETTINGS.answerTimeoutSeconds,
       ),
     );
-    const mcpMigration = migrateMcpHttpUrls(
-      this.app,
-      this.settings,
-    );
+    const mcpMigration = migrateMcpHttpUrls(this.app, this.settings);
     const failedIds = new Set(mcpMigration.failedServers.map((s) => s.id));
     if (mcpMigration.failedServers.length > 0) {
       new Notice(
@@ -367,8 +368,7 @@ export default class VaultSearchPlugin extends Plugin {
         8000,
       );
     }
-    const migrated =
-      migrateSettings(this.settings) || mcpMigration.changed;
+    const migrated = migrateSettings(this.settings) || mcpMigration.changed;
     if (loaded?.loadPolicy === undefined) {
       this.settings.loadPolicy = defaultLoadPolicy(this.settings.engine);
     }
@@ -502,10 +502,10 @@ export default class VaultSearchPlugin extends Plugin {
     try {
       await this.saveSettings();
     } catch (err) {
-      if (previousMemory !== undefined) {
-        this.providerModels[provider] = previousMemory;
-      } else {
+      if (previousMemory === undefined) {
         delete this.providerModels[provider];
+      } else {
+        this.providerModels[provider] = previousMemory;
       }
       this.settings.fetchedProviderModels = previousSettings;
       this.draftSettings.fetchedProviderModels = previousDraft;
@@ -645,7 +645,9 @@ export default class VaultSearchPlugin extends Plugin {
     );
   }
 
-  private async setAnswerReasoningEffortUnlocked(effort: string): Promise<void> {
+  private async setAnswerReasoningEffortUnlocked(
+    effort: string,
+  ): Promise<void> {
     const value = effort.trim();
     const valid = [
       "auto",
@@ -712,7 +714,7 @@ export default class VaultSearchPlugin extends Plugin {
       (favorite) => favorite.provider === provider && favorite.model === model,
     );
     const targetFavorite =
-      desiredFavorite !== undefined ? desiredFavorite : !isFavorite;
+      desiredFavorite === undefined ? !isFavorite : desiredFavorite;
 
     if (isFavorite === targetFavorite) {
       if (this.draftSettings.favoriteAnswerModels) {
@@ -737,9 +739,7 @@ export default class VaultSearchPlugin extends Plugin {
     );
     if (targetFavorite) {
       if (index < 0) favorites.push({ provider, model });
-    } else {
-      if (index >= 0) favorites.splice(index, 1);
-    }
+    } else if (index >= 0) favorites.splice(index, 1);
     this.settings.favoriteAnswerModels = favorites;
     this.draftSettings.favoriteAnswerModels = favorites.map((favorite) => ({
       ...favorite,
@@ -955,15 +955,26 @@ export default class VaultSearchPlugin extends Plugin {
 
   async startBackend(): Promise<void> {
     await this.ensureSanitizedConfig();
-    await this.prepareRuntime(this.settings, false);
-    // ensureStarted handles the lazy (first-search) case: if the sidecar is
-    // already running, start() is a no-op and the backend sits in idle waiting
-    // for a search — without loading the model here, waitUntilReady would
-    // spin until its timeout. It waits for availability, loads the model when
-    // idle, then waits for ready.
-    await this.backend.ensureStarted();
-    await this.completeStartup();
+    // If a sidecar is already live (plugin reload, previous Start), attach
+    // instead of inspecting Python and killing the process. That hang is
+    // what left the Start button spinning.
+    await this.backend.start(false);
+    const state = this.backend.status.state;
+    if (state === "stopped" || state === "error" || state === "starting") {
+      await this.prepareRuntime(this.settings, false);
+      await this.backend.start(false);
+    }
     this.settingTab?.display();
+    void this.backend
+      .ensureStarted()
+      .then(() => this.completeStartup())
+      .catch(
+        (error) =>
+          new Notice(
+            `Vault Search 시작 실패: ${this.errorMessage(error)}`,
+            10000,
+          ),
+      );
   }
 
   async installCudaRuntime(): Promise<void> {
@@ -1141,16 +1152,22 @@ export default class VaultSearchPlugin extends Plugin {
   async rebuildAll(): Promise<void> {
     await this.ensureSearchStarted();
     new Notice("전체 인덱스 재구축을 시작합니다. 백그라운드에서 진행됩니다.");
-    const result = await this.backend.call<{ files: number; chunks: number }>(
-      "rebuild_all",
-      {},
-      3_600_000,
-    );
-    new Notice(
-      `전체 재구축 완료: 파일 ${result.files}개, 청크 ${result.chunks}개`,
-      10000,
-    );
-    this.settingTab?.display();
+    void this.backend
+      .call<{ files: number; chunks: number }>("rebuild_all", {}, 3_600_000)
+      .then((result) => {
+        new Notice(
+          `전체 재구축 완료: 파일 ${result.files}개, 청크 ${result.chunks}개`,
+          10000,
+        );
+        this.settingTab?.display();
+      })
+      .catch(
+        (error) =>
+          new Notice(
+            `Vault Search 재구축 실패: ${this.errorMessage(error)}`,
+            10000,
+          ),
+      );
   }
 
   async rebuildVectors(): Promise<void> {
@@ -1202,9 +1219,7 @@ export default class VaultSearchPlugin extends Plugin {
       }
       server.enabled = server.enabled !== false;
       const policies: Record<string, McpToolPolicy> = {};
-      for (const [tool, policy] of Object.entries(
-        server.toolPolicies || {},
-      )) {
+      for (const [tool, policy] of Object.entries(server.toolPolicies || {})) {
         if (policy === "deny" || policy === "ask" || policy === "allow") {
           policies[tool] = policy;
         }
@@ -1264,7 +1279,6 @@ export default class VaultSearchPlugin extends Plugin {
     const existing = (this.draftSettings.mcpServers || []).find(
       (server) => server.id === serverId,
     );
-    const isNew = !existing;
     const working = existing
       ? {
           ...existing,
@@ -1347,11 +1361,7 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   async refreshSkillsStatus(): Promise<SkillsStatusResponse> {
-    return this.backend.call<SkillsStatusResponse>(
-      "skills_status",
-      {},
-      30_000,
-    );
+    return this.backend.call<SkillsStatusResponse>("skills_status", {}, 30_000);
   }
 
   async rescanSkills(): Promise<SkillsStatusResponse> {

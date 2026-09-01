@@ -14,7 +14,8 @@ const VERSION = "0.1.2";
 
 function makeZip(entries: Array<[string, string]>): Buffer {
   const zip = new AdmZip();
-  for (const [name, content] of entries) zip.addFile(name, Buffer.from(content));
+  for (const [name, content] of entries)
+    zip.addFile(name, Buffer.from(content));
   return zip.toBuffer();
 }
 
@@ -71,7 +72,7 @@ async function makeManager(tmp: string): Promise<BackendManager> {
     pluginDir,
     () => ({ pythonExecutable: "python" }) as unknown as VaultSearchSettings,
     () => undefined,
-    VERSION
+    VERSION,
   );
 }
 
@@ -81,13 +82,18 @@ function pluginBackendRoot(tmp: string): string {
 
 describe("backend provisioning", () => {
   it("downloads and extracts the backend when missing", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       requestUrlMock.mockResolvedValue({
         status: 200,
         arrayBuffer: makeZip([
           ["backend/vault_search/__init__.py", `__version__ = "${VERSION}"`],
-          ["backend/vault_search/__main__.py", "if __name__ == '__main__': pass"],
+          [
+            "backend/vault_search/__main__.py",
+            "if __name__ == '__main__': pass",
+          ],
           ["backend/setup-runtime.ps1", "# setup"],
         ]),
       });
@@ -98,22 +104,37 @@ describe("backend provisioning", () => {
       expect(ok).toBe(true);
       expect(requestUrlMock).toHaveBeenCalledTimes(1);
       const url = requestUrlMock.mock.calls[0][0].url as string;
-      expect(url).toContain(`/releases/download/v${VERSION}/obsidian-vault-search-v${VERSION}.zip`);
-      expect(await fs.readFile(path.join(pluginBackendRoot(tmp), "vault_search", "__init__.py"), "utf8"))
-        .toContain(VERSION);
-      expect(await fs.readFile(path.join(pluginBackendRoot(tmp), "setup-runtime.ps1"), "utf8"))
-        .toContain("# setup");
+      expect(url).toContain(
+        `/releases/download/v${VERSION}/obsidian-vault-search-v${VERSION}.zip`,
+      );
+      expect(
+        await fs.readFile(
+          path.join(pluginBackendRoot(tmp), "vault_search", "__init__.py"),
+          "utf8",
+        ),
+      ).toContain(VERSION);
+      expect(
+        await fs.readFile(
+          path.join(pluginBackendRoot(tmp), "setup-runtime.ps1"),
+          "utf8",
+        ),
+      ).toContain("# setup");
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 
   it("skips the download when the backend version already matches", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       const root = pluginBackendRoot(tmp);
       await fs.mkdir(path.join(root, "vault_search"), { recursive: true });
-      await fs.writeFile(path.join(root, "vault_search", "__init__.py"), `__version__ = "${VERSION}"`);
+      await fs.writeFile(
+        path.join(root, "vault_search", "__init__.py"),
+        `__version__ = "${VERSION}"`,
+      );
       requestUrlMock.mockClear();
       const manager = await makeManager(tmp);
 
@@ -127,14 +148,21 @@ describe("backend provisioning", () => {
   });
 
   it("force re-downloads even when the version matches", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       const root = pluginBackendRoot(tmp);
       await fs.mkdir(path.join(root, "vault_search"), { recursive: true });
-      await fs.writeFile(path.join(root, "vault_search", "__init__.py"), `__version__ = "${VERSION}"`);
+      await fs.writeFile(
+        path.join(root, "vault_search", "__init__.py"),
+        `__version__ = "${VERSION}"`,
+      );
       requestUrlMock.mockResolvedValue({
         status: 200,
-        arrayBuffer: makeZip([["backend/vault_search/__init__.py", `__version__ = "${VERSION}"`]]),
+        arrayBuffer: makeZip([
+          ["backend/vault_search/__init__.py", `__version__ = "${VERSION}"`],
+        ]),
       });
       const manager = await makeManager(tmp);
 
@@ -147,7 +175,9 @@ describe("backend provisioning", () => {
   });
 
   it("rejects zip-slip entries outside backend/", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       requestUrlMock.mockResolvedValue({
         status: 200,
@@ -159,7 +189,9 @@ describe("backend provisioning", () => {
       });
       const manager = await makeManager(tmp);
 
-      await expect(manager.ensureBackendProvisioned()).rejects.toThrow(/안전하지 않은 zip/);
+      await expect(manager.ensureBackendProvisioned()).rejects.toThrow(
+        /안전하지 않은 zip/,
+      );
 
       const escaped = path.join(tmp, "escaped.txt");
       expect(await fs.stat(escaped).catch(() => null)).toBeNull();
@@ -169,7 +201,9 @@ describe("backend provisioning", () => {
   });
 
   it("fails when the zip has no backend/ folder", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       requestUrlMock.mockResolvedValue({
         status: 200,
@@ -177,26 +211,97 @@ describe("backend provisioning", () => {
       });
       const manager = await makeManager(tmp);
 
-      await expect(manager.ensureBackendProvisioned()).rejects.toThrow(/backend\/ 폴더가 없습니다/);
+      await expect(manager.ensureBackendProvisioned()).rejects.toThrow(
+        /backend\/ 폴더가 없습니다/,
+      );
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not download an older zip over a newer local backend", async () => {
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
+    try {
+      const root = pluginBackendRoot(tmp);
+      await fs.mkdir(path.join(root, "vault_search"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "vault_search", "__init__.py"),
+        `__version__ = "0.1.68"`,
+      );
+      requestUrlMock.mockClear();
+      const manager = await makeManager(tmp);
+
+      const ok = await manager.ensureBackendProvisioned();
+
+      expect(ok).toBe(true);
+      expect(requestUrlMock).not.toHaveBeenCalled();
+      expect(
+        await fs.readFile(
+          path.join(root, "vault_search", "__init__.py"),
+          "utf8",
+        ),
+      ).toContain("0.1.68");
+    } finally {
+      await fs.rm(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps an existing backend when the GitHub zip is missing", async () => {
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
+    try {
+      const root = pluginBackendRoot(tmp);
+      await fs.mkdir(path.join(root, "vault_search"), { recursive: true });
+      await fs.writeFile(
+        path.join(root, "vault_search", "__init__.py"),
+        `__version__ = "0.1.1"`,
+      );
+      requestUrlMock.mockResolvedValue({
+        status: 404,
+        arrayBuffer: new ArrayBuffer(0),
+      });
+      const manager = await makeManager(tmp);
+
+      const ok = await manager.ensureBackendProvisioned();
+
+      expect(ok).toBe(true);
+      expect(
+        await fs.readFile(
+          path.join(root, "vault_search", "__init__.py"),
+          "utf8",
+        ),
+      ).toContain("0.1.1");
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 
   it("surfaces a failed download with a clear error", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
-      requestUrlMock.mockResolvedValue({ status: 404, arrayBuffer: new ArrayBuffer(0) });
+      requestUrlMock.mockResolvedValue({
+        status: 404,
+        arrayBuffer: new ArrayBuffer(0),
+      });
       const manager = await makeManager(tmp);
 
-      await expect(manager.ensureBackendProvisioned()).rejects.toThrow(/HTTP 404/);
+      await expect(manager.ensureBackendProvisioned()).rejects.toThrow(
+        /HTTP 404/,
+      );
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 
   it("handles Windows backslash separators in zip entries gracefully", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       requestUrlMock.mockResolvedValue({
         status: 200,
@@ -211,10 +316,18 @@ describe("backend provisioning", () => {
       const ok = await manager.ensureBackendProvisioned();
 
       expect(ok).toBe(true);
-      expect(await fs.readFile(path.join(pluginBackendRoot(tmp), "vault_search", "__init__.py"), "utf8"))
-        .toContain(VERSION);
-      expect(await fs.readFile(path.join(pluginBackendRoot(tmp), "vault_search", "cli.py"), "utf8"))
-        .toContain("# cli");
+      expect(
+        await fs.readFile(
+          path.join(pluginBackendRoot(tmp), "vault_search", "__init__.py"),
+          "utf8",
+        ),
+      ).toContain(VERSION);
+      expect(
+        await fs.readFile(
+          path.join(pluginBackendRoot(tmp), "vault_search", "cli.py"),
+          "utf8",
+        ),
+      ).toContain("# cli");
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
@@ -223,32 +336,50 @@ describe("backend provisioning", () => {
 
 describe("ensureMcpSdk auto-install and probe", () => {
   it("skips pip install when probe succeeds", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       const manager = await makeManager(tmp);
       const execCalls: string[][] = [];
-      (manager as unknown as { execFileText: (cmd: string, args: string[]) => Promise<string> }).execFileText = async (cmd, args) => {
+      (
+        manager as unknown as {
+          execFileText: (cmd: string, args: string[]) => Promise<string>;
+        }
+      ).execFileText = async (cmd, args) => {
         execCalls.push(args);
         return "";
       };
 
-      await (manager as unknown as { ensureMcpSdk: (python: string) => Promise<void> }).ensureMcpSdk("python");
+      await (
+        manager as unknown as {
+          ensureMcpSdk: (python: string) => Promise<void>;
+        }
+      ).ensureMcpSdk("python");
 
       // Probe executed once, no pip install
       expect(execCalls.length).toBe(1);
-      expect(execCalls[0][3]).toContain("importlib.metadata.version('mcp') == '1.28.1'");
+      expect(execCalls[0][3]).toContain(
+        "importlib.metadata.version('mcp') == '1.28.1'",
+      );
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 
   it("runs pip install with --force-reinstall when probe fails, then re-probes", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       const manager = await makeManager(tmp);
       const execCalls: string[][] = [];
       let probeCount = 0;
-      (manager as unknown as { execFileText: (cmd: string, args: string[]) => Promise<string> }).execFileText = async (cmd, args) => {
+      (
+        manager as unknown as {
+          execFileText: (cmd: string, args: string[]) => Promise<string>;
+        }
+      ).execFileText = async (cmd, args) => {
         execCalls.push(args);
         if (args.includes("-c")) {
           probeCount++;
@@ -258,29 +389,45 @@ describe("ensureMcpSdk auto-install and probe", () => {
         return "Successfully installed mcp-1.28.1";
       };
 
-      await (manager as unknown as { ensureMcpSdk: (python: string) => Promise<void> }).ensureMcpSdk("python");
+      await (
+        manager as unknown as {
+          ensureMcpSdk: (python: string) => Promise<void>;
+        }
+      ).ensureMcpSdk("python");
 
       // Calls: 1. probe (failed), 2. pip install --force-reinstall, 3. probe (succeeded)
       expect(execCalls.length).toBe(3);
       expect(execCalls[1]).toContain("--force-reinstall");
       expect(execCalls[1]).toContain("mcp==1.28.1");
-      expect(execCalls[2][3]).toContain("importlib.metadata.version('mcp') == '1.28.1'");
+      expect(execCalls[2][3]).toContain(
+        "importlib.metadata.version('mcp') == '1.28.1'",
+      );
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });
     }
   });
 
   it("handles final probe failure safely without throwing and logs coded warning", async () => {
-    const tmp = await fs.mkdtemp(path.join(import.meta.dirname, ".provision-test-"));
+    const tmp = await fs.mkdtemp(
+      path.join(import.meta.dirname, ".provision-test-"),
+    );
     try {
       const manager = await makeManager(tmp);
-      (manager as unknown as { execFileText: (cmd: string, args: string[]) => Promise<string> }).execFileText = async () => {
+      (
+        manager as unknown as {
+          execFileText: (cmd: string, args: string[]) => Promise<string>;
+        }
+      ).execFileText = async () => {
         throw new Error("SDK probe failed permanently");
       };
 
       // Must not throw — allows search sidecar to continue operating
       await expect(
-        (manager as unknown as { ensureMcpSdk: (python: string) => Promise<void> }).ensureMcpSdk("python"),
+        (
+          manager as unknown as {
+            ensureMcpSdk: (python: string) => Promise<void>;
+          }
+        ).ensureMcpSdk("python"),
       ).resolves.toBeUndefined();
     } finally {
       await fs.rm(tmp, { recursive: true, force: true });

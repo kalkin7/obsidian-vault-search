@@ -150,7 +150,10 @@ vi.mock("obsidian", () => {
   }
 
   class Notice {
-    constructor(public message: string, public timeout?: number) {
+    constructor(
+      public message: string,
+      public timeout?: number,
+    ) {
       h.notices.push(message);
     }
   }
@@ -179,7 +182,12 @@ vi.mock("obsidian", () => {
     setClass() {
       return this;
     }
-    addText(callback: (component: ReturnType<typeof makeComponent>) => unknown) {
+    setHeading() {
+      return this;
+    }
+    addText(
+      callback: (component: ReturnType<typeof makeComponent>) => unknown,
+    ) {
       const c = makeComponent();
       this.components.push(c);
       callback(c);
@@ -202,7 +210,10 @@ vi.mock("obsidian", () => {
       return this;
     }
     addToggle(
-      callback: (toggle: { setValue: (v: boolean) => any; onChange: (cb: (v: boolean) => void) => any }) => unknown,
+      callback: (toggle: {
+        setValue: (v: boolean) => any;
+        onChange: (cb: (v: boolean) => void) => any;
+      }) => unknown,
     ) {
       const toggle = {
         value: false,
@@ -262,7 +273,10 @@ vi.mock("obsidian", () => {
 
   class PluginSettingTab {
     containerEl = new FakeEl();
-    constructor(public app: any, public plugin: any) {}
+    constructor(
+      public app: any,
+      public plugin: any,
+    ) {}
   }
 
   class Plugin {
@@ -325,7 +339,7 @@ vi.mock("obsidian", () => {
   };
 });
 
-import { FileSystemAdapter, Notice } from "obsidian";
+import { FileSystemAdapter } from "obsidian";
 import { VaultSearchSettingTab } from "../../src/settings-tab";
 import { DEFAULT_SETTINGS } from "../../src/constants";
 import VaultSearchPlugin from "../../src/main";
@@ -357,7 +371,11 @@ function createMockPlugin() {
     agentIntegration: null,
     getProviderApiKey: () => "test-api-key",
     saveProviderApiKey: vi.fn(async () => undefined),
-    fetchProviderModels: vi.fn(async (_p: string) => ["gpt-4o", "gpt-4o-mini", "o3-mini"]),
+    fetchProviderModels: vi.fn(async (_p: string) => [
+      "gpt-4o",
+      "gpt-4o-mini",
+      "o3-mini",
+    ]),
     getProviderModels: (p: string) => fetchedModels[p] || [],
     setProviderModels: vi.fn(async (provider: string, models: string[]) => {
       fetchedModels[provider] = models;
@@ -368,12 +386,22 @@ function createMockPlugin() {
     }),
     toggleFavoriteModel: vi.fn(async (provider: any, model: string) => {
       const favs = plugin.settings.favoriteAnswerModels || [];
-      const idx = favs.findIndex((f) => f.provider === provider && f.model === model);
+      const idx = favs.findIndex(
+        (f) => f.provider === provider && f.model === model,
+      );
       if (idx >= 0) favs.splice(idx, 1);
       else favs.push({ provider, model });
     }),
-    refreshMcpStatus: async () => ({ enabled: false, servers: [], connected: 0 }),
-    refreshSkillsStatus: async () => ({ enabled: false, skills: [], roots: [] }),
+    refreshMcpStatus: async () => ({
+      enabled: false,
+      servers: [],
+      connected: 0,
+    }),
+    refreshSkillsStatus: async () => ({
+      enabled: false,
+      skills: [],
+      roots: [],
+    }),
   } as unknown as VaultSearchPlugin;
 
   return plugin;
@@ -458,7 +486,11 @@ describe("VaultSearchSettingTab Promise safety and await handling (v0.1.64)", ()
 
     // Success notice was not shown; error notice was shown
     expect(h.notices.some((n) => n.includes("확인했습니다"))).toBe(false);
-    expect(h.notices.some((n) => n.includes("Vault Search 오류: Disk storage write failure"))).toBe(true);
+    expect(
+      h.notices.some((n) =>
+        n.includes("Vault Search 오류: Disk storage write failure"),
+      ),
+    ).toBe(true);
     // Button is re-enabled in finally
     expect(refreshButton.disabled).toBe(false);
   });
@@ -504,6 +536,51 @@ describe("VaultSearchSettingTab Promise safety and await handling (v0.1.64)", ()
     // Active provider and model in draft remain Anthropic
     expect(plugin.draftSettings.answerProvider).toBe("anthropic");
     expect(plugin.draftSettings.answerModel).toBe("claude-3-7-sonnet");
+  });
+});
+
+describe("VaultSearchSettingTab operational vs one-time placement", () => {
+  function settingNames(root: {
+    querySelectorAll: (selector: string) => Array<{ text: string }>;
+  }) {
+    return root.querySelectorAll(".setting-item-name").map((el) => el.text);
+  }
+
+  it("keeps daily controls on 일반 and moves set-once knobs to 검색·런타임", () => {
+    const tab = new VaultSearchSettingTab(createMockPlugin());
+    tab.display();
+    const panels = (tab.containerEl as any).querySelectorAll(
+      ".vault-search-settings-panel",
+    );
+    expect(panels).toHaveLength(4);
+    const general = settingNames(panels[0]);
+    const search = settingNames(panels[3]);
+
+    expect(general).toEqual(
+      expect.arrayContaining([
+        "인덱스",
+        "전체 재구축",
+        "서비스 제어",
+        "인덱스 관리",
+        "Python 백엔드",
+      ]),
+    );
+    expect(general).not.toEqual(
+      expect.arrayContaining([
+        "시작 정책",
+        "유휴 모델 언로드 (초)",
+        "Python 실행 파일",
+      ]),
+    );
+    expect(search).toEqual(
+      expect.arrayContaining([
+        "시작 정책",
+        "유휴 모델 언로드 (초)",
+        "Python 실행 파일",
+        "연산",
+        "임베딩 백엔드",
+      ]),
+    );
   });
 });
 
@@ -566,10 +643,14 @@ describe("VaultSearchPlugin production mutation helpers rollback and sidecar syn
     expect(okPlugin.settings.answerModel).toBe("gpt-4o-mini");
     expect(okPlugin.draftSettings.answerProvider).toBe("openai");
     expect(okPlugin.draftSettings.answerModel).toBe("gpt-4o-mini");
-    expect(backendCalls.some((c) => c.method === "apply_search_config")).toBe(true);
+    expect(backendCalls.some((c) => c.method === "apply_search_config")).toBe(
+      true,
+    );
 
     // 2. Failure rollback case using real prototype implementation
-    const { plugin: failPlugin } = createRealProductionPlugin({ failSave: true });
+    const { plugin: failPlugin } = createRealProductionPlugin({
+      failSave: true,
+    });
     await expect(
       failPlugin.setAnswerModel("openai", "gpt-4o-mini", { notify: false }),
     ).rejects.toThrow("Disk write permission denied");
@@ -585,7 +666,9 @@ describe("VaultSearchPlugin production mutation helpers rollback and sidecar syn
     expect(okPlugin.settings.answerReasoningEffort).toBe("medium");
     expect(okPlugin.draftSettings.answerReasoningEffort).toBe("medium");
 
-    const { plugin: failPlugin } = createRealProductionPlugin({ failSave: true });
+    const { plugin: failPlugin } = createRealProductionPlugin({
+      failSave: true,
+    });
     await expect(failPlugin.setAnswerReasoningEffort("low")).rejects.toThrow(
       "Disk write permission denied",
     );
@@ -605,7 +688,9 @@ describe("VaultSearchPlugin production mutation helpers rollback and sidecar syn
       model: "o3-mini",
     });
 
-    const { plugin: failPlugin } = createRealProductionPlugin({ failSave: true });
+    const { plugin: failPlugin } = createRealProductionPlugin({
+      failSave: true,
+    });
     const originalFavs = [{ provider: "openai", model: "gpt-4o" }];
     await expect(
       failPlugin.toggleFavoriteModel("openai", "o3-mini"),
@@ -616,8 +701,16 @@ describe("VaultSearchPlugin production mutation helpers rollback and sidecar syn
 
   it("real setProviderModels updates model cache on success and rolls back on save failure", async () => {
     const { plugin: okPlugin } = createRealProductionPlugin();
-    await okPlugin.setProviderModels("openai", ["gpt-4o", "gpt-4o-mini", "o3-mini"]);
-    expect(okPlugin.getProviderModels("openai")).toEqual(["gpt-4o", "gpt-4o-mini", "o3-mini"]);
+    await okPlugin.setProviderModels("openai", [
+      "gpt-4o",
+      "gpt-4o-mini",
+      "o3-mini",
+    ]);
+    expect(okPlugin.getProviderModels("openai")).toEqual([
+      "gpt-4o",
+      "gpt-4o-mini",
+      "o3-mini",
+    ]);
     expect(okPlugin.settings.fetchedProviderModels?.openai).toEqual([
       "gpt-4o",
       "gpt-4o-mini",
@@ -629,13 +722,20 @@ describe("VaultSearchPlugin production mutation helpers rollback and sidecar syn
       "o3-mini",
     ]);
 
-    const { plugin: failPlugin } = createRealProductionPlugin({ failSave: true });
+    const { plugin: failPlugin } = createRealProductionPlugin({
+      failSave: true,
+    });
     await expect(
-      failPlugin.setProviderModels("deepseek", ["deepseek-chat", "deepseek-reasoner"]),
+      failPlugin.setProviderModels("deepseek", [
+        "deepseek-chat",
+        "deepseek-reasoner",
+      ]),
     ).rejects.toThrow("Disk write permission denied");
     expect(failPlugin.getProviderModels("deepseek")).toEqual([]);
     expect(failPlugin.settings.fetchedProviderModels?.deepseek).toBeUndefined();
-    expect(failPlugin.draftSettings.fetchedProviderModels?.deepseek).toBeUndefined();
+    expect(
+      failPlugin.draftSettings.fetchedProviderModels?.deepseek,
+    ).toBeUndefined();
   });
 
   it("FIFO serialization preserves order when concurrent mutation operations are enqueued", async () => {
@@ -661,9 +761,7 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
       rejectModelA = reject;
     });
 
-    let callCount = 0;
     plugin.setAnswerModel = vi.fn(async (_p: any, model: string) => {
-      callCount++;
       if (model === "gpt-4o-mini") {
         await modelAGate;
       } else if (model === "o3-mini") {
@@ -770,7 +868,9 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
     plugin.settings = cloneSettings(DEFAULT_SETTINGS);
     plugin.settings.answerProvider = "openai";
     plugin.settings.answerModel = "gpt-4o";
-    plugin.settings.favoriteAnswerModels = [{ provider: "openai", model: "gpt-4o" }];
+    plugin.settings.favoriteAnswerModels = [
+      { provider: "openai", model: "gpt-4o" },
+    ];
     plugin.draftTarget = cloneSettings(plugin.settings);
     plugin.draftSettings = new Proxy(plugin.draftTarget, {
       set(target, prop, value) {
@@ -780,7 +880,11 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
     });
     plugin.providerModels = { openai: ["gpt-4o", "gpt-4o-mini", "o3-mini"] };
     plugin.getProviderModels = (p: string) => plugin.providerModels[p] || [];
-    plugin.backendInstall = { installed: true, version: "0.1.64", expected: "0.1.64" };
+    plugin.backendInstall = {
+      installed: true,
+      version: "0.1.64",
+      expected: "0.1.64",
+    };
     plugin.runtimeSummary = "런타임: venv";
     plugin.runtimeWarning = null;
     plugin.settingsQueue = Promise.resolve();
@@ -881,7 +985,11 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
     });
     plugin.providerModels = { openai: ["gpt-4o", "gpt-4o-mini", "o3-mini"] };
     plugin.getProviderModels = (p: string) => plugin.providerModels[p] || [];
-    plugin.backendInstall = { installed: true, version: "0.1.64", expected: "0.1.64" };
+    plugin.backendInstall = {
+      installed: true,
+      version: "0.1.64",
+      expected: "0.1.64",
+    };
     plugin.runtimeSummary = "런타임: venv";
     plugin.runtimeWarning = null;
     plugin.settingsQueue = Promise.resolve();
@@ -966,7 +1074,9 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
     plugin.settings = cloneSettings(DEFAULT_SETTINGS);
     plugin.settings.answerProvider = "openai";
     plugin.settings.answerModel = "gpt-4o";
-    plugin.settings.favoriteAnswerModels = [{ provider: "openai", model: "gpt-4o" }];
+    plugin.settings.favoriteAnswerModels = [
+      { provider: "openai", model: "gpt-4o" },
+    ];
     plugin.draftTarget = cloneSettings(plugin.settings);
     plugin.draftSettings = new Proxy(plugin.draftTarget, {
       set(target, prop, value) {
@@ -976,7 +1086,11 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
     });
     plugin.providerModels = { openai: ["gpt-4o", "gpt-4o-mini", "o3-mini"] };
     plugin.getProviderModels = (p: string) => plugin.providerModels[p] || [];
-    plugin.backendInstall = { installed: true, version: "0.1.64", expected: "0.1.64" };
+    plugin.backendInstall = {
+      installed: true,
+      version: "0.1.64",
+      expected: "0.1.64",
+    };
     plugin.runtimeSummary = "런타임: venv";
     plugin.runtimeWarning = null;
     plugin.settingsQueue = Promise.resolve();
@@ -1056,7 +1170,8 @@ describe("Settings Tab optimistic model selection and favorite stale rollback", 
 
     const rows = tab.containerEl.querySelectorAll(".vault-search-model-row");
     const rowMini = rows.find(
-      (r) => r.querySelector(".vault-search-model-name")?.text === "gpt-4o-mini",
+      (r) =>
+        r.querySelector(".vault-search-model-name")?.text === "gpt-4o-mini",
     );
     const starMini = rowMini?.querySelector(".vault-search-model-star");
     expect(starMini).toBeDefined();
@@ -1094,7 +1209,11 @@ describe("Startup sanitized service-config fail-closed across production methods
     plugin.manifest = { id: "obsidian-vault-search", version: "0.1.64" };
     plugin.settings = settings;
     plugin.providerModels = { openai: ["gpt-4o"] };
-    plugin.backendInstall = { installed: true, version: "0.1.64", expected: "0.1.64" };
+    plugin.backendInstall = {
+      installed: true,
+      version: "0.1.64",
+      expected: "0.1.64",
+    };
     plugin.runtimeSummary = "런타임: venv";
     plugin.runtimeWarning = null;
     plugin.aiSearchViews = new Set();
@@ -1122,7 +1241,10 @@ describe("Startup sanitized service-config fail-closed across production methods
       },
     };
 
-    return { plugin: plugin as VaultSearchPlugin, getLayoutReadyCb: () => layoutReadyCb };
+    return {
+      plugin: plugin as VaultSearchPlugin,
+      getLayoutReadyCb: () => layoutReadyCb,
+    };
   }
 
   it("vault-open loadPolicy: real onload blocks backend startup when sanitized config write fails and prevents secret leaks", async () => {
@@ -1133,18 +1255,31 @@ describe("Startup sanitized service-config fail-closed across production methods
           "Filesystem write failed: CANARY_SECRET_PATH_CORRUPT_DISK_NO_PERMISSION",
         ),
       );
-    const startSpy = vi.spyOn(BackendManager.prototype, "start").mockResolvedValue(undefined);
+    const startSpy = vi
+      .spyOn(BackendManager.prototype, "start")
+      .mockResolvedValue(undefined);
     const ensureStartedSpy = vi
       .spyOn(BackendManager.prototype, "ensureStarted")
       .mockResolvedValue(undefined);
-    const restartSpy = vi.spyOn(BackendManager.prototype, "restart").mockResolvedValue(undefined);
-    const callSpy = vi.spyOn(BackendManager.prototype, "call").mockResolvedValue({} as any);
+    const restartSpy = vi
+      .spyOn(BackendManager.prototype, "restart")
+      .mockResolvedValue(undefined);
+    const callSpy = vi
+      .spyOn(BackendManager.prototype, "call")
+      .mockResolvedValue({} as any);
     const sendMcpSecretsSpy = vi
       .spyOn(BackendManager.prototype, "sendMcpSecrets")
       .mockResolvedValue(undefined);
-    vi.spyOn(BackendManager.prototype, "ensureBackendProvisioned").mockResolvedValue({} as any);
-    vi.spyOn(BackendManager.prototype, "readMachinePython").mockResolvedValue("python");
-    vi.spyOn(BackendManager.prototype, "writeMachinePython").mockResolvedValue(undefined);
+    vi.spyOn(
+      BackendManager.prototype,
+      "ensureBackendProvisioned",
+    ).mockResolvedValue({} as any);
+    vi.spyOn(BackendManager.prototype, "readMachinePython").mockResolvedValue(
+      "python",
+    );
+    vi.spyOn(BackendManager.prototype, "writeMachinePython").mockResolvedValue(
+      undefined,
+    );
     vi.spyOn(BackendManager.prototype, "inspectPython").mockResolvedValue({
       pythonPath: "python",
       isManaged: false,
@@ -1153,11 +1288,16 @@ describe("Startup sanitized service-config fail-closed across production methods
       hasModule: true,
       version: "3.13.0",
     } as any);
-    vi.spyOn(BackendManager.prototype, "managedRuntime").mockResolvedValue(null);
-    vi.spyOn(BackendManager.prototype, "backendVersion").mockResolvedValue("0.1.64");
+    vi.spyOn(BackendManager.prototype, "managedRuntime").mockResolvedValue(
+      null,
+    );
+    vi.spyOn(BackendManager.prototype, "backendVersion").mockResolvedValue(
+      "0.1.64",
+    );
 
     h.notices.length = 0;
-    const { plugin, getLayoutReadyCb } = createRealProductionStartupPlugin("vault-open");
+    const { plugin, getLayoutReadyCb } =
+      createRealProductionStartupPlugin("vault-open");
 
     // Execute actual VaultSearchPlugin.prototype.onload
     await plugin.onload();
@@ -1166,11 +1306,14 @@ describe("Startup sanitized service-config fail-closed across production methods
     expect((plugin as any).startupConfigSanitized).toBe(false);
 
     // Notice has ONLY coded diagnostic SERVICE_CONFIG_WRITE_FAILED; canary and raw disk errors are blocked
-    expect(h.notices.some((n) => n.includes("SERVICE_CONFIG_WRITE_FAILED"))).toBe(true);
+    expect(
+      h.notices.some((n) => n.includes("SERVICE_CONFIG_WRITE_FAILED")),
+    ).toBe(true);
     expect(
       h.notices.some(
         (n) =>
-          n.includes("CANARY_SECRET_PATH") || n.includes("Filesystem write failed"),
+          n.includes("CANARY_SECRET_PATH") ||
+          n.includes("Filesystem write failed"),
       ),
     ).toBe(false);
 
@@ -1186,12 +1329,24 @@ describe("Startup sanitized service-config fail-closed across production methods
     expect(sendMcpSecretsSpy).not.toHaveBeenCalled();
 
     // Verify all lifecycle methods fail closed while unsanitized
-    await expect(plugin.startBackend()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
-    await expect(plugin.startLazyBackend()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
-    await expect(plugin.ensureSearchStarted()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
-    await expect(plugin.provisionOnnx()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
-    await expect(plugin.provisionBackend()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
-    await expect(plugin.restartBackend()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
+    await expect(plugin.startBackend()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
+    await expect(plugin.startLazyBackend()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
+    await expect(plugin.ensureSearchStarted()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
+    await expect(plugin.provisionOnnx()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
+    await expect(plugin.provisionBackend()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
+    await expect(plugin.restartBackend()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
 
     expect(startSpy).not.toHaveBeenCalled();
     expect(ensureStartedSpy).not.toHaveBeenCalled();
@@ -1207,19 +1362,32 @@ describe("Startup sanitized service-config fail-closed across production methods
   });
 
   it("first-search loadPolicy: 0 auto starts on layout ready and fails closed on ensureSearchStarted", async () => {
-    vi.spyOn(BackendManager.prototype, "persistServiceConfig").mockRejectedValue(
-      new Error("Disk permission denied"),
-    );
-    const startSpy = vi.spyOn(BackendManager.prototype, "start").mockResolvedValue(undefined);
+    vi.spyOn(
+      BackendManager.prototype,
+      "persistServiceConfig",
+    ).mockRejectedValue(new Error("Disk permission denied"));
+    const startSpy = vi
+      .spyOn(BackendManager.prototype, "start")
+      .mockResolvedValue(undefined);
     const ensureStartedSpy = vi
       .spyOn(BackendManager.prototype, "ensureStarted")
       .mockResolvedValue(undefined);
-    vi.spyOn(BackendManager.prototype, "ensureBackendProvisioned").mockResolvedValue({} as any);
-    vi.spyOn(BackendManager.prototype, "readMachinePython").mockResolvedValue("python");
-    vi.spyOn(BackendManager.prototype, "writeMachinePython").mockResolvedValue(undefined);
-    vi.spyOn(BackendManager.prototype, "backendVersion").mockResolvedValue("0.1.64");
+    vi.spyOn(
+      BackendManager.prototype,
+      "ensureBackendProvisioned",
+    ).mockResolvedValue({} as any);
+    vi.spyOn(BackendManager.prototype, "readMachinePython").mockResolvedValue(
+      "python",
+    );
+    vi.spyOn(BackendManager.prototype, "writeMachinePython").mockResolvedValue(
+      undefined,
+    );
+    vi.spyOn(BackendManager.prototype, "backendVersion").mockResolvedValue(
+      "0.1.64",
+    );
 
-    const { plugin, getLayoutReadyCb } = createRealProductionStartupPlugin("first-search");
+    const { plugin, getLayoutReadyCb } =
+      createRealProductionStartupPlugin("first-search");
     await plugin.onload();
 
     getLayoutReadyCb()?.();
@@ -1227,7 +1395,9 @@ describe("Startup sanitized service-config fail-closed across production methods
     expect(ensureStartedSpy).not.toHaveBeenCalled();
 
     // Search attempt fails closed without starting backend
-    await expect(plugin.ensureSearchStarted()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
+    await expect(plugin.ensureSearchStarted()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
     expect(startSpy).not.toHaveBeenCalled();
     expect(ensureStartedSpy).not.toHaveBeenCalled();
   });
@@ -1236,13 +1406,22 @@ describe("Startup sanitized service-config fail-closed across production methods
     const persistSpy = vi
       .spyOn(BackendManager.prototype, "persistServiceConfig")
       .mockRejectedValue(new Error("Disk permission denied"));
-    const startSpy = vi.spyOn(BackendManager.prototype, "start").mockResolvedValue(undefined);
+    const startSpy = vi
+      .spyOn(BackendManager.prototype, "start")
+      .mockResolvedValue(undefined);
     const ensureStartedSpy = vi
       .spyOn(BackendManager.prototype, "ensureStarted")
       .mockResolvedValue(undefined);
-    vi.spyOn(BackendManager.prototype, "ensureBackendProvisioned").mockResolvedValue({} as any);
-    vi.spyOn(BackendManager.prototype, "readMachinePython").mockResolvedValue("python");
-    vi.spyOn(BackendManager.prototype, "writeMachinePython").mockResolvedValue(undefined);
+    vi.spyOn(
+      BackendManager.prototype,
+      "ensureBackendProvisioned",
+    ).mockResolvedValue({} as any);
+    vi.spyOn(BackendManager.prototype, "readMachinePython").mockResolvedValue(
+      "python",
+    );
+    vi.spyOn(BackendManager.prototype, "writeMachinePython").mockResolvedValue(
+      undefined,
+    );
     vi.spyOn(BackendManager.prototype, "inspectPython").mockResolvedValue({
       pythonPath: "python",
       isManaged: false,
@@ -1251,10 +1430,15 @@ describe("Startup sanitized service-config fail-closed across production methods
       hasModule: true,
       version: "3.13.0",
     } as any);
-    vi.spyOn(BackendManager.prototype, "managedRuntime").mockResolvedValue(null);
-    vi.spyOn(BackendManager.prototype, "backendVersion").mockResolvedValue("0.1.64");
+    vi.spyOn(BackendManager.prototype, "managedRuntime").mockResolvedValue(
+      null,
+    );
+    vi.spyOn(BackendManager.prototype, "backendVersion").mockResolvedValue(
+      "0.1.64",
+    );
 
-    const { plugin, getLayoutReadyCb } = createRealProductionStartupPlugin("manual");
+    const { plugin, getLayoutReadyCb } =
+      createRealProductionStartupPlugin("manual");
     await plugin.onload();
 
     getLayoutReadyCb()?.();
@@ -1262,7 +1446,9 @@ describe("Startup sanitized service-config fail-closed across production methods
     expect(ensureStartedSpy).not.toHaveBeenCalled();
 
     // Explicit start fails closed
-    await expect(plugin.startBackend()).rejects.toThrow("SERVICE_CONFIG_WRITE_FAILED");
+    await expect(plugin.startBackend()).rejects.toThrow(
+      "SERVICE_CONFIG_WRITE_FAILED",
+    );
     expect(startSpy).not.toHaveBeenCalled();
 
     // Retry succeeds on sanitation fix

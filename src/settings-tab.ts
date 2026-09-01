@@ -13,6 +13,8 @@ import { renderSkillSettings } from "./skill-settings";
 
 type SettingsTabId = "general" | "answer" | "agent" | "search";
 
+type StatusTone = "good" | "mid" | "accent" | "bad";
+
 export class VaultSearchSettingTab extends PluginSettingTab {
   private activeTab: SettingsTabId = "general";
   private providerModelSelections: Partial<Record<LLMProviderId, string>> = {};
@@ -20,65 +22,95 @@ export class VaultSearchSettingTab extends PluginSettingTab {
   private latestModelSelectionOp: Partial<Record<LLMProviderId, number>> = {};
   private favoriteOpSeq = 0;
   private latestFavoriteOp: Record<string, number> = {};
-  /** Status line created by display(); updated in place on backend events so
+  /** Status card created by display(); updated in place on backend events so
    *  the tab never re-renders (which would reset the scroll position) while
    *  the user is editing settings. */
-  private statusEl: HTMLElement | null = null;
+  private statusEls: {
+    root: HTMLElement;
+    dot: HTMLElement;
+    label: HTMLElement;
+    files: HTMLElement;
+    chunks: HTMLElement;
+    extra: HTMLElement;
+    warn: HTMLElement;
+  } | null = null;
 
   constructor(private readonly owner: VaultSearchPlugin) {
     super(owner.app, owner);
   }
 
-  /** Refresh only the status line (no full re-render). */
+  /** Refresh only the status card (no full re-render). */
   updateBackendStatus(status: BackendStatus): void {
-    const el = this.statusEl;
-    if (!el || !el.isConnected) return;
-    el.setText(this.buildStatusText(status));
-    el.toggleClass("vault-search-error", Boolean(status.error));
-  }
-
-  private buildStatusText(status: BackendStatus): string {
-    return [
-      `상태: ${status.state}`,
-      status.model_id ? `모델: ${status.model_id}` : "",
-      status.device ? `디바이스: ${status.device}` : "",
-      this.providerStatusLine(status),
-      status.pid ? `PID: ${status.pid} / 포트: ${status.port}` : "",
-      status.count_available === false
-        ? "인덱스 개수: 확인 불가"
-        : status.files === undefined
-          ? ""
-          : `인덱스: 파일 ${status.files}개 / 청크 ${status.chunks ?? 0}개`,
-      status.model_load_seconds === undefined
-        ? ""
-        : `최근 모델 로딩: ${status.model_load_seconds}초`,
-      status.progress ? `진행: ${status.progress}` : "",
-      status.pending_recovery_required
-        ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}`
-        : "",
-      status.index_rebuild_required
-        ? `인덱스 호환성 문제: ${status.recommended_action === "rebuild_vectors" ? "벡터 재구축 필요" : "전체 재구축 필요"}`
-        : "",
-      status.error ? `오류: ${status.error}` : "",
-      this.owner.runtimeSummary,
-      this.owner.runtimeWarning || "",
-    ]
-      .filter(Boolean)
-      .join("\n");
+    const els = this.statusEls;
+    if (!els || !els.root.isConnected) return;
+    this.paintStatus(status);
   }
 
   display(): void {
     const { containerEl } = this;
-    const draft = this.owner.draftSettings;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Vault Search Service" });
-    const status = this.owner.backend?.status || { state: "stopped" as const };
-    const statusEl = containerEl.createDiv({ cls: "vault-search-status" });
-    statusEl.setText(this.buildStatusText(status));
-    this.statusEl = statusEl;
-    if (status.error) statusEl.addClass("vault-search-error");
+    containerEl.addClass("vault-search-settings");
 
-    new Setting(containerEl)
+    const tabs = containerEl.createDiv({ cls: "vault-search-settings-tabs" });
+    const panels = {
+      general: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+      answer: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+      agent: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+      search: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+    } satisfies Record<SettingsTabId, HTMLElement>;
+    const labels: Record<SettingsTabId, string> = {
+      general: "일반",
+      answer: "AI 답변",
+      agent: "API 에이전트",
+      search: "검색·런타임",
+    };
+    const buttons = new Map<SettingsTabId, HTMLButtonElement>();
+    const updateActive = () => {
+      for (const tab of Object.keys(panels) as SettingsTabId[]) {
+        panels[tab].toggleClass("is-active", tab === this.activeTab);
+        buttons.get(tab)?.toggleClass("is-active", tab === this.activeTab);
+      }
+    };
+    for (const tab of Object.keys(labels) as SettingsTabId[]) {
+      const button = tabs.createEl("button", {
+        text: labels[tab],
+        cls: "vault-search-settings-tab",
+        attr: { type: "button" },
+      });
+      button.addEventListener("click", () => {
+        this.activeTab = tab;
+        updateActive();
+      });
+      buttons.set(tab, button);
+    }
+
+    this.renderGeneral(panels.general);
+    this.renderAnswer(panels.answer);
+    this.renderAgent(panels.agent);
+    this.renderSearch(panels.search);
+    updateActive();
+  }
+
+  private renderGeneral(parent: HTMLElement): void {
+    const status = this.owner.backend?.status || { state: "stopped" as const };
+    this.heading(parent, "인덱스");
+    this.renderStatusCard(parent, status);
+
+    new Setting(parent)
+      .setName("전체 재구축")
+      .setDesc("인덱스를 처음부터 다시 만듭니다.")
+      .addButton((button) =>
+        button
+          .setButtonText("재구축...")
+          .setWarning()
+          .onClick(() => {
+            void this.owner
+              .rebuildAll()
+              .catch((error) => this.showError(error));
+          }),
+      );
+
+    new Setting(parent)
       .setName("서비스 제어")
       .setDesc(
         "설정 변경은 입력 후 자동으로 저장·적용됩니다 (약 1초). 모델은 이 볼트에서만 상주합니다.",
@@ -93,73 +125,52 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }),
       )
       .addButton((button) =>
-        button.setButtonText("중지").onClick(async () => {
+        button.setButtonText("중지").onClick(() => {
+          void this.owner.stopBackend().catch((error) => this.showError(error));
+        }),
+      );
+
+    new Setting(parent)
+      .setName("인덱스 관리")
+      .setDesc("범위를 확인하거나 벡터만 다시 만듭니다.")
+      .addButton((button) =>
+        button.setButtonText("범위 미리보기").onClick(async () => {
           try {
-            await this.owner.stopBackend();
+            const result = await this.owner.previewScope();
+            new Notice(`검색 대상: ${result.count}개 파일`);
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("정밀 대조").onClick(async () => {
+          try {
+            await this.owner.reconcile("strict");
+          } catch (error) {
+            this.showError(error);
+          }
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("벡터 재구축").onClick(async () => {
+          try {
+            await this.owner.rebuildVectors();
           } catch (error) {
             this.showError(error);
           }
         }),
       );
 
-    new Setting(containerEl)
-      .setName("시작 정책")
-      .setDesc(
-        "기본값은 엔진에 따라 자동 조정됩니다: ONNX는 첫 검색 시 로드, PyTorch는 볼트 열 때 로드. 여기서 직접 선택하면 그 값이 유지됩니다.",
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("vault-open", "볼트를 열 때 모델 로드")
-          .addOption("first-search", "첫 검색 때 모델 로드")
-          .addOption("manual", "수동 시작")
-          .setValue(draft.loadPolicy)
-          .onChange((value) => {
-            draft.loadPolicy = value as typeof draft.loadPolicy;
-            this.display();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("유휴 모델 언로드 (초)")
-      .setDesc(
-        "기본값 300초. 0이면 비활성(로드 후 상주). 검색이 없으면 이 시간 후 모델을 언로드합니다. ONNX 엔진은 ORT 세션을 해제해 VRAM/RAM을 반환하고, 다음 검색 시 다시 로드합니다. PyTorch 엔진은 참조를 해제하되 CUDA 캐시로 VRAM 일부가 남을 수 있습니다.",
-      )
-      .addText((text) =>
-        text
-          .setValue(String(draft.modelIdleTimeoutSeconds))
-          .onChange((value) => {
-            draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(
-              value,
-              draft.modelIdleTimeoutSeconds,
-            );
-          }),
-      );
-
-    const autoPython = isAutoPython(draft.pythonExecutable);
-    new Setting(containerEl)
-      .setName("Python 실행 파일")
-      .setDesc(
-        "비워두면(또는 python) 관리형 런타임(venv)을 자동으로 찾아 설정합니다. 직접 입력하면 그 Python을 사용합니다. " +
-          (autoPython ? "현재: 자동 선택" : `현재: ${draft.pythonExecutable}`),
-      )
-      .addText((text) =>
-        text
-          .setValue(autoPython ? "" : draft.pythonExecutable)
-          .setPlaceholder("자동 (관리형 venv 우선)")
-          .onChange((value) => {
-            draft.pythonExecutable = value.trim() || "python";
-          }),
-      );
     const install = this.owner.backendInstall;
-    const backendStateText =
-      !install.expected
-        ? "확인 중…"
-        : !install.installed
-          ? "미설치"
-          : install.version === install.expected
-            ? `설치됨 (v${install.version}, 최신)`
-            : `설치됨 (v${install.version}) — 플러그인 v${install.expected}와 불일치`;
-    new Setting(containerEl)
+    const backendStateText = install.expected
+      ? install.installed
+        ? install.version === install.expected
+          ? `설치됨 (v${install.version}, 최신)`
+          : `설치됨 (v${install.version}) — 플러그인 v${install.expected}와 불일치`
+        : "미설치"
+      : "확인 중…";
+    new Setting(parent)
       .setName("Python 백엔드")
       .setDesc(
         `현재 상태: ${backendStateText}. BRAT 설치는 main.js/manifest/styles.css만 넣으므로, 백엔드는 GitHub 릴리스에서 자동으로 받습니다. 이 버튼으로 다시 받거나 버전을 맞춥니다.`,
@@ -173,9 +184,13 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
         }),
       );
+  }
 
-    containerEl.createEl("h3", { text: "AI Vault 답변" });
-    new Setting(containerEl)
+  private renderAnswer(parent: HTMLElement): void {
+    const draft = this.owner.draftSettings;
+    this.heading(parent, "AI Vault 답변");
+
+    new Setting(parent)
       .setName("답변 provider")
       .setDesc(
         "검색 근거만 provider에 전달합니다. API key는 플러그인에 저장하지 않고 sidecar가 환경변수에서 읽습니다.",
@@ -202,7 +217,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
     const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
     let apiKeyInput: HTMLInputElement | null = null;
-    new Setting(containerEl)
+    new Setting(parent)
       .setName(`API 키 (${answerProvider.name})`)
       .setDesc(
         savedApiKey
@@ -230,10 +245,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
           button.setDisabled(true);
           try {
-            const status = await validateProviderApiKey(
-              targetProvider,
-              key,
-            );
+            const status = await validateProviderApiKey(targetProvider, key);
             let message: string;
             if (status === "valid") {
               message = `${targetProviderInfo.name} 키가 유효합니다.`;
@@ -295,7 +307,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
     const favorites = Array.isArray(draft.favoriteAnswerModels)
       ? [...draft.favoriteAnswerModels]
       : [];
-    const modelSetting = new Setting(containerEl)
+    const modelSetting = new Setting(parent)
       .setName("답변 모델")
       .setDesc(
         fetchedModels.length
@@ -390,8 +402,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             ? draft.favoriteAnswerModels.map((f) => ({ ...f }))
             : [];
           const exists = prevFavorites.some(
-            (f) =>
-              f.provider === targetProvider && f.model === targetModel,
+            (f) => f.provider === targetProvider && f.model === targetModel,
           );
           const desiredFavorite = !exists;
           const optimisticFavorites = desiredFavorite
@@ -471,7 +482,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           this.providerModelSelections[targetProvider] =
             draft.answerProvider === targetProvider
               ? draft.answerModel
-              : (this.providerModelSelections[targetProvider] || "");
+              : this.providerModelSelections[targetProvider] || "";
           new Notice(
             models.length
               ? `${targetProviderInfo.name}: 선택 가능한 모델 ${models.length}개를 확인했습니다.`
@@ -489,7 +500,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }
       }),
     );
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("답변 context 문자 수")
       .setDesc("8,000~32,000자")
       .addText((text) =>
@@ -503,7 +514,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           );
         }),
       );
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("답변 출력 토큰")
       .setDesc("128~8,000 토큰")
       .addText((text) =>
@@ -517,7 +528,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           );
         }),
       );
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("답변 timeout (초)")
       .setDesc("provider 요청 timeout은 최대 120초입니다.")
       .addText((text) =>
@@ -532,8 +543,8 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         }),
       );
 
-    containerEl.createEl("h3", { text: "AI Vault 히스토리" });
-    new Setting(containerEl)
+    this.heading(parent, "AI Vault 히스토리");
+    new Setting(parent)
       .setName("히스토리 폴더")
       .setDesc(
         "대화가 마크다운 노트로 저장되는 볼트 내 경로입니다. 노트는 언제든 직접 읽고 편집할 수 있습니다. 참고: 히스토리 노트도 검색 인덱스에 포함될 수 있으므로 제외하려면 제외 목록에 이 폴더를 추가하세요.",
@@ -546,7 +557,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             draft.historyFolder = value.trim() || "AI Vault Search/history";
           }),
       );
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("자동 저장")
       .setDesc("답변이 완료될 때마다 현재 대화를 히스토리에 자동 저장합니다.")
       .addToggle((toggle) =>
@@ -554,7 +565,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           draft.historyAutosave = value;
         }),
       );
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("최대 보존 개수")
       .setDesc("보관할 히스토리 노트 수입니다. 0이면 무제한으로 보관합니다.")
       .addText((text) =>
@@ -565,9 +576,12 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           );
         }),
       );
+  }
 
+  private renderAgent(parent: HTMLElement): void {
+    const draft = this.owner.draftSettings;
     const agent = this.owner.agentIntegration;
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("에이전트 통합")
       .setDesc(
         "AI 에이전트(Claude Code, Codex, Gemini CLI 등)가 이 볼트에서 vault-search를 사용하도록 지시 파일과 검색 래퍼를 설치합니다. " +
@@ -589,81 +603,64 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }),
       );
 
-    // --- API agent extensions: project rules / MCP servers / skills ---
-    renderApiAgentSettings(containerEl, this.owner, draft);
-    renderMcpSettings(containerEl, this.owner, draft);
-    renderSkillSettings(containerEl, this.owner, draft);
+    renderApiAgentSettings(parent, this.owner, draft);
+    renderMcpSettings(parent, this.owner, draft);
+    renderSkillSettings(parent, this.owner, draft);
+  }
 
-    new Setting(containerEl).setName("임베딩 모델").addDropdown((dropdown) => {
-      for (const [id, profile] of Object.entries(MODEL_PROFILES))
-        dropdown.addOption(id, profile.name);
-      dropdown.setValue(draft.modelProfile).onChange((id) => {
-        const profile = MODEL_PROFILES[id];
-        draft.modelProfile = id;
-        if (id !== "custom" && profile) {
-          draft.modelId = profile.modelId;
-          draft.queryPrefix = profile.queryPrefix;
-          draft.documentPrefix = profile.documentPrefix;
-        }
-        this.display();
-      });
-    });
+  private renderSearch(parent: HTMLElement): void {
+    const draft = this.owner.draftSettings;
+    const status = this.owner.backend?.status || { state: "stopped" as const };
 
-    new Setting(containerEl)
-      .setName("모델 ID")
+    this.heading(parent, "Compute");
+    const device = new Setting(parent)
+      .setName("연산")
       .setDesc(
-        MODEL_PROFILES[draft.modelProfile]?.note ||
-          "Sentence Transformers 모델 ID",
-      )
-      .addText((text) =>
-        text.setValue(draft.modelId).onChange((value) => {
-          draft.modelId = value.trim();
-        }),
+        "이 기기에서 임베딩 모델이 실행되는 방식입니다. 자동은 GPU와 검증된 CUDA 런타임이 있으면 GPU를, 없으면 CPU를 사용합니다. 보통은 바꿀 필요가 없습니다.",
       );
-    new Setting(containerEl)
+    this.addSegmented(
+      device,
+      [
+        { value: "auto", label: "자동" },
+        { value: "cpu", label: "CPU" },
+        { value: "cuda", label: "CUDA" },
+      ],
+      draft.device,
+      (value) => {
+        draft.device = value as typeof draft.device;
+        this.display();
+      },
+    );
+
+    const engine = new Setting(parent)
       .setName("임베딩 백엔드")
       .setDesc(
         "ONNX Runtime(기본): 직접 ONNX 경로로 시작이 빠르고 유휴 시 VRAM/RAM을 해제합니다. GPU가 있으면 TensorRT/CUDA를, 없으면 CPU를 자동 사용합니다. PyTorch: 벌크 인덱싱이 가장 빠르지만 시작이 느립니다. 백엔드를 바꾸면 시작 정책 기본값도 함께 조정됩니다.",
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("onnx", "ONNX Runtime (기본, 권장)")
-          .addOption("pytorch", "PyTorch")
-          .setValue(draft.engine)
-          .onChange((value) => {
-            const previous = draft.engine;
-            draft.engine = value as typeof draft.engine;
-            if (draft.loadPolicy === defaultLoadPolicy(previous)) {
-              draft.loadPolicy = defaultLoadPolicy(draft.engine);
-            }
-            this.display();
-          }),
       );
+    this.addSegmented(
+      engine,
+      [
+        { value: "onnx", label: "ONNX Runtime" },
+        { value: "pytorch", label: "PyTorch" },
+      ],
+      draft.engine,
+      (value) => {
+        const previous = draft.engine;
+        draft.engine = value as typeof draft.engine;
+        if (draft.loadPolicy === defaultLoadPolicy(previous)) {
+          draft.loadPolicy = defaultLoadPolicy(draft.engine);
+        }
+        this.display();
+      },
+    );
 
-    containerEl.createEl("h3", { text: "고급 설정" });
-
-    new Setting(containerEl)
-      .setName("디바이스")
-      .setDesc(
-        "자동(기본)은 GPU와 검증된 CUDA 런타임이 있으면 GPU를, 없으면 CPU를 사용합니다. CUDA를 명시하면 대용량 런타임 다운로드가 필요할 수 있습니다.",
-      )
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("auto", "자동")
-          .addOption("cpu", "CPU")
-          .addOption("cuda", "CUDA")
-          .setValue(draft.device)
-          .onChange((value) => {
-            draft.device = value as typeof draft.device;
-          }),
-      );
     const caps = status.capabilities;
     if (
       draft.engine === "onnx" &&
       caps &&
       caps.derived_model_available === false
     ) {
-      new Setting(containerEl)
+      new Setting(parent)
         .setName("ONNX 파생 모델 준비")
         .setDesc(
           caps.model_available === false
@@ -713,7 +710,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           .filter(Boolean)
           .join(", ") || "CPU만"
       : "서비스 시작 후 확인";
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("ONNX 실행 제공자 (provider)")
       .setDesc(
         `CUDA 실행 시에만 적용됩니다 (device=cuda 또는 auto가 CUDA로 해석될 때). 이 머신 지원: ${supported}. auto는 TensorRT가 설치되어 있으면 우선하고, 아니면 CUDA로 폴백합니다.`,
@@ -729,7 +726,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           });
       });
     const cudaInstalled = caps?.cuda_available === true;
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("CUDA 런타임")
       .setDesc(
         cudaInstalled
@@ -750,23 +747,98 @@ export class VaultSearchSettingTab extends PluginSettingTab {
             }
           });
       });
-    new Setting(containerEl).setName("임베딩 정규화").addToggle((toggle) =>
+
+    this.heading(parent, "시작·모델");
+    new Setting(parent)
+      .setName("시작 정책")
+      .setDesc(
+        "기본값은 엔진에 따라 자동 조정됩니다: ONNX는 첫 검색 시 로드, PyTorch는 볼트 열 때 로드. 여기서 직접 선택하면 그 값이 유지됩니다.",
+      )
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("vault-open", "볼트를 열 때 모델 로드")
+          .addOption("first-search", "첫 검색 때 모델 로드")
+          .addOption("manual", "수동 시작")
+          .setValue(draft.loadPolicy)
+          .onChange((value) => {
+            draft.loadPolicy = value as typeof draft.loadPolicy;
+            this.display();
+          }),
+      );
+    new Setting(parent)
+      .setName("유휴 모델 언로드 (초)")
+      .setDesc(
+        "기본값 300초. 0이면 비활성(로드 후 상주). 검색이 없으면 이 시간 후 모델을 언로드합니다. ONNX 엔진은 ORT 세션을 해제해 VRAM/RAM을 반환하고, 다음 검색 시 다시 로드합니다. PyTorch 엔진은 참조를 해제하되 CUDA 캐시로 VRAM 일부가 남을 수 있습니다.",
+      )
+      .addText((text) =>
+        text
+          .setValue(String(draft.modelIdleTimeoutSeconds))
+          .onChange((value) => {
+            draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(
+              value,
+              draft.modelIdleTimeoutSeconds,
+            );
+          }),
+      );
+    const autoPython = isAutoPython(draft.pythonExecutable);
+    new Setting(parent)
+      .setName("Python 실행 파일")
+      .setDesc(
+        "비워두면(또는 python) 관리형 런타임(venv)을 자동으로 찾아 설정합니다. 직접 입력하면 그 Python을 사용합니다. " +
+          (autoPython ? "현재: 자동 선택" : `현재: ${draft.pythonExecutable}`),
+      )
+      .addText((text) =>
+        text
+          .setValue(autoPython ? "" : draft.pythonExecutable)
+          .setPlaceholder("자동 (관리형 venv 우선)")
+          .onChange((value) => {
+            draft.pythonExecutable = value.trim() || "python";
+          }),
+      );
+
+    new Setting(parent).setName("임베딩 모델").addDropdown((dropdown) => {
+      for (const [id, profile] of Object.entries(MODEL_PROFILES))
+        dropdown.addOption(id, profile.name);
+      dropdown.setValue(draft.modelProfile).onChange((id) => {
+        const profile = MODEL_PROFILES[id];
+        draft.modelProfile = id;
+        if (id !== "custom" && profile) {
+          draft.modelId = profile.modelId;
+          draft.queryPrefix = profile.queryPrefix;
+          draft.documentPrefix = profile.documentPrefix;
+        }
+        this.display();
+      });
+    });
+    new Setting(parent)
+      .setName("모델 ID")
+      .setDesc(
+        MODEL_PROFILES[draft.modelProfile]?.note ||
+          "Sentence Transformers 모델 ID",
+      )
+      .addText((text) =>
+        text.setValue(draft.modelId).onChange((value) => {
+          draft.modelId = value.trim();
+        }),
+      );
+    new Setting(parent).setName("임베딩 정규화").addToggle((toggle) =>
       toggle.setValue(draft.normalizeEmbeddings).onChange((value) => {
         draft.normalizeEmbeddings = value;
       }),
     );
-    new Setting(containerEl).setName("Query prefix").addText((text) =>
+    new Setting(parent).setName("Query prefix").addText((text) =>
       text.setValue(draft.queryPrefix).onChange((value) => {
         draft.queryPrefix = value;
       }),
     );
-    new Setting(containerEl).setName("Document prefix").addText((text) =>
+    new Setting(parent).setName("Document prefix").addText((text) =>
       text.setValue(draft.documentPrefix).onChange((value) => {
         draft.documentPrefix = value;
       }),
     );
 
-    new Setting(containerEl)
+    this.heading(parent, "인덱스 범위");
+    new Setting(parent)
       .setName("Include globs")
       .setDesc("볼트 상대 경로, 한 줄에 하나")
       .setClass("vault-search-textarea")
@@ -777,7 +849,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           draft.includeGlobs = this.lines(value);
         });
       });
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("Exclude globs")
       .setDesc("볼트 상대 경로, 한 줄에 하나")
       .setClass("vault-search-textarea")
@@ -788,8 +860,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           draft.excludeGlobs = this.lines(value);
         });
       });
-
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("위키 폴더")
       .setDesc(
         "타임라인/관계 검색에서 sources 참조를 따라가는 위키 폴더 목록입니다 (볼트 상대 경로, 한 줄에 하나). " +
@@ -804,53 +875,9 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         });
       });
 
-    new Setting(containerEl)
-      .setName("인덱스 관리")
-      .setDesc(
-        "설정 적용 후 범위를 확인하세요. 재구축은 임시 파일 검증 후 원자적으로 교체됩니다.",
-      )
-      .addButton((button) =>
-        button.setButtonText("범위 미리보기").onClick(async () => {
-          try {
-            const result = await this.owner.previewScope();
-            new Notice(`검색 대상: ${result.count}개 파일`);
-          } catch (error) {
-            this.showError(error);
-          }
-        }),
-      )
-      .addButton((button) =>
-        button.setButtonText("정밀 대조").onClick(async () => {
-          try {
-            await this.owner.reconcile("strict");
-          } catch (error) {
-            this.showError(error);
-          }
-        }),
-      )
-      .addButton((button) =>
-        button.setButtonText("벡터 재구축").onClick(async () => {
-          try {
-            await this.owner.rebuildVectors();
-          } catch (error) {
-            this.showError(error);
-          }
-        }),
-      )
-      .addButton((button) =>
-        button
-          .setButtonText("전체 재구축")
-          .setWarning()
-          .onClick(async () => {
-            try {
-              await this.owner.rebuildAll();
-            } catch (error) {
-              this.showError(error);
-            }
-          }),
-      );
-
+    this.heading(parent, "검색");
     this.numericFields(
+      parent,
       "청크 크기 / 오버랩",
       "값을 변경하면 전체 인덱스 재구축이 필요합니다.",
       [
@@ -871,7 +898,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         },
       ],
     );
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("청킹 전략")
       .setDesc(
         "Markdown 구조 인식 전략을 포함해 변경 시 전체 인덱스 재구축이 필요합니다.",
@@ -887,6 +914,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }),
       );
     this.numericFields(
+      parent,
       "BM25 / 벡터 / 최종 후보 / RRF k",
       "검색이 '후보를 넓게 모아 융합한 뒤 최종 결과만 반환'하는 너비를 조정합니다. " +
         "기본값 80 / 80 / 40은 K_Notes 골드셋 기준 recall@40 0.856으로 측정해 정한 값입니다.",
@@ -921,7 +949,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         },
       ],
     );
-    containerEl.createEl("div", {
+    parent.createEl("div", {
       cls: "vault-search-setting-hint",
       text:
         "• bm25TopK: 키워드(BM25)로 뽑는 후보 청크 수. 넓히면 정확한 단어가 흩어진 파일도 놓치지 않지만, " +
@@ -933,6 +961,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         "바꾸면 실행 중 서비스에 즉시 반영되며, 결과가 이상하면 기본값으로 되돌리면 됩니다.",
     });
     this.numericFields(
+      parent,
       "검색 다양성 / 제목 가중치",
       "파일당 최대 청크 수와 파일명·경로·헤딩 RRF 가중치입니다. 기본값은 1 / 1.0입니다.",
       [
@@ -953,14 +982,14 @@ export class VaultSearchSettingTab extends PluginSettingTab {
         },
       ],
     );
-    containerEl.createEl("div", {
+    parent.createEl("div", {
       cls: "vault-search-setting-hint",
       text:
         "• maxChunksPerFile: 한 파일이 최종 결과에서 차지할 수 있는 청크 수. 1이면 각 파일은 결과 1개로 제한되어 " +
         "다른 파일도 볼 수 있습니다. 한 파일의 여러 구절을 보려면 늘려 보세요.\n" +
         "• titleRrfWeight: 파일명·경로·헤딩 매치가 결과 순위에 미치는 가중치. 파일 제목을 중요하게 여기려면 올리세요.",
     });
-    new Setting(containerEl)
+    new Setting(parent)
       .setName("접두사 검색 폴백")
       .setDesc(
         "정확 BM25 결과가 없을 때 토큰 접두사 검색으로 한 번 더 찾습니다.",
@@ -970,104 +999,149 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           draft.prefixFallback = value;
         }),
       );
-    new Setting(containerEl).setName("동기화 debounce (ms)").addText((text) =>
+    new Setting(parent).setName("동기화 debounce (ms)").addText((text) =>
       text.setValue(String(draft.syncDebounceMs)).onChange((value) => {
         draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);
       }),
     );
-    new Setting(containerEl).setName("자동 증분 동기화").addToggle((toggle) =>
+    new Setting(parent).setName("자동 증분 동기화").addToggle((toggle) =>
       toggle.setValue(draft.autoSync).onChange((value) => {
         draft.autoSync = value;
       }),
     );
-    new Setting(containerEl).setName("시작 시 전체 대조").addToggle((toggle) =>
+    new Setting(parent).setName("시작 시 전체 대조").addToggle((toggle) =>
       toggle.setValue(draft.startupReconcile).onChange((value) => {
         draft.startupReconcile = value;
       }),
     );
-    this.renderTabs();
   }
 
-  private renderTabs(): void {
-    const root = this.containerEl;
-    const rendered = Array.from(root.children);
-    root.empty();
-    root.addClass("vault-search-settings");
+  private renderStatusCard(parent: HTMLElement, status: BackendStatus): void {
+    const card = parent.createDiv({ cls: "vault-search-status-card" });
+    const health = card.createDiv({ cls: "vault-search-status-health" });
+    const dot = health.createEl("span", { cls: "vault-search-dot" });
+    const label = health.createEl("span", { cls: "vault-search-status-label" });
+    card.createDiv({ cls: "vault-search-status-sep" });
+    const files = this.statusMetric(card, "파일");
+    const chunks = this.statusMetric(card, "청크");
+    const extra = card.createDiv({
+      cls: "vault-search-status-metric vault-search-status-last",
+    });
+    extra.createEl("div", {
+      cls: "vault-search-status-mlabel",
+      text: "마지막 업데이트",
+    });
+    const extraValue = extra.createEl("div", {
+      cls: "vault-search-status-value vault-search-status-stamp",
+    });
+    const warn = parent.createDiv({ cls: "vault-search-inline-warn" });
+    this.statusEls = {
+      root: card,
+      dot,
+      label,
+      files,
+      chunks,
+      extra: extraValue,
+      warn,
+    };
+    this.paintStatus(status);
+  }
 
-    const tabs = root.createDiv({ cls: "vault-search-settings-tabs" });
-    const panels = {
-      general: root.createDiv({ cls: "vault-search-settings-panel" }),
-      answer: root.createDiv({ cls: "vault-search-settings-panel" }),
-      agent: root.createDiv({ cls: "vault-search-settings-panel" }),
-      search: root.createDiv({ cls: "vault-search-settings-panel" }),
-    } satisfies Record<SettingsTabId, HTMLElement>;
-    const labels: Record<SettingsTabId, string> = {
-      general: "일반",
-      answer: "AI 답변",
-      agent: "API 에이전트",
-      search: "검색·런타임",
-    };
-    const buttons = new Map<SettingsTabId, HTMLButtonElement>();
-    const updateActive = () => {
-      for (const tab of Object.keys(panels) as SettingsTabId[]) {
-        panels[tab].toggleClass("is-active", tab === this.activeTab);
-        buttons.get(tab)?.toggleClass("is-active", tab === this.activeTab);
-      }
-    };
-    for (const tab of Object.keys(labels) as SettingsTabId[]) {
-      const button = tabs.createEl("button", {
-        text: labels[tab],
-        cls: "vault-search-settings-tab",
+  private statusMetric(parent: HTMLElement, caption: string): HTMLElement {
+    const metric = parent.createDiv({ cls: "vault-search-status-metric" });
+    const value = metric.createDiv({ cls: "vault-search-status-value" });
+    metric.createDiv({ cls: "vault-search-status-mlabel", text: caption });
+    return value;
+  }
+
+  private paintStatus(status: BackendStatus): void {
+    const els = this.statusEls;
+    if (!els) return;
+    const health = this.statusHealth(status);
+    els.dot.className = `vault-search-dot vault-search-dot-${health.tone}`;
+    els.label.setText(health.label);
+    els.root.toggleClass("vault-search-error", Boolean(status.error));
+
+    if (status.count_available === false) {
+      els.files.setText("—");
+      els.chunks.setText("—");
+    } else {
+      els.files.setText(
+        status.files === undefined ? "…" : status.files.toLocaleString(),
+      );
+      els.chunks.setText(
+        status.chunks === undefined ? "…" : status.chunks.toLocaleString(),
+      );
+    }
+
+    els.extra.setText(
+      status.progress || this.formatUpdatedAt(status.last_updated_at),
+    );
+
+    const warnings = [
+      status.error ? `오류: ${status.error}` : "",
+      status.pending_recovery_required
+        ? `복구 재시도 필요: ${status.pending_recovery_warning || "pending path journal"}`
+        : "",
+      status.index_rebuild_required
+        ? `인덱스 호환성 문제: ${status.recommended_action === "rebuild_vectors" ? "벡터 재구축 필요" : "전체 재구축 필요"}`
+        : "",
+      this.owner.runtimeWarning || "",
+    ].filter(Boolean);
+    els.warn.setText(warnings.join("\n"));
+    els.warn.toggleClass("is-visible", warnings.length > 0);
+  }
+
+  private statusHealth(status: BackendStatus): {
+    tone: StatusTone;
+    label: string;
+  } {
+    if (status.error || status.state === "error") {
+      return { tone: "bad", label: "오류" };
+    }
+    switch (status.state) {
+      case "ready":
+      case "idle":
+        if (status.files === 0) return { tone: "mid", label: "인덱스 없음" };
+        return { tone: "good", label: "최신" };
+      case "ready_no_index":
+        return { tone: "mid", label: "인덱스 없음" };
+      case "starting":
+      case "loading_model":
+        return { tone: "accent", label: "시작 중…" };
+      case "syncing":
+        return { tone: "accent", label: "동기화 중…" };
+      case "reconciling":
+        return { tone: "accent", label: "대조 중…" };
+      case "rebuilding":
+      case "rebuilding_vectors":
+        return { tone: "accent", label: "재구축 중…" };
+      case "stopped":
+      default:
+        return { tone: "mid", label: "중지됨" };
+    }
+  }
+
+  private heading(parent: HTMLElement, name: string): void {
+    new Setting(parent).setName(name).setHeading();
+  }
+
+  private addSegmented(
+    setting: Setting,
+    opts: Array<{ value: string; label: string }>,
+    selected: string,
+    onPick: (value: string) => void,
+  ): void {
+    const seg = setting.controlEl.createDiv({ cls: "vault-search-seg" });
+    for (const option of opts) {
+      const button = seg.createEl("button", {
+        cls: "vault-search-seg-opt",
+        text: option.label,
         attr: { type: "button" },
       });
-      button.addEventListener("click", () => {
-        this.activeTab = tab;
-        updateActive();
-      });
-      buttons.set(tab, button);
+      if (option.value === selected) button.addClass("is-active");
+      button.addEventListener("click", () => onPick(option.value));
     }
-
-    let panel: SettingsTabId = "general";
-    const searchSettingNames = new Set([
-      "에이전트 통합",
-      "임베딩 모델",
-      "모델 ID",
-      "임베딩 백엔드",
-      "인덱스 관리",
-      "청크 크기 / 오버랩",
-      "청킹 전략",
-      "BM25 / 벡터 / 최종 후보 / RRF k",
-      "검색 다양성 / 제목 가중치",
-      "접두사 검색 폴백",
-      "동기화 debounce (ms)",
-      "자동 증분 동기화",
-      "시작 시 전체 대조",
-    ]);
-    for (const child of rendered) {
-      const element = child as HTMLElement;
-      if (element.tagName === "H3") {
-        if (element.textContent?.includes("AI Vault")) panel = "answer";
-        if (
-          element.textContent?.includes("API 에이전트") ||
-          element.textContent?.includes("MCP 서버") ||
-          element.textContent?.includes("스킬")
-        )
-          panel = "agent";
-        if (element.textContent?.includes("고급")) panel = "search";
-      }
-      const settingName = element
-        .querySelector(".setting-item-name")
-        ?.textContent?.trim();
-      if (
-        panel === "answer" &&
-        settingName &&
-        searchSettingNames.has(settingName)
-      ) {
-        panel = "search";
-      }
-      panels[panel].appendChild(element);
-    }
-    updateActive();
   }
 
   /** Render a numeric row as labeled horizontal fields (label above each
@@ -1075,6 +1149,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
    *  instead of squeezing several fields into the right control column (which
    *  runs out of space for 4+ fields). */
   private numericFields(
+    parent: HTMLElement,
     name: string,
     desc: string,
     fields: Array<{
@@ -1084,7 +1159,7 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       allowZero?: boolean;
     }>,
   ): void {
-    const setting = new Setting(this.containerEl)
+    const setting = new Setting(parent)
       .setName(name)
       .setDesc(desc)
       .setClass("vault-search-fields-below");
@@ -1118,37 +1193,12 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       .filter(Boolean);
   }
 
-  /** Status line for the ONNX execution provider. Shows the *effective*
-   *  provider (the EP the loaded session was actually built with) when the
-   *  model is loaded, and the expected resolution before load, so the display
-   *  reflects reality rather than only the configured value. */
-  private providerStatusLine(status: BackendStatus): string {
-    const effective = status.effective_provider;
-    const shown = effective || status.expected_provider;
-    if (!shown) return "";
-    const configNote =
-      status.provider && status.provider !== "auto"
-        ? ` (설정: ${this.providerLabel(status.provider)})`
-        : "";
-    return `실행 제공자: ${this.providerLabel(shown)}${configNote}${effective ? "" : " (로드 전 예상)"}`;
-  }
-
-  private providerLabel(provider: string | null | undefined): string {
-    switch (provider) {
-      case "TensorrtExecutionProvider":
-      case "tensorrt":
-        return "TensorRT";
-      case "CUDAExecutionProvider":
-      case "cuda":
-        return "CUDA";
-      case "CPUExecutionProvider":
-      case "cpu":
-        return "CPU";
-      case "auto":
-        return "자동";
-      default:
-        return provider || "-";
-    }
+  private formatUpdatedAt(epoch: number | null | undefined): string {
+    if (epoch == null || !Number.isFinite(epoch) || epoch <= 0) return "없음";
+    const d = new Date(epoch * 1000);
+    if (Number.isNaN(d.getTime())) return "없음";
+    const p = (n: number) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
 
   private agentStatusText(agent: AgentIntegrationStatus): string {

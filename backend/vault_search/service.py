@@ -41,7 +41,7 @@ from .grounding import (
     build_prompt,
     normalize_citations,
 )
-from .index_metadata import classify_index_problems, validate_index_files
+from .index_metadata import classify_index_problems, load_metadata, validate_index_files
 from .indexing import IndexManager
 from .kiwi_user_dict import prepare_for_search
 from .llm import ProviderError, create_provider
@@ -89,6 +89,7 @@ class SearchService:
             "chunks": 0,
             "vector_chunks": 0,
         }
+        self._last_updated_at: float | None = None
         self._count_available = False
         self._index_operation_active = False
         self._capabilities: dict[str, bool] | None = None
@@ -366,6 +367,7 @@ class SearchService:
             "index_problems": self.index_problems,
             "recommended_action": self.recommended_action,
             "agent_tool_surface": dict(self._last_tool_surface),
+            "last_updated_at": self._last_updated_at,
             **self._cached_counts,
         }
 
@@ -974,7 +976,7 @@ class SearchService:
                 legacy_state.fingerprint = fp
                 legacy_run = type("LegacyRun", (), {"state": legacy_state})()
                 try:
-                    self.run_registry.add(legacy_run)
+                    self.run_registry.add(legacy_run)  # type: ignore[arg-type]
                 except AgentRunError as exc:
                     if exc.code == "RUN_CONFLICT":
                         term = self._get_terminal(client_run_id)
@@ -2014,6 +2016,9 @@ class SearchService:
         except (sqlite3.Error, OSError):
             self._cached_counts = {"files": 0, "chunks": 0, "vector_chunks": 0}
             self._count_available = False
+        meta = load_metadata(self.config.metadata_path)
+        updated = meta.get("updated_at") if meta else None
+        self._last_updated_at = updated if isinstance(updated, (int, float)) else None
 
     def _refresh_index_compatibility(self) -> None:
         """Validate the on-disk index and cache the result.

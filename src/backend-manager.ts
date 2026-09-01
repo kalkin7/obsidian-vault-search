@@ -26,7 +26,12 @@ import type {
   RuntimeInfo,
   VaultSearchSettings,
 } from "./types";
-import { BACKEND_VERSION, GITHUB_REPO, MCP_SDK_SPEC, PROTOCOL_VERSION } from "./constants";
+import {
+  BACKEND_VERSION,
+  GITHUB_REPO,
+  MCP_SDK_SPEC,
+  PROTOCOL_VERSION,
+} from "./constants";
 import { toSafeOrigin } from "./mcp-server-form";
 /** Deeper than a bare import: the pinned SDK must match exact version 1.28.1
  *  and expose all symbols used by mcp_host.py (ClientSession, StdioServerParameters,
@@ -418,6 +423,15 @@ export class BackendManager {
   private async provisionBackendFiles(force: boolean): Promise<boolean> {
     const current = await this.readBackendVersion();
     if (!force && current === this.manifestVersion) return true;
+    // A still-running older plugin must not download its GitHub zip over a
+    // newer local backend (dev install). Keep the newer folder.
+    if (
+      !force &&
+      current &&
+      compareDottedVersion(current, this.manifestVersion) > 0
+    ) {
+      return true;
+    }
 
     const existing = path.join(this.pluginDir, "backend");
     // Recover a valid backup first if the live backend is missing (e.g. a
@@ -442,13 +456,20 @@ export class BackendManager {
     const zipUrl = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/obsidian-vault-search-v${version}.zip`;
     let response;
     try {
-      response = await requestUrl({ url: zipUrl, throw: false });
+      response = await Promise.race([
+        requestUrl({ url: zipUrl, throw: false }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("download timed out")), 8_000);
+        }),
+      ]);
     } catch (error) {
+      if (!force && current) return true;
       throw new Error(
         `백엔드 다운로드 실패: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
     if (response.status !== 200) {
+      if (!force && current) return true;
       throw new Error(
         `백엔드 다운로드 실패 (HTTP ${response.status}): ${zipUrl}`,
       );
@@ -468,7 +489,8 @@ export class BackendManager {
     // plugin expects. A stale or tampered zip (even from the same URL) would
     // otherwise install code that inspectPython then rejects — or worse.
     const initEntry = entries.find(
-      (e) => e.entryName.replace(/\\/g, "/") === "backend/vault_search/__init__.py",
+      (e) =>
+        e.entryName.replace(/\\/g, "/") === "backend/vault_search/__init__.py",
     );
     const versionMatch = initEntry
       ? /__version__\s*=\s*["']([^"']+)["']/.exec(
@@ -557,11 +579,7 @@ export class BackendManager {
     this.setStatus({ state: "starting" });
     await mkdir(this.dataDir, { recursive: true });
     const providerEnvironment = this.getEnvironment();
-    if (
-      Object.keys(providerEnvironment).length === 0 &&
-      (await this.tryAttachStandalone())
-    )
-      return;
+    if (await this.tryAttachExisting()) return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -834,21 +852,28 @@ export class BackendManager {
   ): Promise<T> {
     let runtime = this.runtime;
     if (!runtime) runtime = await this.readRuntime();
-    if (!runtime) throw new BackendCallError("LOCAL_BACKEND_UNAVAILABLE", "로컬 백엔드가 실행 중이 아닙니다.");
+    if (!runtime)
+      throw new BackendCallError(
+        "LOCAL_BACKEND_UNAVAILABLE",
+        "로컬 백엔드가 실행 중이 아닙니다.",
+      );
     let response: BackendResponse<T>;
     try {
-      response = await requestBackend<T>(
-        runtime,
-        method,
-        params,
-        timeoutMs,
-      );
+      response = await requestBackend<T>(runtime, method, params, timeoutMs);
     } catch (error) {
       // Local socket failures are already classified with safe codes in
       // backend-protocol.ts; surface them as BackendCallError so the UI can
       // distinguish local vs provider failures without seeing raw ECONNRESET.
-      if (error && typeof error === "object" && "code" in (error as Record<string, unknown>)) {
-        const local = error as { code: string; message: string; details?: unknown };
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in (error as Record<string, unknown>)
+      ) {
+        const local = error as {
+          code: string;
+          message: string;
+          details?: unknown;
+        };
         // Await runtime refresh so next call (e.g., answer_status recovery) uses fresh PID/port
         let fresh: import("./types").RuntimeInfo | null = null;
         try {
@@ -858,14 +883,18 @@ export class BackendManager {
         }
         const pidChanged = !!fresh && fresh.pid !== runtime?.pid;
         const portChanged = !!fresh && fresh.port !== runtime?.port;
-        const startedAtChanged = !!fresh && fresh.started_at !== (runtime as unknown as { started_at?: string })?.started_at;
+        const startedAtChanged =
+          !!fresh && fresh.started_at !== runtime?.started_at;
         const tokenChanged = !!fresh && fresh.token !== runtime?.token;
-        const instanceChanged = pidChanged || portChanged || startedAtChanged || tokenChanged;
+        const instanceChanged =
+          pidChanged || portChanged || startedAtChanged || tokenChanged;
         if (fresh) {
           this.runtime = fresh;
         }
         const recoveryDetails = {
-          ...(typeof local.details === "object" && local.details ? (local.details as Record<string, unknown>) : {}),
+          ...(typeof local.details === "object" && local.details
+            ? (local.details as Record<string, unknown>)
+            : {}),
           pidChanged,
           portChanged,
           startedAtChanged,
@@ -895,6 +924,7 @@ export class BackendManager {
       typeof data === "object" &&
       "state" in (data as Record<string, unknown>)
     ) {
+      // SAFETY: status RPC payloads are BackendStatus plus extra keys; setStatus picks known fields.
       this.setStatus({
         ...(data as unknown as BackendStatus),
         pid: runtime.pid,
@@ -995,6 +1025,7 @@ export class BackendManager {
     }
     if (!event.event || !event.data) return;
     if (event.event === "listening") {
+      // SAFETY: sidecar listening event is the runtime identity (pid/port/state/model_id).
       this.runtime = event.data as unknown as RuntimeInfo;
       this.setStatus({
         state:
@@ -1017,6 +1048,7 @@ export class BackendManager {
       return;
     }
     if (event.event === "idle") {
+      // SAFETY: sidecar idle event data is a BackendStatus snapshot.
       this.setStatus({
         ...(event.data as unknown as BackendStatus),
         state: "idle",
@@ -1026,6 +1058,7 @@ export class BackendManager {
       return;
     }
     if (event.event === "ready") {
+      // SAFETY: sidecar ready event data is a BackendStatus snapshot.
       this.setStatus({
         ...(event.data as unknown as BackendStatus),
         pid: this.runtime?.pid,
@@ -1060,6 +1093,7 @@ export class BackendManager {
       return;
     }
     if (event.event === "state" || event.event === "error") {
+      // SAFETY: sidecar state/error events carry a BackendStatus snapshot.
       this.setStatus({
         ...(event.data as unknown as BackendStatus),
         pid: this.runtime?.pid,
@@ -1113,10 +1147,9 @@ export class BackendManager {
    *  A standalone daemon started by the CLI must survive plugin reloads, so it
    *  is adopted (heartbeat kept, ownership "attached") and never killed by the
    *  plugin lifecycle. */
-  private async tryAttachStandalone(): Promise<boolean> {
+  private async tryAttachExisting(): Promise<boolean> {
     const runtime = await this.readRuntime();
     if (!runtime) return false;
-    if (runtime.owner !== "standalone") return false;
     if (runtime.protocol_version !== PROTOCOL_VERSION) return false;
     if (
       runtime.backend_version &&
@@ -1148,6 +1181,7 @@ export class BackendManager {
     this.ownership = "attached";
     this.setStatus({ ...statusData, pid: runtime.pid, port: runtime.port });
     this.startHeartbeat();
+    void this.sendMcpSecrets().catch(() => undefined);
     return true;
   }
 
@@ -1215,6 +1249,17 @@ export class BackendManager {
       });
     });
   }
+}
+
+function compareDottedVersion(a: string, b: string): number {
+  const left = a.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = b.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const n = Math.max(left.length, right.length);
+  for (let i = 0; i < n; i++) {
+    const delta = (left[i] ?? 0) - (right[i] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
 }
 
 export class BackendCallError extends Error {

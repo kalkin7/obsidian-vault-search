@@ -155,6 +155,8 @@ export interface BackendStatus {
   dimension?: number | null;
   files?: number;
   chunks?: number;
+  /** Unix epoch seconds from index metadata `updated_at`. */
+  last_updated_at?: number | null;
   count_available?: boolean;
   model_load_seconds?: number;
   progress?: string;

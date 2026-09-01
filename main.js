@@ -3823,6 +3823,9 @@ var BackendManager = class {
   async provisionBackendFiles(force) {
     const current = await this.readBackendVersion();
     if (!force && current === this.manifestVersion) return true;
+    if (!force && current && compareDottedVersion(current, this.manifestVersion) > 0) {
+      return true;
+    }
     const existing = path3.join(this.pluginDir, "backend");
     if (!(0, import_fs.existsSync)(existing)) {
       const backups = await (0, import_promises2.readdir)(this.pluginDir).catch(() => []);
@@ -3840,13 +3843,20 @@ var BackendManager = class {
     const zipUrl = `https://github.com/${GITHUB_REPO}/releases/download/v${version}/obsidian-vault-search-v${version}.zip`;
     let response;
     try {
-      response = await (0, import_obsidian2.requestUrl)({ url: zipUrl, throw: false });
+      response = await Promise.race([
+        (0, import_obsidian2.requestUrl)({ url: zipUrl, throw: false }),
+        new Promise((_, reject) => {
+          setTimeout(() => reject(new Error("download timed out")), 8e3);
+        })
+      ]);
     } catch (error) {
+      if (!force && current) return true;
       throw new Error(
         `\uBC31\uC5D4\uB4DC \uB2E4\uC6B4\uB85C\uB4DC \uC2E4\uD328: ${error instanceof Error ? error.message : String(error)}`
       );
     }
     if (response.status !== 200) {
+      if (!force && current) return true;
       throw new Error(
         `\uBC31\uC5D4\uB4DC \uB2E4\uC6B4\uB85C\uB4DC \uC2E4\uD328 (HTTP ${response.status}): ${zipUrl}`
       );
@@ -3938,8 +3948,7 @@ var BackendManager = class {
     this.setStatus({ state: "starting" });
     await (0, import_promises2.mkdir)(this.dataDir, { recursive: true });
     const providerEnvironment2 = this.getEnvironment();
-    if (Object.keys(providerEnvironment2).length === 0 && await this.tryAttachStandalone())
-      return;
+    if (await this.tryAttachExisting()) return;
     await this.stopStaleRuntime();
     try {
       await this.ensureBackendProvisioned();
@@ -4177,15 +4186,14 @@ var BackendManager = class {
   async call(method, params = {}, timeoutMs = 5e3) {
     let runtime = this.runtime;
     if (!runtime) runtime = await this.readRuntime();
-    if (!runtime) throw new BackendCallError("LOCAL_BACKEND_UNAVAILABLE", "\uB85C\uCEEC \uBC31\uC5D4\uB4DC\uAC00 \uC2E4\uD589 \uC911\uC774 \uC544\uB2D9\uB2C8\uB2E4.");
+    if (!runtime)
+      throw new BackendCallError(
+        "LOCAL_BACKEND_UNAVAILABLE",
+        "\uB85C\uCEEC \uBC31\uC5D4\uB4DC\uAC00 \uC2E4\uD589 \uC911\uC774 \uC544\uB2D9\uB2C8\uB2E4."
+      );
     let response;
     try {
-      response = await requestBackend(
-        runtime,
-        method,
-        params,
-        timeoutMs
-      );
+      response = await requestBackend(runtime, method, params, timeoutMs);
     } catch (error) {
       if (error && typeof error === "object" && "code" in error) {
         const local = error;
@@ -4415,10 +4423,9 @@ var BackendManager = class {
    *  A standalone daemon started by the CLI must survive plugin reloads, so it
    *  is adopted (heartbeat kept, ownership "attached") and never killed by the
    *  plugin lifecycle. */
-  async tryAttachStandalone() {
+  async tryAttachExisting() {
     const runtime = await this.readRuntime();
     if (!runtime) return false;
-    if (runtime.owner !== "standalone") return false;
     if (runtime.protocol_version !== PROTOCOL_VERSION) return false;
     if (runtime.backend_version && runtime.backend_version !== this.manifestVersion)
       return false;
@@ -4446,6 +4453,7 @@ var BackendManager = class {
     this.ownership = "attached";
     this.setStatus({ ...statusData, pid: runtime.pid, port: runtime.port });
     this.startHeartbeat();
+    void this.sendMcpSecrets().catch(() => void 0);
     return true;
   }
   stopStaleRuntime() {
@@ -4503,6 +4511,16 @@ var BackendManager = class {
     });
   }
 };
+function compareDottedVersion(a, b) {
+  const left = a.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = b.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const n = Math.max(left.length, right.length);
+  for (let i = 0; i < n; i++) {
+    const delta = (left[i] ?? 0) - (right[i] ?? 0);
+    if (delta) return delta;
+  }
+  return 0;
+}
 var BackendCallError = class extends Error {
   constructor(code, message, details) {
     super(message);
@@ -6662,45 +6680,68 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
   latestModelSelectionOp = {};
   favoriteOpSeq = 0;
   latestFavoriteOp = {};
-  /** Status line created by display(); updated in place on backend events so
+  /** Status card created by display(); updated in place on backend events so
    *  the tab never re-renders (which would reset the scroll position) while
    *  the user is editing settings. */
-  statusEl = null;
-  /** Refresh only the status line (no full re-render). */
+  statusEls = null;
+  /** Refresh only the status card (no full re-render). */
   updateBackendStatus(status) {
-    const el = this.statusEl;
-    if (!el || !el.isConnected) return;
-    el.setText(this.buildStatusText(status));
-    el.toggleClass("vault-search-error", Boolean(status.error));
-  }
-  buildStatusText(status) {
-    return [
-      `\uC0C1\uD0DC: ${status.state}`,
-      status.model_id ? `\uBAA8\uB378: ${status.model_id}` : "",
-      status.device ? `\uB514\uBC14\uC774\uC2A4: ${status.device}` : "",
-      this.providerStatusLine(status),
-      status.pid ? `PID: ${status.pid} / \uD3EC\uD2B8: ${status.port}` : "",
-      status.count_available === false ? "\uC778\uB371\uC2A4 \uAC1C\uC218: \uD655\uC778 \uBD88\uAC00" : status.files === void 0 ? "" : `\uC778\uB371\uC2A4: \uD30C\uC77C ${status.files}\uAC1C / \uCCAD\uD06C ${status.chunks ?? 0}\uAC1C`,
-      status.model_load_seconds === void 0 ? "" : `\uCD5C\uADFC \uBAA8\uB378 \uB85C\uB529: ${status.model_load_seconds}\uCD08`,
-      status.progress ? `\uC9C4\uD589: ${status.progress}` : "",
-      status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
-      status.index_rebuild_required ? `\uC778\uB371\uC2A4 \uD638\uD658\uC131 \uBB38\uC81C: ${status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uD544\uC694" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uD544\uC694"}` : "",
-      status.error ? `\uC624\uB958: ${status.error}` : "",
-      this.owner.runtimeSummary,
-      this.owner.runtimeWarning || ""
-    ].filter(Boolean).join("\n");
+    const els = this.statusEls;
+    if (!els || !els.root.isConnected) return;
+    this.paintStatus(status);
   }
   display() {
     const { containerEl } = this;
-    const draft = this.owner.draftSettings;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Vault Search Service" });
+    containerEl.addClass("vault-search-settings");
+    const tabs = containerEl.createDiv({ cls: "vault-search-settings-tabs" });
+    const panels = {
+      general: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+      answer: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+      agent: containerEl.createDiv({ cls: "vault-search-settings-panel" }),
+      search: containerEl.createDiv({ cls: "vault-search-settings-panel" })
+    };
+    const labels = {
+      general: "\uC77C\uBC18",
+      answer: "AI \uB2F5\uBCC0",
+      agent: "API \uC5D0\uC774\uC804\uD2B8",
+      search: "\uAC80\uC0C9\xB7\uB7F0\uD0C0\uC784"
+    };
+    const buttons = /* @__PURE__ */ new Map();
+    const updateActive = () => {
+      for (const tab of Object.keys(panels)) {
+        panels[tab].toggleClass("is-active", tab === this.activeTab);
+        buttons.get(tab)?.toggleClass("is-active", tab === this.activeTab);
+      }
+    };
+    for (const tab of Object.keys(labels)) {
+      const button = tabs.createEl("button", {
+        text: labels[tab],
+        cls: "vault-search-settings-tab",
+        attr: { type: "button" }
+      });
+      button.addEventListener("click", () => {
+        this.activeTab = tab;
+        updateActive();
+      });
+      buttons.set(tab, button);
+    }
+    this.renderGeneral(panels.general);
+    this.renderAnswer(panels.answer);
+    this.renderAgent(panels.agent);
+    this.renderSearch(panels.search);
+    updateActive();
+  }
+  renderGeneral(parent) {
     const status = this.owner.backend?.status || { state: "stopped" };
-    const statusEl = containerEl.createDiv({ cls: "vault-search-status" });
-    statusEl.setText(this.buildStatusText(status));
-    this.statusEl = statusEl;
-    if (status.error) statusEl.addClass("vault-search-error");
-    new import_obsidian7.Setting(containerEl).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4").setDesc(
+    this.heading(parent, "\uC778\uB371\uC2A4");
+    this.renderStatusCard(parent, status);
+    new import_obsidian7.Setting(parent).setName("\uC804\uCCB4 \uC7AC\uAD6C\uCD95").setDesc("\uC778\uB371\uC2A4\uB97C \uCC98\uC74C\uBD80\uD130 \uB2E4\uC2DC \uB9CC\uB4ED\uB2C8\uB2E4.").addButton(
+      (button) => button.setButtonText("\uC7AC\uAD6C\uCD95...").setWarning().onClick(() => {
+        void this.owner.rebuildAll().catch((error) => this.showError(error));
+      })
+    );
+    new import_obsidian7.Setting(parent).setName("\uC11C\uBE44\uC2A4 \uC81C\uC5B4").setDesc(
       "\uC124\uC815 \uBCC0\uACBD\uC740 \uC785\uB825 \uD6C4 \uC790\uB3D9\uC73C\uB85C \uC800\uC7A5\xB7\uC801\uC6A9\uB429\uB2C8\uB2E4 (\uC57D 1\uCD08). \uBAA8\uB378\uC740 \uC774 \uBCFC\uD2B8\uC5D0\uC11C\uB9CC \uC0C1\uC8FC\uD569\uB2C8\uB2E4."
     ).addButton(
       (button) => button.setButtonText("\uC2DC\uC791").onClick(async () => {
@@ -6711,43 +6752,39 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       })
     ).addButton(
-      (button) => button.setButtonText("\uC911\uC9C0").onClick(async () => {
+      (button) => button.setButtonText("\uC911\uC9C0").onClick(() => {
+        void this.owner.stopBackend().catch((error) => this.showError(error));
+      })
+    );
+    new import_obsidian7.Setting(parent).setName("\uC778\uB371\uC2A4 \uAD00\uB9AC").setDesc("\uBC94\uC704\uB97C \uD655\uC778\uD558\uAC70\uB098 \uBCA1\uD130\uB9CC \uB2E4\uC2DC \uB9CC\uB4ED\uB2C8\uB2E4.").addButton(
+      (button) => button.setButtonText("\uBC94\uC704 \uBBF8\uB9AC\uBCF4\uAE30").onClick(async () => {
         try {
-          await this.owner.stopBackend();
+          const result = await this.owner.previewScope();
+          new import_obsidian7.Notice(`\uAC80\uC0C9 \uB300\uC0C1: ${result.count}\uAC1C \uD30C\uC77C`);
+        } catch (error) {
+          this.showError(error);
+        }
+      })
+    ).addButton(
+      (button) => button.setButtonText("\uC815\uBC00 \uB300\uC870").onClick(async () => {
+        try {
+          await this.owner.reconcile("strict");
+        } catch (error) {
+          this.showError(error);
+        }
+      })
+    ).addButton(
+      (button) => button.setButtonText("\uBCA1\uD130 \uC7AC\uAD6C\uCD95").onClick(async () => {
+        try {
+          await this.owner.rebuildVectors();
         } catch (error) {
           this.showError(error);
         }
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uC2DC\uC791 \uC815\uCC45").setDesc(
-      "\uAE30\uBCF8\uAC12\uC740 \uC5D4\uC9C4\uC5D0 \uB530\uB77C \uC790\uB3D9 \uC870\uC815\uB429\uB2C8\uB2E4: ONNX\uB294 \uCCAB \uAC80\uC0C9 \uC2DC \uB85C\uB4DC, PyTorch\uB294 \uBCFC\uD2B8 \uC5F4 \uB54C \uB85C\uB4DC. \uC5EC\uAE30\uC11C \uC9C1\uC811 \uC120\uD0DD\uD558\uBA74 \uADF8 \uAC12\uC774 \uC720\uC9C0\uB429\uB2C8\uB2E4."
-    ).addDropdown(
-      (dropdown) => dropdown.addOption("vault-open", "\uBCFC\uD2B8\uB97C \uC5F4 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("first-search", "\uCCAB \uAC80\uC0C9 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("manual", "\uC218\uB3D9 \uC2DC\uC791").setValue(draft.loadPolicy).onChange((value) => {
-        draft.loadPolicy = value;
-        this.display();
-      })
-    );
-    new import_obsidian7.Setting(containerEl).setName("\uC720\uD734 \uBAA8\uB378 \uC5B8\uB85C\uB4DC (\uCD08)").setDesc(
-      "\uAE30\uBCF8\uAC12 300\uCD08. 0\uC774\uBA74 \uBE44\uD65C\uC131(\uB85C\uB4DC \uD6C4 \uC0C1\uC8FC). \uAC80\uC0C9\uC774 \uC5C6\uC73C\uBA74 \uC774 \uC2DC\uAC04 \uD6C4 \uBAA8\uB378\uC744 \uC5B8\uB85C\uB4DC\uD569\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC740 ORT \uC138\uC158\uC744 \uD574\uC81C\uD574 VRAM/RAM\uC744 \uBC18\uD658\uD558\uACE0, \uB2E4\uC74C \uAC80\uC0C9 \uC2DC \uB2E4\uC2DC \uB85C\uB4DC\uD569\uB2C8\uB2E4. PyTorch \uC5D4\uC9C4\uC740 \uCC38\uC870\uB97C \uD574\uC81C\uD558\uB418 CUDA \uCE90\uC2DC\uB85C VRAM \uC77C\uBD80\uAC00 \uB0A8\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
-    ).addText(
-      (text) => text.setValue(String(draft.modelIdleTimeoutSeconds)).onChange((value) => {
-        draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(
-          value,
-          draft.modelIdleTimeoutSeconds
-        );
-      })
-    );
-    const autoPython = isAutoPython(draft.pythonExecutable);
-    new import_obsidian7.Setting(containerEl).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc(
-      "\uBE44\uC6CC\uB450\uBA74(\uB610\uB294 python) \uAD00\uB9AC\uD615 \uB7F0\uD0C0\uC784(venv)\uC744 \uC790\uB3D9\uC73C\uB85C \uCC3E\uC544 \uC124\uC815\uD569\uB2C8\uB2E4. \uC9C1\uC811 \uC785\uB825\uD558\uBA74 \uADF8 Python\uC744 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. " + (autoPython ? "\uD604\uC7AC: \uC790\uB3D9 \uC120\uD0DD" : `\uD604\uC7AC: ${draft.pythonExecutable}`)
-    ).addText(
-      (text) => text.setValue(autoPython ? "" : draft.pythonExecutable).setPlaceholder("\uC790\uB3D9 (\uAD00\uB9AC\uD615 venv \uC6B0\uC120)").onChange((value) => {
-        draft.pythonExecutable = value.trim() || "python";
-      })
-    );
     const install = this.owner.backendInstall;
-    const backendStateText = !install.expected ? "\uD655\uC778 \uC911\u2026" : !install.installed ? "\uBBF8\uC124\uCE58" : install.version === install.expected ? `\uC124\uCE58\uB428 (v${install.version}, \uCD5C\uC2E0)` : `\uC124\uCE58\uB428 (v${install.version}) \u2014 \uD50C\uB7EC\uADF8\uC778 v${install.expected}\uC640 \uBD88\uC77C\uCE58`;
-    new import_obsidian7.Setting(containerEl).setName("Python \uBC31\uC5D4\uB4DC").setDesc(
+    const backendStateText = install.expected ? install.installed ? install.version === install.expected ? `\uC124\uCE58\uB428 (v${install.version}, \uCD5C\uC2E0)` : `\uC124\uCE58\uB428 (v${install.version}) \u2014 \uD50C\uB7EC\uADF8\uC778 v${install.expected}\uC640 \uBD88\uC77C\uCE58` : "\uBBF8\uC124\uCE58" : "\uD655\uC778 \uC911\u2026";
+    new import_obsidian7.Setting(parent).setName("Python \uBC31\uC5D4\uB4DC").setDesc(
       `\uD604\uC7AC \uC0C1\uD0DC: ${backendStateText}. BRAT \uC124\uCE58\uB294 main.js/manifest/styles.css\uB9CC \uB123\uC73C\uBBC0\uB85C, \uBC31\uC5D4\uB4DC\uB294 GitHub \uB9B4\uB9AC\uC2A4\uC5D0\uC11C \uC790\uB3D9\uC73C\uB85C \uBC1B\uC2B5\uB2C8\uB2E4. \uC774 \uBC84\uD2BC\uC73C\uB85C \uB2E4\uC2DC \uBC1B\uAC70\uB098 \uBC84\uC804\uC744 \uB9DE\uCDA5\uB2C8\uB2E4.`
     ).addButton(
       (button) => button.setButtonText("\uBC31\uC5D4\uB4DC \uC124\uCE58/\uBCF5\uAD6C").onClick(async () => {
@@ -6758,8 +6795,11 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       })
     );
-    containerEl.createEl("h3", { text: "AI Vault \uB2F5\uBCC0" });
-    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 provider").setDesc(
+  }
+  renderAnswer(parent) {
+    const draft = this.owner.draftSettings;
+    this.heading(parent, "AI Vault \uB2F5\uBCC0");
+    new import_obsidian7.Setting(parent).setName("\uB2F5\uBCC0 provider").setDesc(
       "\uAC80\uC0C9 \uADFC\uAC70\uB9CC provider\uC5D0 \uC804\uB2EC\uD569\uB2C8\uB2E4. API key\uB294 \uD50C\uB7EC\uADF8\uC778\uC5D0 \uC800\uC7A5\uD558\uC9C0 \uC54A\uACE0 sidecar\uAC00 \uD658\uACBD\uBCC0\uC218\uC5D0\uC11C \uC77D\uC2B5\uB2C8\uB2E4."
     ).addDropdown((dropdown) => {
       for (const [id, provider] of Object.entries(LLM_PROVIDER_DEFAULTS))
@@ -6780,7 +6820,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
     const answerProvider = LLM_PROVIDER_DEFAULTS[draft.answerProvider];
     const savedApiKey = this.owner.getProviderApiKey(draft.answerProvider);
     let apiKeyInput = null;
-    new import_obsidian7.Setting(containerEl).setName(`API \uD0A4 (${answerProvider.name})`).setDesc(
+    new import_obsidian7.Setting(parent).setName(`API \uD0A4 (${answerProvider.name})`).setDesc(
       savedApiKey ? "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uB428. \uD14C\uC2A4\uD2B8\uB85C \uC720\uD6A8\uC131\uC744 \uD655\uC778\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4." : "Obsidian \uBCF4\uC548 \uC800\uC7A5\uC18C\uC5D0 \uC800\uC7A5\uD569\uB2C8\uB2E4"
     ).addText((text) => {
       text.inputEl.type = "password";
@@ -6800,14 +6840,11 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
         button.setDisabled(true);
         try {
-          const status2 = await validateProviderApiKey(
-            targetProvider,
-            key
-          );
+          const status = await validateProviderApiKey(targetProvider, key);
           let message;
-          if (status2 === "valid") {
+          if (status === "valid") {
             message = `${targetProviderInfo.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.`;
-          } else if (status2 === "invalid") {
+          } else if (status === "invalid") {
             message = `${targetProviderInfo.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`;
           } else {
             message = `${targetProviderInfo.name} \uD0A4 \uC778\uC99D\uC744 \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 (\uB124\uD2B8\uC6CC\uD06C/provider \uC0C1\uD0DC). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
@@ -6855,7 +6892,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       modelOptions = [draft.answerModel, ...modelOptions];
     }
     const favorites = Array.isArray(draft.favoriteAnswerModels) ? [...draft.favoriteAnswerModels] : [];
-    const modelSetting = new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
+    const modelSetting = new import_obsidian7.Setting(parent).setName("\uB2F5\uBCC0 \uBAA8\uB378").setDesc(
       fetchedModels.length ? `${fetchedModels.length}\uAC1C \uBAA8\uB378\uC744 \uD655\uC778\uD588\uC2B5\uB2C8\uB2E4. \uBAA8\uB378\uC744 \uD074\uB9AD\uD574 \uC120\uD0DD\uD558\uACE0, \u2605\uB85C \uC990\uACA8\uCC3E\uAE30\uB97C \uC9C0\uC815\uD558\uC138\uC694. \uC990\uACA8\uCC3E\uAE30 \uBAA8\uB378\uC740 \uBAA8\uB4E0 provider\uC5D0\uC11C \uBAA8\uC544\uC838 AI Vault Search \uD328\uB110\uC758 \uBAA8\uB378 \uC120\uD0DD\uC5D0 \uD45C\uC2DC\uB429\uB2C8\uB2E4.` : `\uBA3C\uC800 \uBAA8\uB378 \uCD5C\uC2E0\uD654\uB97C \uB20C\uB7EC \uC120\uD0DD\uC9C0\uB97C \uAC00\uC838\uC624\uC138\uC694. \uC120\uD0DD\uD558\uAE30 \uC804\uC5D0\uB294 \uBAA8\uB378\uC774 \uC9C0\uC815\uB418\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4.`
     ).setClass("vault-search-model-setting");
     const modelList = modelSetting.controlEl.createDiv({
@@ -7015,7 +7052,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText(
+    new import_obsidian7.Setting(parent).setName("\uB2F5\uBCC0 context \uBB38\uC790 \uC218").setDesc("8,000~32,000\uC790").addText(
       (text) => text.setValue(String(draft.answerMaxContextChars)).onChange((value) => {
         draft.answerMaxContextChars = Math.max(
           8e3,
@@ -7026,7 +7063,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 \uCD9C\uB825 \uD1A0\uD070").setDesc("128~8,000 \uD1A0\uD070").addText(
+    new import_obsidian7.Setting(parent).setName("\uB2F5\uBCC0 \uCD9C\uB825 \uD1A0\uD070").setDesc("128~8,000 \uD1A0\uD070").addText(
       (text) => text.setValue(String(draft.answerMaxOutputTokens)).onChange((value) => {
         draft.answerMaxOutputTokens = Math.max(
           128,
@@ -7037,7 +7074,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 120\uCD08\uC785\uB2C8\uB2E4.").addText(
+    new import_obsidian7.Setting(parent).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 120\uCD08\uC785\uB2C8\uB2E4.").addText(
       (text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
         draft.answerTimeoutSeconds = Math.max(
           5,
@@ -7048,20 +7085,20 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       })
     );
-    containerEl.createEl("h3", { text: "AI Vault \uD788\uC2A4\uD1A0\uB9AC" });
-    new import_obsidian7.Setting(containerEl).setName("\uD788\uC2A4\uD1A0\uB9AC \uD3F4\uB354").setDesc(
+    this.heading(parent, "AI Vault \uD788\uC2A4\uD1A0\uB9AC");
+    new import_obsidian7.Setting(parent).setName("\uD788\uC2A4\uD1A0\uB9AC \uD3F4\uB354").setDesc(
       "\uB300\uD654\uAC00 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC800\uC7A5\uB418\uB294 \uBCFC\uD2B8 \uB0B4 \uACBD\uB85C\uC785\uB2C8\uB2E4. \uB178\uD2B8\uB294 \uC5B8\uC81C\uB4E0 \uC9C1\uC811 \uC77D\uACE0 \uD3B8\uC9D1\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uCC38\uACE0: \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8\uB3C4 \uAC80\uC0C9 \uC778\uB371\uC2A4\uC5D0 \uD3EC\uD568\uB420 \uC218 \uC788\uC73C\uBBC0\uB85C \uC81C\uC678\uD558\uB824\uBA74 \uC81C\uC678 \uBAA9\uB85D\uC5D0 \uC774 \uD3F4\uB354\uB97C \uCD94\uAC00\uD558\uC138\uC694."
     ).addText(
       (text) => text.setPlaceholder("AI Vault Search/history").setValue(draft.historyFolder).onChange((value) => {
         draft.historyFolder = value.trim() || "AI Vault Search/history";
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uC790\uB3D9 \uC800\uC7A5").setDesc("\uB2F5\uBCC0\uC774 \uC644\uB8CC\uB420 \uB54C\uB9C8\uB2E4 \uD604\uC7AC \uB300\uD654\uB97C \uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC790\uB3D9 \uC800\uC7A5\uD569\uB2C8\uB2E4.").addToggle(
+    new import_obsidian7.Setting(parent).setName("\uC790\uB3D9 \uC800\uC7A5").setDesc("\uB2F5\uBCC0\uC774 \uC644\uB8CC\uB420 \uB54C\uB9C8\uB2E4 \uD604\uC7AC \uB300\uD654\uB97C \uD788\uC2A4\uD1A0\uB9AC\uC5D0 \uC790\uB3D9 \uC800\uC7A5\uD569\uB2C8\uB2E4.").addToggle(
       (toggle) => toggle.setValue(draft.historyAutosave).onChange((value) => {
         draft.historyAutosave = value;
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uCD5C\uB300 \uBCF4\uC874 \uAC1C\uC218").setDesc("\uBCF4\uAD00\uD560 \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8 \uC218\uC785\uB2C8\uB2E4. 0\uC774\uBA74 \uBB34\uC81C\uD55C\uC73C\uB85C \uBCF4\uAD00\uD569\uB2C8\uB2E4.").addText(
+    new import_obsidian7.Setting(parent).setName("\uCD5C\uB300 \uBCF4\uC874 \uAC1C\uC218").setDesc("\uBCF4\uAD00\uD560 \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8 \uC218\uC785\uB2C8\uB2E4. 0\uC774\uBA74 \uBB34\uC81C\uD55C\uC73C\uB85C \uBCF4\uAD00\uD569\uB2C8\uB2E4.").addText(
       (text) => text.setValue(String(draft.historyMaxEntries)).onChange((value) => {
         draft.historyMaxEntries = this.nonnegativeNumber(
           value,
@@ -7069,8 +7106,11 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       })
     );
+  }
+  renderAgent(parent) {
+    const draft = this.owner.draftSettings;
     const agent = this.owner.agentIntegration;
-    new import_obsidian7.Setting(containerEl).setName("\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569").setDesc(
+    new import_obsidian7.Setting(parent).setName("\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569").setDesc(
       "AI \uC5D0\uC774\uC804\uD2B8(Claude Code, Codex, Gemini CLI \uB4F1)\uAC00 \uC774 \uBCFC\uD2B8\uC5D0\uC11C vault-search\uB97C \uC0AC\uC6A9\uD558\uB3C4\uB85D \uC9C0\uC2DC \uD30C\uC77C\uACFC \uAC80\uC0C9 \uB798\uD37C\uB97C \uC124\uCE58\uD569\uB2C8\uB2E4. \uBCFC\uD2B8 \uB8E8\uD2B8 \uD30C\uC77C\uC740 \uBA85\uC2DC\uC801\uC73C\uB85C \uC124\uCE58\uD560 \uB54C\uB9CC \uC218\uC815\uB418\uBA70, \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC\uAC00 \uC788\uC73C\uBA74 \uC790\uB3D9\uC73C\uB85C \uAC74\uB108\uB701\uB2C8\uB2E4. " + (agent ? this.agentStatusText(agent) : "\uC0C1\uD0DC \uD655\uC778 \uC911\u2026")
     ).addButton(
       (button) => button.setButtonText("\uC124\uCE58/\uAC31\uC2E0").setCta().onClick(async () => {
@@ -7083,53 +7123,52 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       })
     );
-    renderApiAgentSettings(containerEl, this.owner, draft);
-    renderMcpSettings(containerEl, this.owner, draft);
-    renderSkillSettings(containerEl, this.owner, draft);
-    new import_obsidian7.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBAA8\uB378").addDropdown((dropdown) => {
-      for (const [id, profile] of Object.entries(MODEL_PROFILES))
-        dropdown.addOption(id, profile.name);
-      dropdown.setValue(draft.modelProfile).onChange((id) => {
-        const profile = MODEL_PROFILES[id];
-        draft.modelProfile = id;
-        if (id !== "custom" && profile) {
-          draft.modelId = profile.modelId;
-          draft.queryPrefix = profile.queryPrefix;
-          draft.documentPrefix = profile.documentPrefix;
-        }
-        this.display();
-      });
-    });
-    new import_obsidian7.Setting(containerEl).setName("\uBAA8\uB378 ID").setDesc(
-      MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID"
-    ).addText(
-      (text) => text.setValue(draft.modelId).onChange((value) => {
-        draft.modelId = value.trim();
-      })
+    renderApiAgentSettings(parent, this.owner, draft);
+    renderMcpSettings(parent, this.owner, draft);
+    renderSkillSettings(parent, this.owner, draft);
+  }
+  renderSearch(parent) {
+    const draft = this.owner.draftSettings;
+    const status = this.owner.backend?.status || { state: "stopped" };
+    this.heading(parent, "Compute");
+    const device = new import_obsidian7.Setting(parent).setName("\uC5F0\uC0B0").setDesc(
+      "\uC774 \uAE30\uAE30\uC5D0\uC11C \uC784\uBCA0\uB529 \uBAA8\uB378\uC774 \uC2E4\uD589\uB418\uB294 \uBC29\uC2DD\uC785\uB2C8\uB2E4. \uC790\uB3D9\uC740 GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4. \uBCF4\uD1B5\uC740 \uBC14\uAFC0 \uD544\uC694\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4."
     );
-    new import_obsidian7.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc(
+    this.addSegmented(
+      device,
+      [
+        { value: "auto", label: "\uC790\uB3D9" },
+        { value: "cpu", label: "CPU" },
+        { value: "cuda", label: "CUDA" }
+      ],
+      draft.device,
+      (value) => {
+        draft.device = value;
+        this.display();
+      }
+    );
+    const engine = new import_obsidian7.Setting(parent).setName("\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC").setDesc(
       "ONNX Runtime(\uAE30\uBCF8): \uC9C1\uC811 ONNX \uACBD\uB85C\uB85C \uC2DC\uC791\uC774 \uBE60\uB974\uACE0 \uC720\uD734 \uC2DC VRAM/RAM\uC744 \uD574\uC81C\uD569\uB2C8\uB2E4. GPU\uAC00 \uC788\uC73C\uBA74 TensorRT/CUDA\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC790\uB3D9 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. PyTorch: \uBC8C\uD06C \uC778\uB371\uC2F1\uC774 \uAC00\uC7A5 \uBE60\uB974\uC9C0\uB9CC \uC2DC\uC791\uC774 \uB290\uB9BD\uB2C8\uB2E4. \uBC31\uC5D4\uB4DC\uB97C \uBC14\uAFB8\uBA74 \uC2DC\uC791 \uC815\uCC45 \uAE30\uBCF8\uAC12\uB3C4 \uD568\uAED8 \uC870\uC815\uB429\uB2C8\uB2E4."
-    ).addDropdown(
-      (dropdown) => dropdown.addOption("onnx", "ONNX Runtime (\uAE30\uBCF8, \uAD8C\uC7A5)").addOption("pytorch", "PyTorch").setValue(draft.engine).onChange((value) => {
+    );
+    this.addSegmented(
+      engine,
+      [
+        { value: "onnx", label: "ONNX Runtime" },
+        { value: "pytorch", label: "PyTorch" }
+      ],
+      draft.engine,
+      (value) => {
         const previous = draft.engine;
         draft.engine = value;
         if (draft.loadPolicy === defaultLoadPolicy(previous)) {
           draft.loadPolicy = defaultLoadPolicy(draft.engine);
         }
         this.display();
-      })
-    );
-    containerEl.createEl("h3", { text: "\uACE0\uAE09 \uC124\uC815" });
-    new import_obsidian7.Setting(containerEl).setName("\uB514\uBC14\uC774\uC2A4").setDesc(
-      "\uC790\uB3D9(\uAE30\uBCF8)\uC740 GPU\uC640 \uAC80\uC99D\uB41C CUDA \uB7F0\uD0C0\uC784\uC774 \uC788\uC73C\uBA74 GPU\uB97C, \uC5C6\uC73C\uBA74 CPU\uB97C \uC0AC\uC6A9\uD569\uB2C8\uB2E4. CUDA\uB97C \uBA85\uC2DC\uD558\uBA74 \uB300\uC6A9\uB7C9 \uB7F0\uD0C0\uC784 \uB2E4\uC6B4\uB85C\uB4DC\uAC00 \uD544\uC694\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
-    ).addDropdown(
-      (dropdown) => dropdown.addOption("auto", "\uC790\uB3D9").addOption("cpu", "CPU").addOption("cuda", "CUDA").setValue(draft.device).onChange((value) => {
-        draft.device = value;
-      })
+      }
     );
     const caps = status.capabilities;
     if (draft.engine === "onnx" && caps && caps.derived_model_available === false) {
-      new import_obsidian7.Setting(containerEl).setName("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC900\uBE44").setDesc(
+      new import_obsidian7.Setting(parent).setName("ONNX \uD30C\uC0DD \uBAA8\uB378 \uC900\uBE44").setDesc(
         caps.model_available === false ? "e5-base \uBAA8\uB378 \uC2A4\uB0C5\uC0F7\uC774 \uB85C\uCEEC\uC5D0 \uC5C6\uC2B5\uB2C8\uB2E4. \uBA3C\uC800 intfloat/multilingual-e5-base\uB97C \uBC1B\uC544 \uC8FC\uC138\uC694." : "\uB85C\uCEEC \uC2A4\uB0C5\uC0F7\uC5D0 \uD30C\uC0DD \uD480\uB9C1 \uADF8\uB798\uD504(onnx/model-pooled-normalized.onnx)\uAC00 \uC5C6\uC2B5\uB2C8\uB2E4. \uC0DD\uC131\uC744 \uC2E4\uD589\uD558\uBA74 ONNX \uC5D4\uC9C4\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
       ).addButton((button) => {
         button.setButtonText("\uD30C\uC0DD \uBAA8\uB378 \uC0DD\uC131").setCta();
@@ -7162,7 +7201,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       ]);
     }
     const supported = caps ? [caps.cuda_available && "CUDA", caps.tensorrt_available && "TensorRT"].filter(Boolean).join(", ") || "CPU\uB9CC" : "\uC11C\uBE44\uC2A4 \uC2DC\uC791 \uD6C4 \uD655\uC778";
-    new import_obsidian7.Setting(containerEl).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc(
+    new import_obsidian7.Setting(parent).setName("ONNX \uC2E4\uD589 \uC81C\uACF5\uC790 (provider)").setDesc(
       `CUDA \uC2E4\uD589 \uC2DC\uC5D0\uB9CC \uC801\uC6A9\uB429\uB2C8\uB2E4 (device=cuda \uB610\uB294 auto\uAC00 CUDA\uB85C \uD574\uC11D\uB420 \uB54C). \uC774 \uBA38\uC2E0 \uC9C0\uC6D0: ${supported}. auto\uB294 TensorRT\uAC00 \uC124\uCE58\uB418\uC5B4 \uC788\uC73C\uBA74 \uC6B0\uC120\uD558\uACE0, \uC544\uB2C8\uBA74 CUDA\uB85C \uD3F4\uBC31\uD569\uB2C8\uB2E4.`
     ).addDropdown((dropdown) => {
       for (const [value, label] of providerOptions)
@@ -7172,7 +7211,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       });
     });
     const cudaInstalled = caps?.cuda_available === true;
-    new import_obsidian7.Setting(containerEl).setName("CUDA \uB7F0\uD0C0\uC784").setDesc(
+    new import_obsidian7.Setting(parent).setName("CUDA \uB7F0\uD0C0\uC784").setDesc(
       cudaInstalled ? "CUDA \uB7F0\uD0C0\uC784\uC774 \uC124\uCE58\uB418\uC5B4 \uC0AC\uC6A9 \uAC00\uB2A5\uD569\uB2C8\uB2E4. \uC7AC\uC124\uCE58\uAC00 \uD544\uC694\uD558\uBA74 \uB7F0\uD0C0\uC784 \uD3F4\uB354\uB97C \uC815\uB9AC\uD55C \uB4A4 \uB2E4\uC2DC \uC124\uCE58\uD558\uC138\uC694." : "NVIDIA GPU\uC6A9 PyTorch\uC640 onnxruntime-gpu\uB97C \uBCC4\uB3C4 \uC124\uCE58\uD569\uB2C8\uB2E4. \uC218 GB \uB2E4\uC6B4\uB85C\uB4DC\uC640 \uBCA1\uD130 \uC7AC\uAD6C\uCD95\uC73C\uB85C \uC218 \uBD84 \uC774\uC0C1 \uAC78\uB9B4 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
     ).addButton((button) => {
       button.setButtonText(
@@ -7185,36 +7224,85 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("\uC784\uBCA0\uB529 \uC815\uADDC\uD654").addToggle(
+    this.heading(parent, "\uC2DC\uC791\xB7\uBAA8\uB378");
+    new import_obsidian7.Setting(parent).setName("\uC2DC\uC791 \uC815\uCC45").setDesc(
+      "\uAE30\uBCF8\uAC12\uC740 \uC5D4\uC9C4\uC5D0 \uB530\uB77C \uC790\uB3D9 \uC870\uC815\uB429\uB2C8\uB2E4: ONNX\uB294 \uCCAB \uAC80\uC0C9 \uC2DC \uB85C\uB4DC, PyTorch\uB294 \uBCFC\uD2B8 \uC5F4 \uB54C \uB85C\uB4DC. \uC5EC\uAE30\uC11C \uC9C1\uC811 \uC120\uD0DD\uD558\uBA74 \uADF8 \uAC12\uC774 \uC720\uC9C0\uB429\uB2C8\uB2E4."
+    ).addDropdown(
+      (dropdown) => dropdown.addOption("vault-open", "\uBCFC\uD2B8\uB97C \uC5F4 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("first-search", "\uCCAB \uAC80\uC0C9 \uB54C \uBAA8\uB378 \uB85C\uB4DC").addOption("manual", "\uC218\uB3D9 \uC2DC\uC791").setValue(draft.loadPolicy).onChange((value) => {
+        draft.loadPolicy = value;
+        this.display();
+      })
+    );
+    new import_obsidian7.Setting(parent).setName("\uC720\uD734 \uBAA8\uB378 \uC5B8\uB85C\uB4DC (\uCD08)").setDesc(
+      "\uAE30\uBCF8\uAC12 300\uCD08. 0\uC774\uBA74 \uBE44\uD65C\uC131(\uB85C\uB4DC \uD6C4 \uC0C1\uC8FC). \uAC80\uC0C9\uC774 \uC5C6\uC73C\uBA74 \uC774 \uC2DC\uAC04 \uD6C4 \uBAA8\uB378\uC744 \uC5B8\uB85C\uB4DC\uD569\uB2C8\uB2E4. ONNX \uC5D4\uC9C4\uC740 ORT \uC138\uC158\uC744 \uD574\uC81C\uD574 VRAM/RAM\uC744 \uBC18\uD658\uD558\uACE0, \uB2E4\uC74C \uAC80\uC0C9 \uC2DC \uB2E4\uC2DC \uB85C\uB4DC\uD569\uB2C8\uB2E4. PyTorch \uC5D4\uC9C4\uC740 \uCC38\uC870\uB97C \uD574\uC81C\uD558\uB418 CUDA \uCE90\uC2DC\uB85C VRAM \uC77C\uBD80\uAC00 \uB0A8\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4."
+    ).addText(
+      (text) => text.setValue(String(draft.modelIdleTimeoutSeconds)).onChange((value) => {
+        draft.modelIdleTimeoutSeconds = this.nonnegativeNumber(
+          value,
+          draft.modelIdleTimeoutSeconds
+        );
+      })
+    );
+    const autoPython = isAutoPython(draft.pythonExecutable);
+    new import_obsidian7.Setting(parent).setName("Python \uC2E4\uD589 \uD30C\uC77C").setDesc(
+      "\uBE44\uC6CC\uB450\uBA74(\uB610\uB294 python) \uAD00\uB9AC\uD615 \uB7F0\uD0C0\uC784(venv)\uC744 \uC790\uB3D9\uC73C\uB85C \uCC3E\uC544 \uC124\uC815\uD569\uB2C8\uB2E4. \uC9C1\uC811 \uC785\uB825\uD558\uBA74 \uADF8 Python\uC744 \uC0AC\uC6A9\uD569\uB2C8\uB2E4. " + (autoPython ? "\uD604\uC7AC: \uC790\uB3D9 \uC120\uD0DD" : `\uD604\uC7AC: ${draft.pythonExecutable}`)
+    ).addText(
+      (text) => text.setValue(autoPython ? "" : draft.pythonExecutable).setPlaceholder("\uC790\uB3D9 (\uAD00\uB9AC\uD615 venv \uC6B0\uC120)").onChange((value) => {
+        draft.pythonExecutable = value.trim() || "python";
+      })
+    );
+    new import_obsidian7.Setting(parent).setName("\uC784\uBCA0\uB529 \uBAA8\uB378").addDropdown((dropdown) => {
+      for (const [id, profile] of Object.entries(MODEL_PROFILES))
+        dropdown.addOption(id, profile.name);
+      dropdown.setValue(draft.modelProfile).onChange((id) => {
+        const profile = MODEL_PROFILES[id];
+        draft.modelProfile = id;
+        if (id !== "custom" && profile) {
+          draft.modelId = profile.modelId;
+          draft.queryPrefix = profile.queryPrefix;
+          draft.documentPrefix = profile.documentPrefix;
+        }
+        this.display();
+      });
+    });
+    new import_obsidian7.Setting(parent).setName("\uBAA8\uB378 ID").setDesc(
+      MODEL_PROFILES[draft.modelProfile]?.note || "Sentence Transformers \uBAA8\uB378 ID"
+    ).addText(
+      (text) => text.setValue(draft.modelId).onChange((value) => {
+        draft.modelId = value.trim();
+      })
+    );
+    new import_obsidian7.Setting(parent).setName("\uC784\uBCA0\uB529 \uC815\uADDC\uD654").addToggle(
       (toggle) => toggle.setValue(draft.normalizeEmbeddings).onChange((value) => {
         draft.normalizeEmbeddings = value;
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Query prefix").addText(
+    new import_obsidian7.Setting(parent).setName("Query prefix").addText(
       (text) => text.setValue(draft.queryPrefix).onChange((value) => {
         draft.queryPrefix = value;
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Document prefix").addText(
+    new import_obsidian7.Setting(parent).setName("Document prefix").addText(
       (text) => text.setValue(draft.documentPrefix).onChange((value) => {
         draft.documentPrefix = value;
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("Include globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
+    this.heading(parent, "\uC778\uB371\uC2A4 \uBC94\uC704");
+    new import_obsidian7.Setting(parent).setName("Include globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.includeGlobs.join("\n"));
       area.inputEl.rows = 7;
       area.onChange((value) => {
         draft.includeGlobs = this.lines(value);
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("Exclude globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
+    new import_obsidian7.Setting(parent).setName("Exclude globs").setDesc("\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098").setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.excludeGlobs.join("\n"));
       area.inputEl.rows = 7;
       area.onChange((value) => {
         draft.excludeGlobs = this.lines(value);
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("\uC704\uD0A4 \uD3F4\uB354").setDesc(
+    new import_obsidian7.Setting(parent).setName("\uC704\uD0A4 \uD3F4\uB354").setDesc(
       "\uD0C0\uC784\uB77C\uC778/\uAD00\uACC4 \uAC80\uC0C9\uC5D0\uC11C sources \uCC38\uC870\uB97C \uB530\uB77C\uAC00\uB294 \uC704\uD0A4 \uD3F4\uB354 \uBAA9\uB85D\uC785\uB2C8\uB2E4 (\uBCFC\uD2B8 \uC0C1\uB300 \uACBD\uB85C, \uD55C \uC904\uC5D0 \uD558\uB098). \uAE30\uBCF8\uAC12(5_Wiki/\u2026)\uC740 K_Notes \uBC30\uCE58\uC785\uB2C8\uB2E4. \uC704\uD0A4\uAC00 \uB2E4\uB978 \uD3F4\uB354\uC5D0 \uC788\uC73C\uBA74 \uC5EC\uAE30\uC11C \uC9C0\uC815\uD558\uACE0, \uC704\uD0A4\uAC00 \uC5C6\uC73C\uBA74 \uBE44\uC6CC \uB450\uBA74 \uD655\uC7A5\uC774 \uB3D9\uC791\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4."
     ).setClass("vault-search-textarea").addTextArea((area) => {
       area.setValue(draft.wikiFolders.join("\n"));
@@ -7223,43 +7311,9 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         draft.wikiFolders = this.lines(value);
       });
     });
-    new import_obsidian7.Setting(containerEl).setName("\uC778\uB371\uC2A4 \uAD00\uB9AC").setDesc(
-      "\uC124\uC815 \uC801\uC6A9 \uD6C4 \uBC94\uC704\uB97C \uD655\uC778\uD558\uC138\uC694. \uC7AC\uAD6C\uCD95\uC740 \uC784\uC2DC \uD30C\uC77C \uAC80\uC99D \uD6C4 \uC6D0\uC790\uC801\uC73C\uB85C \uAD50\uCCB4\uB429\uB2C8\uB2E4."
-    ).addButton(
-      (button) => button.setButtonText("\uBC94\uC704 \uBBF8\uB9AC\uBCF4\uAE30").onClick(async () => {
-        try {
-          const result = await this.owner.previewScope();
-          new import_obsidian7.Notice(`\uAC80\uC0C9 \uB300\uC0C1: ${result.count}\uAC1C \uD30C\uC77C`);
-        } catch (error) {
-          this.showError(error);
-        }
-      })
-    ).addButton(
-      (button) => button.setButtonText("\uC815\uBC00 \uB300\uC870").onClick(async () => {
-        try {
-          await this.owner.reconcile("strict");
-        } catch (error) {
-          this.showError(error);
-        }
-      })
-    ).addButton(
-      (button) => button.setButtonText("\uBCA1\uD130 \uC7AC\uAD6C\uCD95").onClick(async () => {
-        try {
-          await this.owner.rebuildVectors();
-        } catch (error) {
-          this.showError(error);
-        }
-      })
-    ).addButton(
-      (button) => button.setButtonText("\uC804\uCCB4 \uC7AC\uAD6C\uCD95").setWarning().onClick(async () => {
-        try {
-          await this.owner.rebuildAll();
-        } catch (error) {
-          this.showError(error);
-        }
-      })
-    );
+    this.heading(parent, "\uAC80\uC0C9");
     this.numericFields(
+      parent,
       "\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9",
       "\uAC12\uC744 \uBCC0\uACBD\uD558\uBA74 \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4.",
       [
@@ -7280,7 +7334,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       ]
     );
-    new import_obsidian7.Setting(containerEl).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc(
+    new import_obsidian7.Setting(parent).setName("\uCCAD\uD0B9 \uC804\uB7B5").setDesc(
       "Markdown \uAD6C\uC870 \uC778\uC2DD \uC804\uB7B5\uC744 \uD3EC\uD568\uD574 \uBCC0\uACBD \uC2DC \uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC774 \uD544\uC694\uD569\uB2C8\uB2E4."
     ).addDropdown(
       (dropdown) => dropdown.addOption("paragraph-v1", "\uBB38\uB2E8 \uAE30\uBC18 (\uAE30\uBCF8\uAC12)").addOption("markdown-v2", "Markdown \uAD6C\uC870 \uC778\uC2DD").setValue(draft.chunkingStrategy).onChange((value) => {
@@ -7289,6 +7343,7 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
       })
     );
     this.numericFields(
+      parent,
       "BM25 / \uBCA1\uD130 / \uCD5C\uC885 \uD6C4\uBCF4 / RRF k",
       "\uAC80\uC0C9\uC774 '\uD6C4\uBCF4\uB97C \uB113\uAC8C \uBAA8\uC544 \uC735\uD569\uD55C \uB4A4 \uCD5C\uC885 \uACB0\uACFC\uB9CC \uBC18\uD658'\uD558\uB294 \uB108\uBE44\uB97C \uC870\uC815\uD569\uB2C8\uB2E4. \uAE30\uBCF8\uAC12 80 / 80 / 40\uC740 K_Notes \uACE8\uB4DC\uC14B \uAE30\uC900 recall@40 0.856\uC73C\uB85C \uCE21\uC815\uD574 \uC815\uD55C \uAC12\uC785\uB2C8\uB2E4.",
       [
@@ -7322,11 +7377,12 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       ]
     );
-    containerEl.createEl("div", {
+    parent.createEl("div", {
       cls: "vault-search-setting-hint",
       text: "\u2022 bm25TopK: \uD0A4\uC6CC\uB4DC(BM25)\uB85C \uBF51\uB294 \uD6C4\uBCF4 \uCCAD\uD06C \uC218. \uB113\uD788\uBA74 \uC815\uD655\uD55C \uB2E8\uC5B4\uAC00 \uD769\uC5B4\uC9C4 \uD30C\uC77C\uB3C4 \uB193\uCE58\uC9C0 \uC54A\uC9C0\uB9CC, \uC7A1\uC74C\uC774 \uB298 \uC218 \uC788\uC2B5\uB2C8\uB2E4.\n\u2022 vectorTopK: \uC758\uBBF8(\uC784\uBCA0\uB529) \uC720\uC0AC\uB3C4\uB85C \uBF51\uB294 \uD6C4\uBCF4 \uCCAD\uD06C \uC218. \uB113\uD788\uBA74 \uD45C\uD604\uC774 \uB2EC\uB77C\uB3C4 \uAD00\uB828\uB41C \uD30C\uC77C\uC774 \uD68C\uC218\uB429\uB2C8\uB2E4.\n\u2022 finalTopK: \uCD5C\uC885 \uBC18\uD658 \uACB0\uACFC \uC218. \uC5D0\uC774\uC804\uD2B8\uAC00 \uB113\uAC8C \uC870\uC0AC\uD560 \uB54C\uB294 40\uAC1C \uC815\uB3C4\uAC00 \uC801\uB2F9\uD569\uB2C8\uB2E4.\n\u2022 rrfK: \uC5EC\uB7EC \uCC44\uB110 \uACB0\uACFC\uB97C \uC735\uD569\uD560 \uB54C \uC21C\uC704 \uC810\uC218\uB97C \uD3C9\uD0C4\uD654\uD558\uB294 \uC0C1\uC218\uC785\uB2C8\uB2E4. \uACB0\uACFC\uAC00 \uD55C \uCC44\uB110\uC5D0 \uCE58\uC6B0\uCE58\uBA74 \uC774 \uAC12\uC744 \uC904\uC5EC \uBCF4\uC138\uC694.\n\uBC14\uAFB8\uBA74 \uC2E4\uD589 \uC911 \uC11C\uBE44\uC2A4\uC5D0 \uC989\uC2DC \uBC18\uC601\uB418\uBA70, \uACB0\uACFC\uAC00 \uC774\uC0C1\uD558\uBA74 \uAE30\uBCF8\uAC12\uC73C\uB85C \uB418\uB3CC\uB9AC\uBA74 \uB429\uB2C8\uB2E4."
     });
     this.numericFields(
+      parent,
       "\uAC80\uC0C9 \uB2E4\uC591\uC131 / \uC81C\uBAA9 \uAC00\uC911\uCE58",
       "\uD30C\uC77C\uB2F9 \uCD5C\uB300 \uCCAD\uD06C \uC218\uC640 \uD30C\uC77C\uBA85\xB7\uACBD\uB85C\xB7\uD5E4\uB529 RRF \uAC00\uC911\uCE58\uC785\uB2C8\uB2E4. \uAE30\uBCF8\uAC12\uC740 1 / 1.0\uC785\uB2C8\uB2E4.",
       [
@@ -7347,109 +7403,146 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
       ]
     );
-    containerEl.createEl("div", {
+    parent.createEl("div", {
       cls: "vault-search-setting-hint",
       text: "\u2022 maxChunksPerFile: \uD55C \uD30C\uC77C\uC774 \uCD5C\uC885 \uACB0\uACFC\uC5D0\uC11C \uCC28\uC9C0\uD560 \uC218 \uC788\uB294 \uCCAD\uD06C \uC218. 1\uC774\uBA74 \uAC01 \uD30C\uC77C\uC740 \uACB0\uACFC 1\uAC1C\uB85C \uC81C\uD55C\uB418\uC5B4 \uB2E4\uB978 \uD30C\uC77C\uB3C4 \uBCFC \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uD55C \uD30C\uC77C\uC758 \uC5EC\uB7EC \uAD6C\uC808\uC744 \uBCF4\uB824\uBA74 \uB298\uB824 \uBCF4\uC138\uC694.\n\u2022 titleRrfWeight: \uD30C\uC77C\uBA85\xB7\uACBD\uB85C\xB7\uD5E4\uB529 \uB9E4\uCE58\uAC00 \uACB0\uACFC \uC21C\uC704\uC5D0 \uBBF8\uCE58\uB294 \uAC00\uC911\uCE58. \uD30C\uC77C \uC81C\uBAA9\uC744 \uC911\uC694\uD558\uAC8C \uC5EC\uAE30\uB824\uBA74 \uC62C\uB9AC\uC138\uC694."
     });
-    new import_obsidian7.Setting(containerEl).setName("\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31").setDesc(
+    new import_obsidian7.Setting(parent).setName("\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31").setDesc(
       "\uC815\uD655 BM25 \uACB0\uACFC\uAC00 \uC5C6\uC744 \uB54C \uD1A0\uD070 \uC811\uB450\uC0AC \uAC80\uC0C9\uC73C\uB85C \uD55C \uBC88 \uB354 \uCC3E\uC2B5\uB2C8\uB2E4."
     ).addToggle(
       (toggle) => toggle.setValue(draft.prefixFallback).onChange((value) => {
         draft.prefixFallback = value;
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uB3D9\uAE30\uD654 debounce (ms)").addText(
+    new import_obsidian7.Setting(parent).setName("\uB3D9\uAE30\uD654 debounce (ms)").addText(
       (text) => text.setValue(String(draft.syncDebounceMs)).onChange((value) => {
         draft.syncDebounceMs = this.positiveNumber(value, draft.syncDebounceMs);
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uC790\uB3D9 \uC99D\uBD84 \uB3D9\uAE30\uD654").addToggle(
+    new import_obsidian7.Setting(parent).setName("\uC790\uB3D9 \uC99D\uBD84 \uB3D9\uAE30\uD654").addToggle(
       (toggle) => toggle.setValue(draft.autoSync).onChange((value) => {
         draft.autoSync = value;
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uC2DC\uC791 \uC2DC \uC804\uCCB4 \uB300\uC870").addToggle(
+    new import_obsidian7.Setting(parent).setName("\uC2DC\uC791 \uC2DC \uC804\uCCB4 \uB300\uC870").addToggle(
       (toggle) => toggle.setValue(draft.startupReconcile).onChange((value) => {
         draft.startupReconcile = value;
       })
     );
-    this.renderTabs();
   }
-  renderTabs() {
-    const root = this.containerEl;
-    const rendered = Array.from(root.children);
-    root.empty();
-    root.addClass("vault-search-settings");
-    const tabs = root.createDiv({ cls: "vault-search-settings-tabs" });
-    const panels = {
-      general: root.createDiv({ cls: "vault-search-settings-panel" }),
-      answer: root.createDiv({ cls: "vault-search-settings-panel" }),
-      agent: root.createDiv({ cls: "vault-search-settings-panel" }),
-      search: root.createDiv({ cls: "vault-search-settings-panel" })
+  renderStatusCard(parent, status) {
+    const card = parent.createDiv({ cls: "vault-search-status-card" });
+    const health = card.createDiv({ cls: "vault-search-status-health" });
+    const dot = health.createEl("span", { cls: "vault-search-dot" });
+    const label = health.createEl("span", { cls: "vault-search-status-label" });
+    card.createDiv({ cls: "vault-search-status-sep" });
+    const files = this.statusMetric(card, "\uD30C\uC77C");
+    const chunks = this.statusMetric(card, "\uCCAD\uD06C");
+    const extra = card.createDiv({
+      cls: "vault-search-status-metric vault-search-status-last"
+    });
+    extra.createEl("div", {
+      cls: "vault-search-status-mlabel",
+      text: "\uB9C8\uC9C0\uB9C9 \uC5C5\uB370\uC774\uD2B8"
+    });
+    const extraValue = extra.createEl("div", {
+      cls: "vault-search-status-value vault-search-status-stamp"
+    });
+    const warn = parent.createDiv({ cls: "vault-search-inline-warn" });
+    this.statusEls = {
+      root: card,
+      dot,
+      label,
+      files,
+      chunks,
+      extra: extraValue,
+      warn
     };
-    const labels = {
-      general: "\uC77C\uBC18",
-      answer: "AI \uB2F5\uBCC0",
-      agent: "API \uC5D0\uC774\uC804\uD2B8",
-      search: "\uAC80\uC0C9\xB7\uB7F0\uD0C0\uC784"
-    };
-    const buttons = /* @__PURE__ */ new Map();
-    const updateActive = () => {
-      for (const tab of Object.keys(panels)) {
-        panels[tab].toggleClass("is-active", tab === this.activeTab);
-        buttons.get(tab)?.toggleClass("is-active", tab === this.activeTab);
-      }
-    };
-    for (const tab of Object.keys(labels)) {
-      const button = tabs.createEl("button", {
-        text: labels[tab],
-        cls: "vault-search-settings-tab",
+    this.paintStatus(status);
+  }
+  statusMetric(parent, caption) {
+    const metric = parent.createDiv({ cls: "vault-search-status-metric" });
+    const value = metric.createDiv({ cls: "vault-search-status-value" });
+    metric.createDiv({ cls: "vault-search-status-mlabel", text: caption });
+    return value;
+  }
+  paintStatus(status) {
+    const els = this.statusEls;
+    if (!els) return;
+    const health = this.statusHealth(status);
+    els.dot.className = `vault-search-dot vault-search-dot-${health.tone}`;
+    els.label.setText(health.label);
+    els.root.toggleClass("vault-search-error", Boolean(status.error));
+    if (status.count_available === false) {
+      els.files.setText("\u2014");
+      els.chunks.setText("\u2014");
+    } else {
+      els.files.setText(
+        status.files === void 0 ? "\u2026" : status.files.toLocaleString()
+      );
+      els.chunks.setText(
+        status.chunks === void 0 ? "\u2026" : status.chunks.toLocaleString()
+      );
+    }
+    els.extra.setText(
+      status.progress || this.formatUpdatedAt(status.last_updated_at)
+    );
+    const warnings = [
+      status.error ? `\uC624\uB958: ${status.error}` : "",
+      status.pending_recovery_required ? `\uBCF5\uAD6C \uC7AC\uC2DC\uB3C4 \uD544\uC694: ${status.pending_recovery_warning || "pending path journal"}` : "",
+      status.index_rebuild_required ? `\uC778\uB371\uC2A4 \uD638\uD658\uC131 \uBB38\uC81C: ${status.recommended_action === "rebuild_vectors" ? "\uBCA1\uD130 \uC7AC\uAD6C\uCD95 \uD544\uC694" : "\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uD544\uC694"}` : "",
+      this.owner.runtimeWarning || ""
+    ].filter(Boolean);
+    els.warn.setText(warnings.join("\n"));
+    els.warn.toggleClass("is-visible", warnings.length > 0);
+  }
+  statusHealth(status) {
+    if (status.error || status.state === "error") {
+      return { tone: "bad", label: "\uC624\uB958" };
+    }
+    switch (status.state) {
+      case "ready":
+      case "idle":
+        if (status.files === 0) return { tone: "mid", label: "\uC778\uB371\uC2A4 \uC5C6\uC74C" };
+        return { tone: "good", label: "\uCD5C\uC2E0" };
+      case "ready_no_index":
+        return { tone: "mid", label: "\uC778\uB371\uC2A4 \uC5C6\uC74C" };
+      case "starting":
+      case "loading_model":
+        return { tone: "accent", label: "\uC2DC\uC791 \uC911\u2026" };
+      case "syncing":
+        return { tone: "accent", label: "\uB3D9\uAE30\uD654 \uC911\u2026" };
+      case "reconciling":
+        return { tone: "accent", label: "\uB300\uC870 \uC911\u2026" };
+      case "rebuilding":
+      case "rebuilding_vectors":
+        return { tone: "accent", label: "\uC7AC\uAD6C\uCD95 \uC911\u2026" };
+      case "stopped":
+      default:
+        return { tone: "mid", label: "\uC911\uC9C0\uB428" };
+    }
+  }
+  heading(parent, name) {
+    new import_obsidian7.Setting(parent).setName(name).setHeading();
+  }
+  addSegmented(setting, opts, selected, onPick) {
+    const seg = setting.controlEl.createDiv({ cls: "vault-search-seg" });
+    for (const option of opts) {
+      const button = seg.createEl("button", {
+        cls: "vault-search-seg-opt",
+        text: option.label,
         attr: { type: "button" }
       });
-      button.addEventListener("click", () => {
-        this.activeTab = tab;
-        updateActive();
-      });
-      buttons.set(tab, button);
+      if (option.value === selected) button.addClass("is-active");
+      button.addEventListener("click", () => onPick(option.value));
     }
-    let panel = "general";
-    const searchSettingNames = /* @__PURE__ */ new Set([
-      "\uC5D0\uC774\uC804\uD2B8 \uD1B5\uD569",
-      "\uC784\uBCA0\uB529 \uBAA8\uB378",
-      "\uBAA8\uB378 ID",
-      "\uC784\uBCA0\uB529 \uBC31\uC5D4\uB4DC",
-      "\uC778\uB371\uC2A4 \uAD00\uB9AC",
-      "\uCCAD\uD06C \uD06C\uAE30 / \uC624\uBC84\uB7A9",
-      "\uCCAD\uD0B9 \uC804\uB7B5",
-      "BM25 / \uBCA1\uD130 / \uCD5C\uC885 \uD6C4\uBCF4 / RRF k",
-      "\uAC80\uC0C9 \uB2E4\uC591\uC131 / \uC81C\uBAA9 \uAC00\uC911\uCE58",
-      "\uC811\uB450\uC0AC \uAC80\uC0C9 \uD3F4\uBC31",
-      "\uB3D9\uAE30\uD654 debounce (ms)",
-      "\uC790\uB3D9 \uC99D\uBD84 \uB3D9\uAE30\uD654",
-      "\uC2DC\uC791 \uC2DC \uC804\uCCB4 \uB300\uC870"
-    ]);
-    for (const child of rendered) {
-      const element = child;
-      if (element.tagName === "H3") {
-        if (element.textContent?.includes("AI Vault")) panel = "answer";
-        if (element.textContent?.includes("API \uC5D0\uC774\uC804\uD2B8") || element.textContent?.includes("MCP \uC11C\uBC84") || element.textContent?.includes("\uC2A4\uD0AC"))
-          panel = "agent";
-        if (element.textContent?.includes("\uACE0\uAE09")) panel = "search";
-      }
-      const settingName = element.querySelector(".setting-item-name")?.textContent?.trim();
-      if (panel === "answer" && settingName && searchSettingNames.has(settingName)) {
-        panel = "search";
-      }
-      panels[panel].appendChild(element);
-    }
-    updateActive();
   }
   /** Render a numeric row as labeled horizontal fields (label above each
    *  input) laid out BELOW the setting name/description across the full width,
    *  instead of squeezing several fields into the right control column (which
    *  runs out of space for 4+ fields). */
-  numericFields(name, desc, fields) {
-    const setting = new import_obsidian7.Setting(this.containerEl).setName(name).setDesc(desc).setClass("vault-search-fields-below");
+  numericFields(parent, name, desc, fields) {
+    const setting = new import_obsidian7.Setting(parent).setName(name).setDesc(desc).setClass("vault-search-fields-below");
     const control = setting.controlEl;
     control.addClass("vault-search-num-fields");
     for (const field of fields) {
@@ -7473,33 +7566,12 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
   lines(value) {
     return value.split(/\r?\n/).map((line) => line.trim().replace(/\\/g, "/")).filter(Boolean);
   }
-  /** Status line for the ONNX execution provider. Shows the *effective*
-   *  provider (the EP the loaded session was actually built with) when the
-   *  model is loaded, and the expected resolution before load, so the display
-   *  reflects reality rather than only the configured value. */
-  providerStatusLine(status) {
-    const effective = status.effective_provider;
-    const shown = effective || status.expected_provider;
-    if (!shown) return "";
-    const configNote = status.provider && status.provider !== "auto" ? ` (\uC124\uC815: ${this.providerLabel(status.provider)})` : "";
-    return `\uC2E4\uD589 \uC81C\uACF5\uC790: ${this.providerLabel(shown)}${configNote}${effective ? "" : " (\uB85C\uB4DC \uC804 \uC608\uC0C1)"}`;
-  }
-  providerLabel(provider) {
-    switch (provider) {
-      case "TensorrtExecutionProvider":
-      case "tensorrt":
-        return "TensorRT";
-      case "CUDAExecutionProvider":
-      case "cuda":
-        return "CUDA";
-      case "CPUExecutionProvider":
-      case "cpu":
-        return "CPU";
-      case "auto":
-        return "\uC790\uB3D9";
-      default:
-        return provider || "-";
-    }
+  formatUpdatedAt(epoch) {
+    if (epoch == null || !Number.isFinite(epoch) || epoch <= 0) return "\uC5C6\uC74C";
+    const d = new Date(epoch * 1e3);
+    if (Number.isNaN(d.getTime())) return "\uC5C6\uC74C";
+    const p = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
   }
   agentStatusText(agent) {
     const agents = agent.agentsFile === "absent" ? "AGENTS.md: \uC5C6\uC74C" : agent.agentsFile === "managed" ? "AGENTS.md: \uAD00\uB9AC \uBE14\uB85D \uC788\uC74C" : agent.agentsFile === "conflict" ? "AGENTS.md: \uAE30\uC874 \uAC80\uC0C9 \uC9C0\uC2DC \uC788\uC74C (\uC790\uB3D9 \uD1B5\uD569 \uC548 \uD568)" : "AGENTS.md: \uAE30\uC874 \uD30C\uC77C \uC788\uC74C";
@@ -10559,7 +10631,11 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       (status) => this.handleStatus(status),
       this.manifest.version,
       () => providerEnvironment(this.app),
-      (options) => buildMcpSecretPayload(this.app, this.settings.mcpServers || [], options)
+      (options) => buildMcpSecretPayload(
+        this.app,
+        this.settings.mcpServers || [],
+        options
+      )
     );
     try {
       await this.backend.persistServiceConfig();
@@ -10710,10 +10786,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
         Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds
       )
     );
-    const mcpMigration = migrateMcpHttpUrls(
-      this.app,
-      this.settings
-    );
+    const mcpMigration = migrateMcpHttpUrls(this.app, this.settings);
     const failedIds = new Set(mcpMigration.failedServers.map((s) => s.id));
     if (mcpMigration.failedServers.length > 0) {
       new import_obsidian14.Notice(
@@ -10830,10 +10903,10 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     try {
       await this.saveSettings();
     } catch (err) {
-      if (previousMemory !== void 0) {
-        this.providerModels[provider] = previousMemory;
-      } else {
+      if (previousMemory === void 0) {
         delete this.providerModels[provider];
+      } else {
+        this.providerModels[provider] = previousMemory;
       }
       this.settings.fetchedProviderModels = previousSettings;
       this.draftSettings.fetchedProviderModels = previousDraft;
@@ -10987,7 +11060,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     const isFavorite = currentFavorites.some(
       (favorite) => favorite.provider === provider && favorite.model === model
     );
-    const targetFavorite = desiredFavorite !== void 0 ? desiredFavorite : !isFavorite;
+    const targetFavorite = desiredFavorite === void 0 ? !isFavorite : desiredFavorite;
     if (isFavorite === targetFavorite) {
       if (this.draftSettings.favoriteAnswerModels) {
         const draftHasIt = (this.draftSettings.favoriteAnswerModels || []).some(
@@ -11009,9 +11082,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     );
     if (targetFavorite) {
       if (index < 0) favorites.push({ provider, model });
-    } else {
-      if (index >= 0) favorites.splice(index, 1);
-    }
+    } else if (index >= 0) favorites.splice(index, 1);
     this.settings.favoriteAnswerModels = favorites;
     this.draftSettings.favoriteAnswerModels = favorites.map((favorite) => ({
       ...favorite
@@ -11194,10 +11265,19 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   }
   async startBackend() {
     await this.ensureSanitizedConfig();
-    await this.prepareRuntime(this.settings, false);
-    await this.backend.ensureStarted();
-    await this.completeStartup();
+    await this.backend.start(false);
+    const state = this.backend.status.state;
+    if (state === "stopped" || state === "error" || state === "starting") {
+      await this.prepareRuntime(this.settings, false);
+      await this.backend.start(false);
+    }
     this.settingTab?.display();
+    void this.backend.ensureStarted().then(() => this.completeStartup()).catch(
+      (error) => new import_obsidian14.Notice(
+        `Vault Search \uC2DC\uC791 \uC2E4\uD328: ${this.errorMessage(error)}`,
+        1e4
+      )
+    );
   }
   async installCudaRuntime() {
     return this.enqueueSettingsLock(async () => {
@@ -11348,16 +11428,18 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   async rebuildAll() {
     await this.ensureSearchStarted();
     new import_obsidian14.Notice("\uC804\uCCB4 \uC778\uB371\uC2A4 \uC7AC\uAD6C\uCD95\uC744 \uC2DC\uC791\uD569\uB2C8\uB2E4. \uBC31\uADF8\uB77C\uC6B4\uB4DC\uC5D0\uC11C \uC9C4\uD589\uB429\uB2C8\uB2E4.");
-    const result = await this.backend.call(
-      "rebuild_all",
-      {},
-      36e5
+    void this.backend.call("rebuild_all", {}, 36e5).then((result) => {
+      new import_obsidian14.Notice(
+        `\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`,
+        1e4
+      );
+      this.settingTab?.display();
+    }).catch(
+      (error) => new import_obsidian14.Notice(
+        `Vault Search \uC7AC\uAD6C\uCD95 \uC2E4\uD328: ${this.errorMessage(error)}`,
+        1e4
+      )
     );
-    new import_obsidian14.Notice(
-      `\uC804\uCCB4 \uC7AC\uAD6C\uCD95 \uC644\uB8CC: \uD30C\uC77C ${result.files}\uAC1C, \uCCAD\uD06C ${result.chunks}\uAC1C`,
-      1e4
-    );
-    this.settingTab?.display();
   }
   async rebuildVectors() {
     await this.ensureSearchStarted();
@@ -11402,9 +11484,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       }
       server.enabled = server.enabled !== false;
       const policies = {};
-      for (const [tool, policy] of Object.entries(
-        server.toolPolicies || {}
-      )) {
+      for (const [tool, policy] of Object.entries(server.toolPolicies || {})) {
         if (policy === "deny" || policy === "ask" || policy === "allow") {
           policies[tool] = policy;
         }
@@ -11458,7 +11538,6 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     const existing = (this.draftSettings.mcpServers || []).find(
       (server) => server.id === serverId
     );
-    const isNew = !existing;
     const working = existing ? {
       ...existing,
       args: [...existing.args],
@@ -11521,11 +11600,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     return this.backend.call("mcp_refresh", {}, 6e4);
   }
   async refreshSkillsStatus() {
-    return this.backend.call(
-      "skills_status",
-      {},
-      3e4
-    );
+    return this.backend.call("skills_status", {}, 3e4);
   }
   async rescanSkills() {
     return this.backend.call(
