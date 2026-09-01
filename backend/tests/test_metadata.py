@@ -122,5 +122,5 @@ def test_classify_unknown_problem_defaults_to_full_rebuild():
 
 
 def test_classify_tokenizer_and_scope_require_full_rebuild():
-    assert classify_index_problems(["tokenizer_version: expected 'kiwi-pos-v1', found 'x'"]) == "rebuild_all"
+    assert classify_index_problems(["tokenizer_version: expected 'kiwi-pos-v2-userdict', found 'x'"]) == "rebuild_all"
     assert classify_index_problems(["scope_config_hash: expected abc, found def"]) == "rebuild_all"
