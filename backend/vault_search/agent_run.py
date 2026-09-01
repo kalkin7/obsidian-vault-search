@@ -85,6 +85,7 @@ class ActivityEntry:
 class RunState:
     run_id: str
     query: str
+    fingerprint: str = ""
     created_at: float = field(default_factory=time.monotonic)
     messages: list[dict[str, Any]] = field(default_factory=list)
     pending: dict[str, PendingCall] = field(default_factory=dict)
@@ -197,7 +198,9 @@ class StructuredAgentRun:
     # Built-in execution
     # ------------------------------------------------------------------
 
-    def _execute_builtin(self, name: str, arguments: dict[str, Any]) -> NormalizedToolResult:
+    def _execute_builtin(
+        self, name: str, arguments: dict[str, Any]
+    ) -> NormalizedToolResult:
         try:
             if name == BUILTIN_SEARCH_NAME:
                 query = str(arguments.get("query") or "").strip()
@@ -209,9 +212,7 @@ class StructuredAgentRun:
                     index = self._add_source(
                         file_path=str(item.get("file_path", "")),
                         start_line=int(item.get("start_line") or 1),
-                        heading_path=[
-                            str(x) for x in (item.get("heading_path") or [])
-                        ],
+                        heading_path=[str(x) for x in (item.get("heading_path") or [])],
                         content=str(item.get("content") or ""),
                         rank=int(item.get("rank") or len(results)),
                         score=float(item.get("score") or 0.0),
@@ -220,7 +221,9 @@ class StructuredAgentRun:
                     if index is not None:
                         texts.append(self._render_source(self.sources[-1]))
                 if not texts:
-                    return NormalizedToolResult(ok=True, text="search returned no results.")
+                    return NormalizedToolResult(
+                        ok=True, text="search returned no results."
+                    )
                 return NormalizedToolResult(
                     ok=True, text="검색 결과:\n" + "\n\n".join(texts)
                 )
@@ -254,7 +257,9 @@ class StructuredAgentRun:
                 pattern = str(arguments.get("pattern") or "").strip()
                 glob_pattern = str(arguments.get("glob") or "**/*.md").strip()
                 if not pattern:
-                    return tool_error_result("TOOL_INVALID_ARGUMENTS", "pattern required")
+                    return tool_error_result(
+                        "TOOL_INVALID_ARGUMENTS", "pattern required"
+                    )
                 matches = self._grep(pattern, glob_pattern)
                 texts = []
                 for match in matches[:100]:
@@ -276,14 +281,18 @@ class StructuredAgentRun:
                 )
             if name == BUILTIN_SKILL_LOAD_NAME:
                 if self._skills is None:
-                    return tool_error_result("SKILLS_DISABLED", "skills are not enabled")
+                    return tool_error_result(
+                        "SKILLS_DISABLED", "skills are not enabled"
+                    )
                 skill_id = str(arguments.get("skill_id") or "").strip()
                 if skill_id in self.state.loaded_skills:
                     return NormalizedToolResult(
                         ok=True,
                         text=self.state.loaded_skills[skill_id],
                     )
-                body = wrap_skill_instructions(skill_id, self._skills.load_body(skill_id))
+                body = wrap_skill_instructions(
+                    skill_id, self._skills.load_body(skill_id)
+                )
                 if not self.state.context_budget.try_consume(len(body)):
                     return tool_error_result(
                         "CONTEXT_BUDGET_EXHAUSTED",
@@ -294,12 +303,16 @@ class StructuredAgentRun:
                 return NormalizedToolResult(ok=True, text=body)
             if name == BUILTIN_SKILL_RESOURCE_NAME:
                 if self._skills is None:
-                    return tool_error_result("SKILLS_DISABLED", "skills are not enabled")
+                    return tool_error_result(
+                        "SKILLS_DISABLED", "skills are not enabled"
+                    )
                 skill_id = str(arguments.get("skill_id") or "").strip()
                 relative = str(arguments.get("relative_path") or "").strip()
                 if skill_id not in self.state.loaded_skills:
                     raise SkillError("load the skill before reading its resources")
-                text = self._skills.read_resource(skill_id, relative, self.state.resource_budget)
+                text = self._skills.read_resource(
+                    skill_id, relative, self.state.resource_budget
+                )
                 return NormalizedToolResult(ok=True, text=text)
             return tool_error_result("UNKNOWN_TOOL", f"unknown tool '{name}'")
         except SkillError as exc:
@@ -349,6 +362,7 @@ class StructuredAgentRun:
     def _execute_mcp(self, pending: PendingCall) -> NormalizedToolResult:
         assert self._mcp_host is not None
         started = time.monotonic()
+        # pi-lens-ignore: unchecked-throwing-call-python
         result = self._mcp_host.call_tool_sync(
             server_id=pending.server_id,
             tool_name=pending.display_name,
@@ -357,6 +371,7 @@ class StructuredAgentRun:
             cancel_registry=self.state.active_calls,
             cancel_key=f"{self.state.run_id}:{pending.call_id}",
         )
+        # pi-lens-ignore: unchecked-throwing-call-python
         duration_ms = int((time.monotonic() - started) * 1000)
         if result.ok:
             status = "success"
@@ -387,7 +402,9 @@ class StructuredAgentRun:
         return result
 
     @staticmethod
-    def _result_message(call: ProviderToolCall, result: NormalizedToolResult) -> dict[str, Any]:
+    def _result_message(
+        call: ProviderToolCall, result: NormalizedToolResult
+    ) -> dict[str, Any]:
         prefix = "" if result.ok else f"[{result.error_code}] "
         return {
             "role": "tool",
@@ -396,7 +413,9 @@ class StructuredAgentRun:
         }
 
     def _append_assistant_and_results(
-        self, turn: ProviderTurn, results: list[tuple[ProviderToolCall, NormalizedToolResult]]
+        self,
+        turn: ProviderTurn,
+        results: list[tuple[ProviderToolCall, NormalizedToolResult]],
     ) -> None:
         self.state.messages.append(
             {
@@ -438,6 +457,7 @@ class StructuredAgentRun:
                     max_output_tokens=self.max_output_tokens,
                     timeout_seconds=self.timeout_seconds,
                 )
+            # pi-lens-ignore: no-boolean-in-except
             except Exception as exc:
                 code = getattr(exc, "code", None)
                 message = getattr(exc, "message", str(exc))
@@ -494,15 +514,27 @@ class StructuredAgentRun:
                 elif kind == "builtin":
                     if self.state.tool_call_count >= MAX_TOTAL_TOOL_CALLS:
                         auto.append(
-                            (call, tool_error_result("TOOL_BUDGET_EXHAUSTED", "tool budget reached"))
+                            (
+                                call,
+                                tool_error_result(
+                                    "TOOL_BUDGET_EXHAUSTED", "tool budget reached"
+                                ),
+                            )
                         )
                     else:
                         self.state.tool_call_count += 1
-                        auto.append((call, self._execute_builtin(call.name, call.arguments)))
+                        auto.append(
+                            (call, self._execute_builtin(call.name, call.arguments))
+                        )
                 elif kind == "mcp_auto":
                     if self.state.tool_call_count >= MAX_TOTAL_TOOL_CALLS:
                         auto.append(
-                            (call, tool_error_result("TOOL_BUDGET_EXHAUSTED", "tool budget reached"))
+                            (
+                                call,
+                                tool_error_result(
+                                    "TOOL_BUDGET_EXHAUSTED", "tool budget reached"
+                                ),
+                            )
                         )
                     else:
                         self.state.tool_call_count += 1
@@ -531,7 +563,9 @@ class StructuredAgentRun:
                 raise AgentRunError("RUN_NOT_WAITING", "run has no pending approvals")
             provided_ids = [str(d.get("call_id")) for d in decisions]
             if len(provided_ids) != len(set(provided_ids)):
-                raise AgentRunError("DUPLICATE_DECISION", "duplicate call_id in decisions")
+                raise AgentRunError(
+                    "DUPLICATE_DECISION", "duplicate call_id in decisions"
+                )
             pending_ids = set(self.state.pending.keys())
             if set(provided_ids) != pending_ids:
                 raise AgentRunError(
@@ -670,36 +704,107 @@ class StructuredAgentRun:
 
 
 class AgentRunRegistry:
-    """Bounded registry of live runs with approval-TTL cleanup."""
+    """Bounded registry of live runs with approval-TTL cleanup.
+
+    Expired runs are remembered in a small protection ledger (``_graveyard``,
+    run_id -> protected-until) so a sweep or a later lookup never forgets that
+    an id already reached expiry: an expired id must not degrade back to
+    RUN_NOT_FOUND and start a second LLM call within the protection window.
+    The service observes RUN_EXPIRED (or RUN_NOT_FOUND while the id is still
+    in the ledger) and mirrors it into its own tombstone store.
+    """
 
     def __init__(self, max_active: int = MAX_ACTIVE_RUNS) -> None:
         self._runs: dict[str, tuple[StructuredAgentRun, float]] = {}
         self._max_active = max_active
+        self._graveyard: dict[str, float] = {}
+        self._graveyard_ttl_seconds = APPROVAL_TTL_SECONDS
+        # Bounded protection ledger. Lives runs are capped at max_active=4 and
+        # each lives at most APPROVAL_TTL_SECONDS, so at most ~4 ids reach the
+        # ledger per window; 4096 is generous headroom. Protected ids are never
+        # evicted; when the ledger is genuinely full, callers fail closed
+        # (keep the expired run registered) instead of forgetting an expiry.
+        self._graveyard_max_entries = 4096
         self._lock = threading.Lock()
+
+    def _is_graveyarded_locked(self, run_id: str) -> bool:
+        now = time.monotonic()
+        exp = self._graveyard.get(run_id)
+        if exp is None:
+            return False
+        if exp <= now:
+            self._graveyard.pop(run_id, None)
+            return False
+        return True
+
+    def _bury_locked(self, run_id: str) -> bool:
+        """Record that run_id reached expiry.
+
+        Returns False only when the ledger is at capacity with every id still
+        protected; the caller then keeps the expired run registered (it keeps
+        reporting RUN_EXPIRED) until a slot frees. Never evicts a protected id.
+        """
+        now = time.monotonic()
+        stale = [k for k, exp in self._graveyard.items() if exp <= now]
+        for k in stale:
+            self._graveyard.pop(k, None)
+        if run_id in self._graveyard:
+            return True
+        if len(self._graveyard) >= self._graveyard_max_entries:
+            return False
+        self._graveyard[run_id] = now + self._graveyard_ttl_seconds
+        return True
+
+    def is_expired(self, run_id: str) -> bool:
+        """True when run_id reached expiry and is still protected."""
+        with self._lock:
+            entry = self._runs.get(run_id)
+            if entry is not None and time.monotonic() - entry[1] > APPROVAL_TTL_SECONDS:
+                # Expired but could not be buried (ledger full): still protected.
+                return True
+            return self._is_graveyarded_locked(run_id)
 
     def add(self, run: StructuredAgentRun) -> None:
         with self._lock:
             self.sweep_expired_locked()
+            run_id = run.state.run_id
+            if self._is_graveyarded_locked(run_id):
+                raise AgentRunError("RUN_EXPIRED", f"run '{run_id}' has expired")
+            entry = self._runs.get(run_id)
+            if entry is not None:
+                if time.monotonic() - entry[1] > APPROVAL_TTL_SECONDS:
+                    # Expired but still resident (ledger full fallback): the id
+                    # stays expired, it must not start a second LLM run.
+                    raise AgentRunError("RUN_EXPIRED", f"run '{run_id}' has expired")
+                raise AgentRunError("RUN_CONFLICT", f"run '{run_id}' already exists")
             if len(self._runs) >= self._max_active:
                 raise AgentRunError(
                     "TOO_MANY_RUNS", "too many concurrent answers are waiting"
                 )
-            self._runs[run.state.run_id] = (run, time.monotonic())
+            self._runs[run_id] = (run, time.monotonic())
 
     def get(self, run_id: str) -> StructuredAgentRun:
         with self._lock:
             entry = self._runs.get(run_id)
             if entry is not None and time.monotonic() - entry[1] > APPROVAL_TTL_SECONDS:
-                del self._runs[run_id]
-                entry[0].state.cancelled = True
+                run, _created = entry
+                self._runs.pop(run_id, None)
+                run.state.cancelled = True
+                if not self._bury_locked(run_id):
+                    # Ledger full of protected ids: keep the run registered so
+                    # it keeps reporting RUN_EXPIRED instead of RUN_NOT_FOUND.
+                    self._runs[run_id] = (
+                        run,
+                        time.monotonic() - 2 * APPROVAL_TTL_SECONDS,
+                    )
                 raise AgentRunError("RUN_EXPIRED", "approval window elapsed")
             self.sweep_expired_locked()
             entry = self._runs.get(run_id)
-            if entry is None:
-                raise AgentRunError(
-                    "RUN_NOT_FOUND", f"unknown or expired run '{run_id}'"
-                )
-            return entry[0]
+            if entry is not None:
+                return entry[0]
+            if self._is_graveyarded_locked(run_id):
+                raise AgentRunError("RUN_EXPIRED", "approval window elapsed")
+            raise AgentRunError("RUN_NOT_FOUND", f"unknown or expired run '{run_id}'")
 
     def touch(self, run_id: str) -> None:
         with self._lock:
@@ -712,6 +817,40 @@ class AgentRunRegistry:
             entry = self._runs.pop(run_id, None)
             return entry[0] if entry else None
 
+    def retire_protected(self, run_id: str) -> bool:
+        """Atomically transition a live run to protected state.
+
+        Called only when a terminal publish was rejected with ``capacity`` —
+        the caller must not drop the live entry without a protection marker.
+        Never acquires any service callback or terminal lock; only the
+        registry lock is held. Lock order: terminal -> pending -> registry.
+
+        Returns True when the id was recorded in the graveyard and the live
+        entry removed (protection via graveyard). Returns False when the
+        graveyard is full of still-protected ids: the live entry is kept as
+        a cancelled, back-dated expired resident so ``get``/``is_expired``
+        keep reporting RUN_EXPIRED instead of RUN_NOT_FOUND. In both cases
+        the run_id stays protected; the caller must not do an extra remove.
+        If no live entry exists, returns whether the id is already
+        graveyarded.
+        """
+        with self._lock:
+            entry = self._runs.get(run_id)
+            if entry is None:
+                return self._is_graveyarded_locked(run_id)
+            run, _created = entry
+            if self._bury_locked(run_id):
+                self._runs.pop(run_id, None)
+                run.state.cancelled = True
+                return True
+            # Graveyard full of protected ids: keep live as expired resident
+            self._runs[run_id] = (
+                run,
+                time.monotonic() - 2 * self._graveyard_ttl_seconds,
+            )
+            run.state.cancelled = True
+            return False
+
     def sweep_expired_locked(self) -> None:
         now = time.monotonic()
         expired = [
@@ -722,6 +861,10 @@ class AgentRunRegistry:
         for rid in expired:
             run, _created = self._runs.pop(rid)
             run.state.cancelled = True
+            if not self._bury_locked(rid):
+                # Ledger full of protected ids: retain the run (backdated) so
+                # the id keeps reporting RUN_EXPIRED, never RUN_NOT_FOUND.
+                self._runs[rid] = (run, time.monotonic() - 2 * APPROVAL_TTL_SECONDS)
 
     def count(self) -> int:
         with self._lock:
@@ -732,6 +875,7 @@ class AgentRunRegistry:
             for run, _ in self._runs.values():
                 run.state.cancelled = True
             self._runs.clear()
+            self._graveyard.clear()
 
 
 def build_system_prompt(

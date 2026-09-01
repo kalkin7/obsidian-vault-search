@@ -519,13 +519,13 @@ export class VaultSearchSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("답변 timeout (초)")
-      .setDesc("provider 요청 timeout은 최대 60초입니다.")
+      .setDesc("provider 요청 timeout은 최대 120초입니다.")
       .addText((text) =>
         text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
           draft.answerTimeoutSeconds = Math.max(
             5,
             Math.min(
-              60,
+              120,
               this.nonnegativeNumber(value, draft.answerTimeoutSeconds),
             ),
           );

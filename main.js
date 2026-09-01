@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.64";
+var BACKEND_VERSION = "0.1.67";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -3250,36 +3250,157 @@ function describeMcpServer(server) {
 // src/backend-protocol.ts
 var net = __toESM(require("net"));
 var import_crypto = require("crypto");
+var LocalBackendError = class extends Error {
+  constructor(code, message, details) {
+    super(message);
+    this.code = code;
+    this.details = details;
+    this.name = "LocalBackendError";
+  }
+};
+function safeErrno(error) {
+  const anyErr = error;
+  if (typeof anyErr.errno === "number") return anyErr.errno;
+  if (typeof anyErr.errno === "string") return anyErr.errno;
+  if (typeof anyErr.code === "string" && anyErr.code !== "ECONNRESET")
+    return anyErr.code;
+  const msg = anyErr.message || String(error);
+  const win = /\[WinError\s+(\d+)\]/.exec(msg);
+  if (win) return Number(win[1]);
+  if (/ECONNRESET/.test(msg)) return "ECONNRESET";
+  if (/EPIPE/.test(msg)) return "EPIPE";
+  if (/ETIMEDOUT/.test(msg)) return "ETIMEDOUT";
+  if (/ECONNABORTED/.test(msg)) return "ECONNABORTED";
+  return null;
+}
+function classifyStage(error, stage, method) {
+  const anyErr = error;
+  const rawCode = anyErr.code || "";
+  const msg = (anyErr.message || String(error)).toLowerCase();
+  const isTimeout = rawCode === "ETIMEDOUT" || msg.includes("timed out") || msg.includes("timeout");
+  if (isTimeout) {
+    return {
+      code: "LOCAL_BACKEND_TIMEOUT",
+      message: "\uB85C\uCEEC \uBC31\uC5D4\uB4DC \uC751\uB2F5 \uC2DC\uAC04\uC774 \uCD08\uACFC\uB418\uC5C8\uC2B5\uB2C8\uB2E4."
+    };
+  }
+  if (rawCode === "ECONNRESET" || rawCode === "EPIPE" || rawCode === "ECONNABORTED" || msg.includes("econnreset") || msg.includes("read econnreset")) {
+    return {
+      code: "LOCAL_BACKEND_UNAVAILABLE",
+      message: "\uB85C\uCEEC \uBC31\uC5D4\uB4DC \uC5F0\uACB0\uC774 \uB04A\uC5B4\uC84C\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+    };
+  }
+  if (msg.includes("backend closed without")) {
+    return {
+      code: "LOCAL_BACKEND_UNAVAILABLE",
+      message: "\uB85C\uCEEC \uBC31\uC5D4\uB4DC\uAC00 \uC751\uB2F5 \uC5C6\uC774 \uC5F0\uACB0\uC744 \uC885\uB8CC\uD588\uC2B5\uB2C8\uB2E4."
+    };
+  }
+  return {
+    code: "LOCAL_BACKEND_UNAVAILABLE",
+    message: "\uB85C\uCEEC \uBC31\uC5D4\uB4DC\uC5D0 \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+  };
+}
 function requestBackend(runtime, method, params = {}, timeoutMs = 3e3) {
   return new Promise((resolve3, reject) => {
     const requestId = (0, import_crypto.randomUUID)();
-    const socket = net.createConnection({ host: runtime.host || "127.0.0.1", port: runtime.port });
+    const start = Date.now();
+    let stage = "connect";
+    const host = runtime.host || "127.0.0.1";
+    const port = runtime.port;
+    const pid = runtime.pid;
+    const socket = net.createConnection({ host, port });
     let buffer = "";
     let settled = false;
+    const logSafe = (event, data) => {
+      try {
+        const safe = {
+          event,
+          data: {
+            request_id: requestId,
+            method,
+            host,
+            port,
+            pid,
+            stage,
+            ...data
+          },
+          timestamp: (/* @__PURE__ */ new Date()).toISOString()
+        };
+        console.error(JSON.stringify(safe));
+      } catch {
+      }
+    };
+    const runIdForLog = typeof params?.run_id === "string" ? String(params.run_id).slice(0, 64) : void 0;
     const finishError = (error) => {
       if (settled) return;
       settled = true;
+      const elapsed = Date.now() - start;
+      const errnoCode = safeErrno(error);
+      const classified = classifyStage(error, stage, method);
+      logSafe("rpc_error", {
+        elapsed_ms: elapsed,
+        exc_class: error.name || "Error",
+        errno_code: errnoCode == null ? null : String(errnoCode),
+        classified_code: classified.code,
+        run_id: runIdForLog
+      });
       socket.destroy();
-      reject(error);
+      reject(
+        new LocalBackendError(classified.code, classified.message, {
+          request_id: requestId,
+          run_id: runIdForLog,
+          method,
+          host,
+          port,
+          pid,
+          stage,
+          elapsed_ms: elapsed,
+          exc_class: error.name || "Error",
+          errno_code: errnoCode == null ? null : String(errnoCode)
+        })
+      );
     };
-    socket.setTimeout(timeoutMs, () => finishError(new Error(`Backend request timed out: ${method}`)));
-    socket.on("error", finishError);
+    socket.setNoDelay(true);
+    socket.setTimeout(timeoutMs, () => {
+      stage = "timeout";
+      finishError(new Error(`Backend request timed out: ${method}`));
+    });
+    socket.on("error", (err) => {
+      finishError(err);
+    });
     socket.on("connect", () => {
-      socket.write(JSON.stringify({
-        protocol_version: PROTOCOL_VERSION,
-        request_id: requestId,
-        token: runtime.token,
-        method,
-        params
-      }) + "\n", "utf8");
+      stage = "write";
+      try {
+        socket.write(
+          JSON.stringify({
+            protocol_version: PROTOCOL_VERSION,
+            request_id: requestId,
+            token: runtime.token,
+            method,
+            params
+          }) + "\n",
+          "utf8",
+          (err) => {
+            if (err) finishError(err);
+            else stage = "read";
+          }
+        );
+      } catch (err) {
+        finishError(err instanceof Error ? err : new Error(String(err)));
+      }
     });
     socket.on("data", (chunk) => {
+      stage = "read";
       buffer += chunk.toString("utf8");
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
       try {
-        const response = JSON.parse(buffer.slice(0, newline));
-        if (response.request_id !== requestId) throw new Error("Mismatched backend request ID");
+        const response = JSON.parse(
+          buffer.slice(0, newline)
+        );
+        if (response.request_id !== requestId)
+          throw new Error("Mismatched backend request ID");
         settled = true;
         socket.end();
         resolve3(response);
@@ -3288,6 +3409,7 @@ function requestBackend(runtime, method, params = {}, timeoutMs = 3e3) {
       }
     });
     socket.on("close", () => {
+      stage = "close";
       if (!settled) finishError(new Error("Backend closed without a response"));
     });
   });
@@ -4055,13 +4177,47 @@ var BackendManager = class {
   async call(method, params = {}, timeoutMs = 5e3) {
     let runtime = this.runtime;
     if (!runtime) runtime = await this.readRuntime();
-    if (!runtime) throw new Error("Backend is not running");
-    const response = await requestBackend(
-      runtime,
-      method,
-      params,
-      timeoutMs
-    );
+    if (!runtime) throw new BackendCallError("LOCAL_BACKEND_UNAVAILABLE", "\uB85C\uCEEC \uBC31\uC5D4\uB4DC\uAC00 \uC2E4\uD589 \uC911\uC774 \uC544\uB2D9\uB2C8\uB2E4.");
+    let response;
+    try {
+      response = await requestBackend(
+        runtime,
+        method,
+        params,
+        timeoutMs
+      );
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error) {
+        const local = error;
+        let fresh = null;
+        try {
+          fresh = await this.readRuntime();
+        } catch {
+          fresh = null;
+        }
+        const pidChanged = !!fresh && fresh.pid !== runtime?.pid;
+        const portChanged = !!fresh && fresh.port !== runtime?.port;
+        const startedAtChanged = !!fresh && fresh.started_at !== runtime?.started_at;
+        const tokenChanged = !!fresh && fresh.token !== runtime?.token;
+        const instanceChanged = pidChanged || portChanged || startedAtChanged || tokenChanged;
+        if (fresh) {
+          this.runtime = fresh;
+        }
+        const recoveryDetails = {
+          ...typeof local.details === "object" && local.details ? local.details : {},
+          pidChanged,
+          portChanged,
+          startedAtChanged,
+          instanceChanged,
+          oldPid: runtime?.pid,
+          newPid: fresh?.pid ?? null,
+          oldPort: runtime?.port,
+          newPort: fresh?.port ?? null
+        };
+        throw new BackendCallError(local.code, local.message, recoveryDetails);
+      }
+      throw error;
+    }
     if (!response.ok) {
       throw new BackendCallError(
         response.error?.code || "BACKEND_ERROR",
@@ -6881,12 +7037,12 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       })
     );
-    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 60\uCD08\uC785\uB2C8\uB2E4.").addText(
+    new import_obsidian7.Setting(containerEl).setName("\uB2F5\uBCC0 timeout (\uCD08)").setDesc("provider \uC694\uCCAD timeout\uC740 \uCD5C\uB300 120\uCD08\uC785\uB2C8\uB2E4.").addText(
       (text) => text.setValue(String(draft.answerTimeoutSeconds)).onChange((value) => {
         draft.answerTimeoutSeconds = Math.max(
           5,
           Math.min(
-            60,
+            120,
             this.nonnegativeNumber(value, draft.answerTimeoutSeconds)
           )
         );
@@ -8650,13 +8806,27 @@ var AnswerSession = class {
   generation = 0;
   disposed = false;
   history = [];
-  /** Live structured run awaiting completion or approval, if any. */
   activeRunId = null;
   pendingCalls = [];
-  /** Tool aliases approved for THIS conversation only ("이 대화에서 허용").
-   *  Never restored from history and cleared with the conversation. */
   sessionAllowed = /* @__PURE__ */ new Set();
   lastQuery = "";
+  /** Delivery certainty for the start RPC of the CURRENT active run.
+   *
+   * A single boolean bound to the active run id (instead of a Set of run_ids):
+   * only the current run's recovery needs this knowledge, and the run_id
+   * ownership check guarantees a late cleanup of a previous run can never
+   * erase the new run's state. Kept while a run is approval_required (its
+   * continue may still need it) and cleared on every terminal or abandoned
+   * transition (complete / failed / cancelled / RUN_EXPIRED /
+   * RUN_RECOVERY_LOST / clear / restore / dispose).
+   */
+  startDelivered = false;
+  startDeliveredRunId = null;
+  // Owner-token based recovery — not a shared boolean
+  recoveryEpochCounter = 0;
+  recoveryOwner = null;
+  // Per-epoch timer/sleep state — previous owner's cleanup must not affect new owner's timer
+  sleepStates = /* @__PURE__ */ new Map();
   get conversation() {
     return this.history.map((message) => ({ ...message }));
   }
@@ -8666,15 +8836,13 @@ var AnswerSession = class {
   get activeRun() {
     return this.activeRunId;
   }
-  /** Replace the conversation with a previously saved transcript (loaded
-   *  from history). Follow-up questions keep this as their context.
-   *  Invalidates any in-flight answer AND drops session approvals: a
-   *  restored conversation never inherits tool grants. */
   restore(messages) {
     void this.cancelActive();
     this.generation++;
+    this.resetRecovery();
     this.history = messages.map((message) => ({ ...message }));
     this.sessionAllowed.clear();
+    this.clearStartDelivered();
     if (!this.disposed) this.stateChanged({ kind: "idle" });
   }
   submit(value) {
@@ -8684,13 +8852,14 @@ var AnswerSession = class {
       return;
     }
     void this.cancelActive();
+    this.resetRecovery();
     const generation = ++this.generation;
     this.lastQuery = query;
     const conversation = this.history.slice(-8).map((m) => ({ ...m }));
     this.stateChanged({ kind: "retrieving" });
-    void this.resolveStart(generation, query, conversation);
+    void this.resolveStart(generation, query, conversation).catch(() => {
+    });
   }
-  /** Apply user decisions for the pending approval batch. */
   decide(decisions) {
     if (this.disposed || !this.activeRunId || this.pendingCalls.length === 0)
       return;
@@ -8698,7 +8867,9 @@ var AnswerSession = class {
     const generation = this.generation;
     for (const decision of decisions) {
       if (decision.decision !== "allow_session") continue;
-      const call = this.pendingCalls.find((c) => c.call_id === decision.call_id);
+      const call = this.pendingCalls.find(
+        (c) => c.call_id === decision.call_id
+      );
       if (call) this.sessionAllowed.add(call.tool_name);
     }
     this.stateChanged({
@@ -8715,18 +8886,68 @@ var AnswerSession = class {
         await this.handleResponse(response, generation);
       } catch (error) {
         if (this.disposed || generation !== this.generation) return;
+        if (this.isInstanceChanged(error)) {
+          this.activeRunId = null;
+          this.pendingCalls = [];
+          this.clearStartDelivered(runId);
+          this.stateChanged({
+            kind: "unavailable",
+            code: "RUN_RECOVERY_LOST",
+            message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC774\uC804 \uC2E4\uD589\uC744 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+          });
+          return;
+        }
+        if (this.isLocalBackendError(error)) {
+          const recovered = await this.tryRecoverStatus(runId, generation);
+          if (recovered) return;
+          if (recovered === null) {
+            try {
+              const retry = await this.transport.continue(runId, decisions);
+              if (this.disposed || generation !== this.generation || this.activeRunId !== runId)
+                return;
+              await this.handleResponse(retry, generation);
+              return;
+            } catch (retryError) {
+              if (this.disposed || generation !== this.generation) return;
+              if (this.isInstanceChanged(retryError)) {
+                this.activeRunId = null;
+                this.pendingCalls = [];
+                this.clearStartDelivered(runId);
+                this.stateChanged({
+                  kind: "unavailable",
+                  code: "RUN_RECOVERY_LOST",
+                  message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC774\uC804 \uC2E4\uD589\uC744 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+                });
+                return;
+              }
+              this.activeRunId = null;
+              this.pendingCalls = [];
+              this.clearStartDelivered(runId);
+              this.stateChanged(this.unavailableState(retryError));
+              return;
+            }
+          }
+          this.activeRunId = null;
+          this.pendingCalls = [];
+          this.clearStartDelivered(runId);
+          this.stateChanged(this.unavailableState(error));
+          return;
+        }
         this.activeRunId = null;
         this.pendingCalls = [];
+        this.clearStartDelivered(runId);
         this.stateChanged(this.unavailableState(error));
       }
-    })();
+    })().catch(() => {
+    });
   }
-  /** Cancel the active run (new question / clear / dispose / view close). */
   async cancelActive() {
     const runId = this.activeRunId;
     this.activeRunId = null;
     this.pendingCalls = [];
+    this.resetRecovery();
     if (!runId) return false;
+    this.clearStartDelivered(runId);
     try {
       await this.transport.cancel(runId);
     } catch {
@@ -8736,36 +8957,560 @@ var AnswerSession = class {
   clear() {
     void this.cancelActive();
     this.generation++;
+    this.resetRecovery();
     this.history = [];
     this.sessionAllowed.clear();
+    this.clearStartDelivered();
     if (!this.disposed) this.stateChanged({ kind: "idle" });
   }
   dispose() {
     void this.cancelActive();
     this.disposed = true;
     this.generation++;
+    this.resetRecovery();
+    this.clearStartDelivered();
   }
+  /** Explicit manual recovery — for deadline-exceeded retrieving state. */
+  retryStatusCheck() {
+    const runId = this.activeRunId;
+    const generation = this.generation;
+    if (!runId || this.disposed) return;
+    if (this.recoveryOwner && this.recoveryOwner.generation === generation && this.recoveryOwner.runId === runId) {
+      return;
+    }
+    this.stateChanged({ kind: "retrieving" });
+    void this.tryRecoverStatus(runId, generation).catch(() => {
+    });
+  }
+  getSleepState(epoch) {
+    let s = this.sleepStates.get(epoch);
+    if (!s) {
+      s = { timer: null, resolve: null };
+      this.sleepStates.set(epoch, s);
+    }
+    return s;
+  }
+  cancelTimerForEpoch(epoch) {
+    const state = this.sleepStates.get(epoch);
+    if (!state) return;
+    if (state.timer !== null) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
+    if (state.resolve) {
+      const r = state.resolve;
+      state.resolve = null;
+      r();
+    }
+    if (state.timer === null && state.resolve === null) {
+      this.sleepStates.delete(epoch);
+    }
+  }
+  resetRecovery() {
+    const owner = this.recoveryOwner;
+    if (owner) {
+      this.cancelTimerForEpoch(owner.epoch);
+      if (this.recoveryOwner?.epoch === owner.epoch) {
+        this.recoveryOwner = null;
+      }
+    } else {
+    }
+  }
+  sleepTrackedForEpoch(ms, epoch) {
+    return new Promise((resolve3) => {
+      const state = this.getSleepState(epoch);
+      if (state.timer !== null) {
+        clearTimeout(state.timer);
+        state.timer = null;
+      }
+      if (state.resolve) {
+        const old = state.resolve;
+        state.resolve = null;
+        old();
+      }
+      state.resolve = resolve3;
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        if (state.resolve === resolve3) {
+          state.resolve = null;
+        }
+        if (state.timer === null && state.resolve === null) {
+          this.sleepStates.delete(epoch);
+        }
+        resolve3();
+      }, ms);
+    });
+  }
+  // Backward compat alias - not used, will be removed if unused. Keep as no-op to avoid breaking external callers if any.
+  // Intentionally removed: clearRecoveryTimer
   async resolveStart(generation, query, conversation) {
     const runId = (0, import_crypto4.randomUUID)();
     this.activeRunId = runId;
+    const startParams = {
+      query,
+      conversation,
+      session_allowed_tools: [...this.sessionAllowed],
+      run_id: runId
+    };
     try {
-      const response = await this.transport.start({
-        query,
-        conversation,
-        session_allowed_tools: [...this.sessionAllowed],
-        run_id: runId
-      });
+      const response = await this.transport.start(startParams);
+      this.noteStartTransportResult(runId);
       if (this.disposed || generation !== this.generation || this.activeRunId !== runId) {
         return;
       }
       await this.handleResponse(response, generation);
     } catch (error) {
+      this.noteStartTransportResult(runId, error);
       if (this.disposed || generation !== this.generation) return;
+      if (this.isRunExpired(error)) {
+        this.activeRunId = null;
+        this.clearStartDelivered(runId);
+        this.stateChanged(this.expiredState());
+        return;
+      }
+      if (this.isInstanceChanged(error)) {
+        this.activeRunId = null;
+        this.clearStartDelivered(runId);
+        this.stateChanged({
+          kind: "unavailable",
+          code: "RUN_RECOVERY_LOST",
+          message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC774\uC804 \uC2E4\uD589\uC744 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+        });
+        return;
+      }
+      if (this.isLocalBackendError(error)) {
+        const recovered = await this.tryRecoverStatus(runId, generation);
+        if (recovered) return;
+        if (recovered === null) {
+          try {
+            const retryResponse = await this.transport.start(startParams);
+            if (this.disposed || generation !== this.generation || this.activeRunId !== runId)
+              return;
+            await this.handleResponse(retryResponse, generation);
+            return;
+          } catch (retryError) {
+            if (this.disposed || generation !== this.generation) return;
+            if (this.isInstanceChanged(retryError)) {
+              this.activeRunId = null;
+              this.clearStartDelivered(runId);
+              this.stateChanged({
+                kind: "unavailable",
+                code: "RUN_RECOVERY_LOST",
+                message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC774\uC804 \uC2E4\uD589\uC744 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+              });
+              return;
+            }
+            this.activeRunId = null;
+            this.clearStartDelivered(runId);
+            this.stateChanged(this.unavailableState(retryError));
+            return;
+          }
+        }
+        this.activeRunId = null;
+        this.clearStartDelivered(runId);
+        this.stateChanged(this.unavailableState(error));
+        return;
+      }
       this.activeRunId = null;
+      this.clearStartDelivered(runId);
       this.stateChanged(this.unavailableState(error));
     }
   }
+  async tryRecoverStatus(runId, generation) {
+    if (!this.transport.status) return false;
+    if (this.recoveryOwner && this.recoveryOwner.generation === generation && this.recoveryOwner.runId === runId) {
+      return true;
+    }
+    const epoch = ++this.recoveryEpochCounter;
+    this.recoveryOwner = { epoch, generation, runId };
+    let startedBackground = false;
+    try {
+      let status;
+      let seenRun = false;
+      try {
+        status = await this.transport.status(runId);
+        seenRun = true;
+      } catch (statusError) {
+        if (this.isInstanceChanged(statusError)) {
+          if (!this.disposed && generation === this.generation && this.activeRunId === runId) {
+            this.activeRunId = null;
+            this.pendingCalls = [];
+            this.clearStartDelivered(runId);
+            this.stateChanged({
+              kind: "unavailable",
+              code: "RUN_RECOVERY_LOST",
+              message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC774\uC804 \uC2E4\uD589\uC744 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+            });
+          }
+          return true;
+        }
+        if (this.isRunExpired(statusError)) {
+          if (!this.disposed && generation === this.generation && this.activeRunId === runId) {
+            this.activeRunId = null;
+            this.pendingCalls = [];
+            this.clearStartDelivered(runId);
+            this.stateChanged(this.expiredState());
+          }
+          return true;
+        }
+        if (this.isLocalBackendError(statusError)) {
+          status = { status: "running", run_id: runId };
+        } else if (statusError instanceof BackendCallError && statusError.code === "RUN_NOT_FOUND") {
+          if (this.isStartDelivered(runId)) {
+            if (!this.disposed && generation === this.generation && this.activeRunId === runId) {
+              this.activeRunId = null;
+              this.pendingCalls = [];
+              this.clearStartDelivered(runId);
+              this.stateChanged({
+                kind: "unavailable",
+                code: "RUN_NOT_FOUND",
+                message: "\uC2E4\uD589 \uC0C1\uD0DC\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+              });
+            }
+            return true;
+          }
+          return null;
+        } else {
+          return false;
+        }
+      }
+      if (this.disposed || generation !== this.generation || this.activeRunId !== runId) {
+        return true;
+      }
+      if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch) {
+        return true;
+      }
+      switch (status.status) {
+        case "complete":
+          await this.handleResponse(
+            {
+              status: "complete",
+              run_id: status.run_id,
+              result: status.result
+            },
+            generation
+          );
+          return true;
+        case "approval_required":
+          await this.handleResponse(
+            {
+              status: "approval_required",
+              run_id: status.run_id,
+              expires_at: status.expires_at,
+              calls: status.calls
+            },
+            generation
+          );
+          return true;
+        case "failed":
+          if (this.recoveryOwner?.epoch !== epoch) return true;
+          this.activeRunId = null;
+          this.pendingCalls = [];
+          this.clearStartDelivered(runId);
+          this.stateChanged({
+            kind: "unavailable",
+            code: status.code,
+            message: status.message
+          });
+          return true;
+        case "cancelled":
+          if (this.recoveryOwner?.epoch !== epoch) return true;
+          this.activeRunId = null;
+          this.pendingCalls = [];
+          this.clearStartDelivered(runId);
+          this.stateChanged({
+            kind: "unavailable",
+            code: "ANSWER_CANCELLED",
+            message: "\uC2E4\uD589\uC774 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4."
+          });
+          return true;
+        case "running": {
+          const deadline = Date.now() + 55e3;
+          let attempt = 0;
+          while (Date.now() < deadline) {
+            if (this.disposed || generation !== this.generation || this.activeRunId !== runId) {
+              return true;
+            }
+            if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch) {
+              return true;
+            }
+            await this.sleepTrackedForEpoch(500, epoch);
+            if (this.disposed || generation !== this.generation || this.activeRunId !== runId) {
+              return true;
+            }
+            if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch) {
+              return true;
+            }
+            try {
+              const polled = await this.transport.status(runId);
+              seenRun = true;
+              if (polled.status !== "running") {
+                if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                  return true;
+                if (this.disposed || generation !== this.generation || this.activeRunId !== runId)
+                  return true;
+                if (polled.status === "complete" || polled.status === "approval_required") {
+                  await this.handleResponse(
+                    polled,
+                    generation
+                  );
+                  return true;
+                }
+                if (polled.status === "failed" || polled.status === "cancelled") {
+                  const code = polled.code || (polled.status === "cancelled" ? "ANSWER_CANCELLED" : "BACKEND_ERROR");
+                  const msg = polled.message || (polled.status === "cancelled" ? "\uC2E4\uD589\uC774 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4." : "\uC2E4\uD589\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
+                  this.activeRunId = null;
+                  this.pendingCalls = [];
+                  this.clearStartDelivered(runId);
+                  this.stateChanged({
+                    kind: "unavailable",
+                    code,
+                    message: msg
+                  });
+                  return true;
+                }
+              }
+              attempt = 0;
+            } catch (polledError) {
+              if (this.isInstanceChanged(polledError)) {
+                if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                  return true;
+                this.activeRunId = null;
+                this.pendingCalls = [];
+                this.clearStartDelivered(runId);
+                this.stateChanged({
+                  kind: "unavailable",
+                  code: "RUN_RECOVERY_LOST",
+                  message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC2E4\uD589 \uC0C1\uD0DC\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+                });
+                return true;
+              }
+              if (this.isLocalBackendError(polledError)) {
+                const backoff = Math.min(1e3 * 1.5 ** attempt, 2e3);
+                attempt++;
+                await this.sleepTrackedForEpoch(backoff, epoch);
+                continue;
+              }
+              if (this.isRunExpired(polledError)) {
+                if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                  return true;
+                this.activeRunId = null;
+                this.pendingCalls = [];
+                this.clearStartDelivered(runId);
+                this.stateChanged(this.expiredState());
+                return true;
+              }
+              if (polledError instanceof BackendCallError && polledError.code === "RUN_NOT_FOUND") {
+                if (!seenRun && !this.isStartDelivered(runId)) return null;
+                if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                  return true;
+                this.activeRunId = null;
+                this.pendingCalls = [];
+                this.clearStartDelivered(runId);
+                this.stateChanged({
+                  kind: "unavailable",
+                  code: "RUN_NOT_FOUND",
+                  message: "\uC2E4\uD589 \uC0C1\uD0DC\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+                });
+                return true;
+              }
+              if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                return true;
+              this.activeRunId = null;
+              this.pendingCalls = [];
+              this.clearStartDelivered(runId);
+              this.stateChanged(this.unavailableState(polledError));
+              return true;
+            }
+          }
+          if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+            return true;
+          if (this.disposed || generation !== this.generation || this.activeRunId !== runId)
+            return true;
+          if (!seenRun && !this.isStartDelivered(runId)) {
+            return null;
+          }
+          if (!seenRun) {
+            this.activeRunId = null;
+            this.pendingCalls = [];
+            this.clearStartDelivered(runId);
+            this.stateChanged({
+              kind: "unavailable",
+              code: "RUN_NOT_FOUND",
+              message: "\uC2E4\uD589 \uC0C1\uD0DC\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694."
+            });
+            return true;
+          }
+          this.stateChanged({ kind: "retrieving" });
+          startedBackground = true;
+          void (async () => {
+            try {
+              while (!this.disposed && generation === this.generation && this.activeRunId === runId) {
+                if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                  break;
+                await this.sleepTrackedForEpoch(5e3, epoch);
+                if (this.disposed || generation !== this.generation || this.activeRunId !== runId)
+                  break;
+                if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                  break;
+                try {
+                  const polled = await this.transport.status(runId);
+                  if (polled.status !== "running") {
+                    if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                      break;
+                    if (this.disposed || generation !== this.generation || this.activeRunId !== runId)
+                      break;
+                    if (polled.status === "complete" || polled.status === "approval_required") {
+                      await this.handleResponse(
+                        polled,
+                        generation
+                      );
+                      break;
+                    }
+                    if (polled.status === "failed" || polled.status === "cancelled") {
+                      const code = polled.code || (polled.status === "cancelled" ? "ANSWER_CANCELLED" : "BACKEND_ERROR");
+                      const msg = polled.message || (polled.status === "cancelled" ? "\uC2E4\uD589\uC774 \uCDE8\uC18C\uB418\uC5C8\uC2B5\uB2C8\uB2E4." : "\uC2E4\uD589\uC774 \uC2E4\uD328\uD588\uC2B5\uB2C8\uB2E4.");
+                      this.activeRunId = null;
+                      this.pendingCalls = [];
+                      this.clearStartDelivered(runId);
+                      this.stateChanged({
+                        kind: "unavailable",
+                        code,
+                        message: msg
+                      });
+                      break;
+                    }
+                  }
+                } catch (bgError) {
+                  if (this.isInstanceChanged(bgError)) {
+                    if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                      break;
+                    this.activeRunId = null;
+                    this.pendingCalls = [];
+                    this.clearStartDelivered(runId);
+                    this.stateChanged({
+                      kind: "unavailable",
+                      code: "RUN_RECOVERY_LOST",
+                      message: "\uBC31\uC5D4\uB4DC\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4 \uC2E4\uD589 \uC0C1\uD0DC\uB97C \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+                    });
+                    break;
+                  }
+                  if (this.isLocalBackendError(bgError)) {
+                    continue;
+                  }
+                  if (this.isRunExpired(bgError)) {
+                    if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                      break;
+                    this.activeRunId = null;
+                    this.pendingCalls = [];
+                    this.clearStartDelivered(runId);
+                    this.stateChanged(this.expiredState());
+                    break;
+                  }
+                  if (!this.recoveryOwner || this.recoveryOwner.epoch !== epoch)
+                    break;
+                  this.activeRunId = null;
+                  this.pendingCalls = [];
+                  this.clearStartDelivered(runId);
+                  this.stateChanged(this.unavailableState(bgError));
+                  break;
+                }
+              }
+            } finally {
+              if (this.recoveryOwner?.epoch === epoch) {
+                this.recoveryOwner = null;
+                this.cancelTimerForEpoch(epoch);
+              } else {
+                this.cancelTimerForEpoch(epoch);
+              }
+            }
+          })().catch(() => {
+            try {
+              if (this.recoveryOwner?.epoch === epoch) {
+                this.recoveryOwner = null;
+              }
+              this.cancelTimerForEpoch(epoch);
+            } catch {
+            }
+          });
+          return true;
+        }
+        default:
+          return null;
+      }
+    } finally {
+      if (!startedBackground) {
+        if (this.recoveryOwner?.epoch === epoch) {
+          this.recoveryOwner = null;
+          this.cancelTimerForEpoch(epoch);
+        } else {
+          this.cancelTimerForEpoch(epoch);
+        }
+      }
+    }
+  }
+  noteStartTransportResult(runId, error) {
+    if (this.activeRunId !== runId) return;
+    if (error === void 0) {
+      this.markStartDelivered(runId);
+      return;
+    }
+    if (error instanceof BackendCallError && error.details && typeof error.details === "object") {
+      const stage = error.details.stage;
+      if (stage === "read" || stage === "close" || stage === "timeout") {
+        this.markStartDelivered(runId);
+      }
+    }
+  }
+  markStartDelivered(runId) {
+    this.startDelivered = true;
+    this.startDeliveredRunId = runId;
+  }
+  clearStartDelivered(runId) {
+    if (runId === void 0 || this.startDeliveredRunId === runId) {
+      this.startDelivered = false;
+      this.startDeliveredRunId = null;
+    }
+  }
+  isStartDelivered(runId) {
+    return this.startDelivered && this.startDeliveredRunId === runId;
+  }
+  isRunExpired(error) {
+    return error instanceof BackendCallError && error.code === "RUN_EXPIRED";
+  }
+  expiredState() {
+    return {
+      kind: "unavailable",
+      code: "RUN_EXPIRED",
+      message: "\uC774\uC804 \uC2E4\uD589\uC774 \uB9CC\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC9C8\uBB38\uD574 \uC8FC\uC138\uC694."
+    };
+  }
+  isLocalBackendError(error) {
+    if (error instanceof BackendCallError) {
+      return error.code === "LOCAL_BACKEND_UNAVAILABLE" || error.code === "LOCAL_BACKEND_TIMEOUT" || error.code.startsWith("LOCAL_BACKEND") || error.code === "BACKEND_CONNECTION_FAILED";
+    }
+    return false;
+  }
+  isInstanceChanged(error) {
+    if (error instanceof BackendCallError && error.details && typeof error.details === "object") {
+      const d = error.details;
+      return d.instanceChanged === true || d.pidChanged === true || d.startedAtChanged === true;
+    }
+    return false;
+  }
+  isPidChanged(error) {
+    return this.isInstanceChanged(error);
+  }
   async handleResponse(response, generation) {
+    if (this.disposed || generation !== this.generation) return;
+    const status = response.status;
+    if (status === "running") {
+      const runId = response.run_id || this.activeRunId;
+      if (!runId) return;
+      this.activeRunId = runId;
+      await this.tryRecoverStatus(runId, generation);
+      return;
+    }
     if (response.status === "approval_required") {
       this.activeRunId = response.run_id;
       this.pendingCalls = response.calls;
@@ -8776,8 +9521,15 @@ var AnswerSession = class {
       });
       return;
     }
+    if (response.status !== "complete" || !response.result) return;
+    const completedRunId = response.run_id ?? null;
     this.activeRunId = null;
     this.pendingCalls = [];
+    if (completedRunId) {
+      this.clearStartDelivered(completedRunId);
+    } else {
+      this.clearStartDelivered();
+    }
     const result = response.result;
     this.history.push({ role: "user", content: this.lastQuery });
     this.history.push({ role: "assistant", content: result.answer });
@@ -8787,10 +9539,15 @@ var AnswerSession = class {
     const backendError = error instanceof BackendCallError ? error : void 0;
     const details = backendError?.details;
     const evidence = details && typeof details === "object" && "evidence" in details && Array.isArray(details.evidence) ? details.evidence : void 0;
+    const raw = error instanceof Error ? error.message : String(error);
+    const unsafe = /ECONNRESET|EPIPE|ECONNABORTED|ETIMEDOUT|WinError\s+\d+|socket/i.test(
+      raw
+    );
+    const message = unsafe ? "\uB85C\uCEEC \uBC31\uC5D4\uB4DC \uC5F0\uACB0\uC774 \uB04A\uC5B4\uC84C\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694." : raw;
     return {
       kind: "unavailable",
       code: backendError?.code,
-      message: error instanceof Error ? error.message : String(error),
+      message,
       evidence
     };
   }
@@ -9309,7 +10066,12 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
         { run_id: runId, decisions },
         timeoutMs
       ),
-      cancel: (runId) => this.owner.backend.call("answer_cancel", { run_id: runId }, 5e3)
+      cancel: (runId) => this.owner.backend.call("answer_cancel", { run_id: runId }, 5e3),
+      status: (runId) => this.owner.backend.call(
+        "answer_status",
+        { run_id: runId },
+        5e3
+      )
     };
   }
   renderAnswerState(state) {
@@ -9420,7 +10182,8 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
     const meta = block.createDiv({ cls: "vault-ai-search-thought" });
     meta.setText("\uB2F5\uBCC0\uC744 \uC0AC\uC6A9\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4");
     meta.addClass("vault-search-error");
-    const message = state.code === "LLM_AUTH_FAILED" ? "API \uD0A4\uAC00 \uC720\uD6A8\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uD504\uB85C\uBC14\uC774\uB354 API \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694." : state.message;
+    const code = state.code || "";
+    const message = code === "LLM_AUTH_FAILED" ? "API \uD0A4\uAC00 \uC720\uD6A8\uD558\uC9C0 \uC54A\uC2B5\uB2C8\uB2E4. \uC124\uC815\uC5D0\uC11C \uD504\uB85C\uBC14\uC774\uB354 API \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694." : code === "LOCAL_BACKEND_UNAVAILABLE" || code === "LOCAL_BACKEND_TIMEOUT" || code.startsWith("LOCAL_BACKEND") ? "\uB85C\uCEEC \uAC80\uC0C9 \uC11C\uBE44\uC2A4\uC5D0 \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694." : code === "LLM_PROVIDER_UNAVAILABLE" ? "AI \uD504\uB85C\uBC14\uC774\uB354\uC5D0 \uC77C\uC2DC\uC801\uC73C\uB85C \uC5F0\uACB0\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4. \uC7A0\uC2DC \uD6C4 \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694." : code === "LLM_TIMEOUT" ? "AI \uD504\uB85C\uBC14\uC774\uB354 \uC751\uB2F5 \uC2DC\uAC04\uC774 \uCD08\uACFC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694." : code === "LLM_BAD_RESPONSE" ? "AI \uD504\uB85C\uBC14\uC774\uB354 \uC751\uB2F5\uC744 \uCC98\uB9AC\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4." : code === "RUN_EXPIRED" || code === "RUN_NOT_FOUND" ? "\uC774\uC804 \uC2E4\uD589\uC774 \uB9CC\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC9C8\uBB38\uD574 \uC8FC\uC138\uC694." : state.message && !/read ECONNRESET/i.test(state.message) ? state.message : "\uC77C\uC2DC\uC801\uC778 \uC5F0\uACB0 \uC624\uB958\uAC00 \uBC1C\uC0DD\uD588\uC2B5\uB2C8\uB2E4. \uB2E4\uC2DC \uC2DC\uB3C4\uD574 \uC8FC\uC138\uC694.";
     block.createDiv({ cls: "vault-ai-search-answer-body" }).setText(message);
     if (state.evidence?.length) {
       this.renderMessageEvidence(block, state.evidence);
@@ -9462,10 +10225,7 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
     const noteMarkdown = toNoteMarkdown(result.answer, result.citations);
     renderer.render(result.answer, result.citations, {
       onCopy: () => this.copyAnswer(noteMarkdown),
-      onCreateNote: () => this.createAnswerNote(
-        this.lastQuery || "AI \uAC80\uC0C9 \uB2F5\uBCC0",
-        noteMarkdown
-      ),
+      onCreateNote: () => this.createAnswerNote(this.lastQuery || "AI \uAC80\uC0C9 \uB2F5\uBCC0", noteMarkdown),
       onInsertToActive: () => this.insertAnswerToActive(noteMarkdown)
     });
     if (result.toolActivity?.length) {
@@ -9773,6 +10533,8 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
   };
   /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
   agentIntegration = null;
+  _unloaded = false;
+  _agentIntegrationTask = null;
   async onload() {
     registerLightningIcon();
     await this.loadSettings();
@@ -9864,7 +10626,9 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     );
     void ribbonIcon;
     this.registerCommands();
-    void this.refreshAgentIntegration();
+    this._agentIntegrationTask = this.refreshAgentIntegration().catch((e) => {
+      console.warn("[vault-search] refreshAgentIntegration failed", e);
+    });
     this.app.workspace.onLayoutReady(() => {
       if (!this.startupConfigSanitized) {
         return;
@@ -9887,9 +10651,13 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     });
   }
   onunload() {
+    this._unloaded = true;
     if (this.draftApplyTimer !== null) clearTimeout(this.draftApplyTimer);
     this.queue?.clear();
+    this.clearRecoveryTimers();
     if (this.backend) void this.backend.stop(true);
+  }
+  clearRecoveryTimers() {
   }
   async loadSettings() {
     const loaded = await this.loadData();
@@ -10838,6 +11606,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       this.backend.vaultPath,
       this.backend.pluginDir
     );
+    if (this._unloaded) return;
     this.settingTab?.display();
   }
   async runAgentIntegrationInstall() {

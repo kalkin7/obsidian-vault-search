@@ -144,6 +144,8 @@ export default class VaultSearchPlugin extends Plugin {
   };
   /** Installed state of the agent integration (AGENTS.md block + wrapper + skill). */
   agentIntegration: AgentIntegrationStatus | null = null;
+  private _unloaded = false;
+  private _agentIntegrationTask: Promise<void> | null = null;
 
   async onload(): Promise<void> {
     registerLightningIcon();
@@ -240,7 +242,9 @@ export default class VaultSearchPlugin extends Plugin {
     );
     void ribbonIcon;
     this.registerCommands();
-    void this.refreshAgentIntegration();
+    this._agentIntegrationTask = this.refreshAgentIntegration().catch((e) => {
+      console.warn("[vault-search] refreshAgentIntegration failed", e);
+    });
 
     this.app.workspace.onLayoutReady(() => {
       if (!this.startupConfigSanitized) {
@@ -267,11 +271,17 @@ export default class VaultSearchPlugin extends Plugin {
   }
 
   onunload(): void {
+    this._unloaded = true;
     if (this.draftApplyTimer !== null) clearTimeout(this.draftApplyTimer);
     this.queue?.clear();
+    this.clearRecoveryTimers();
     // Plugin unload must not kill a standalone daemon started by the CLI; it
     // only detaches from it (heartbeat stops, process survives).
     if (this.backend) void this.backend.stop(true);
+  }
+
+  private clearRecoveryTimers(): void {
+    // No direct timers here, but ensure any pending agent integration task does not touch UI
   }
 
   async loadSettings(): Promise<void> {
@@ -1428,6 +1438,7 @@ export default class VaultSearchPlugin extends Plugin {
       this.backend.vaultPath,
       this.backend.pluginDir,
     );
+    if (this._unloaded) return;
     this.settingTab?.display();
   }
 

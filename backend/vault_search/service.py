@@ -51,6 +51,7 @@ from .protocol import (
     validate_answer_cancel_params,
     validate_answer_continue_params,
     validate_answer_start_params,
+    validate_answer_status_params,
     validate_answer_params,
     validate_mcp_secrets_params,
 )
@@ -110,9 +111,39 @@ class SearchService:
         }
         # Cancels that arrive before their run is registered (client-supplied
         # run ids racing answer_start) are parked here and consumed at
-        # registration time. Bounded by the registry TTL discipline.
-        self._pending_cancels: set[str] = set()
-        self._pending_cancel_lock = threading.Lock()
+        # registration time. Bounded TTL + size.
+        self._pending_cancels: dict[str, float] = {}
+        self._pending_cancel_lock = threading.RLock()
+        self._pending_cancel_ttl = 600.0
+        self._pending_cancel_max = 100
+        # Terminal results retained for idempotent recovery (C requirement):
+        # run_id -> (payload, fingerprint, expiry_monotonic). Bounded TTL + size, LRU on get.
+        # Contract: fixed TTL from creation (not sliding on every get for expiry),
+        # but LRU recency is updated on get for eviction ordering. The TTL is
+        # fixed; get does NOT extend expiry — it only moves recency for max-size
+        # eviction. This is documented and tested explicitly.
+        self._terminal_runs: dict[str, tuple[dict[str, Any], str, float]] = {}
+        self._terminal_lock = threading.RLock()
+        self._terminal_ttl_seconds = 600.0
+        self._terminal_max_entries = 100
+        # Tombstones after TTL/LRU drop: run_id only, no payload. Lets status
+        # and start distinguish never-seen (RUN_NOT_FOUND) from expired
+        # (RUN_EXPIRED) so a late retry cannot start a second LLM call.
+        # Protection policy (issue: capacity must never forget a still-protected
+        # id): a bounded ledger of _expired_max_entries run_id -> protected-until
+        # (default 4096 — far above the realistic churn inside the 600s
+        # protection window). Entries past protection are swept first; entries
+        # still inside the window are NEVER evicted — when the ledger is full
+        # of protected ids, callers keep the expired terminal entry resident
+        # (protection retained) or fail closed. _remember_expired_locked
+        # returns False for that case; tests pin the policy.
+        self._expired_runs: dict[str, float] = {}
+        self._expired_ttl_seconds = 600.0
+        self._expired_max_entries = 4096
+        # Backward-compat alias used by earlier code paths
+        self._completed_runs = self._terminal_runs  # type: ignore
+        self._completed_lock = self._terminal_lock  # type: ignore
+        self._completed_ttl_seconds = self._terminal_ttl_seconds  # type: ignore
         if config.skills_enabled:
             try:
                 self._refresh_skills()
@@ -356,6 +387,7 @@ class SearchService:
             ("answer_start", validate_answer_start_params),
             ("answer_continue", validate_answer_continue_params),
             ("answer_cancel", validate_answer_cancel_params),
+            ("answer_status", validate_answer_status_params),
             ("set_mcp_secrets", validate_mcp_secrets_params),
         ):
             if method == method_name:
@@ -367,6 +399,12 @@ class SearchService:
         if method in {"mcp_status", "mcp_refresh", "skills_status", "skills_refresh"}:
             # Extension status/refresh work without the embedding model.
             return self._call_extension_method(method, params)
+        # answer_status is read-only and must not queue behind answer_start
+        if method == "answer_status":
+            return self._answer_status(params)
+        # answer_cancel is out-of-band as well (also handled in server.py)
+        if method == "answer_cancel":
+            return self._answer_cancel(params)
 
         # Everything below touches mutable ready-state references (index,
         # search_engine, state). Re-check under the operation lock so an
@@ -381,8 +419,6 @@ class SearchService:
                 return self._apply_search_config(params)
             if method == "set_mcp_secrets":
                 return self._set_mcp_secrets(params)
-            if method == "answer_cancel":
-                return self._answer_cancel(params)
             if method == "answer_continue":
                 # Approvals must be answerable even while a parallel request
                 # triggered the lazy model load.
@@ -729,10 +765,7 @@ class SearchService:
         raise ServiceError("UNKNOWN_METHOD", f"Unknown method: {method}")
 
     def _refresh_skills(self) -> None:
-        roots = [
-            (root.id, root.path, root.enabled)
-            for root in self.config.skill_roots
-        ]
+        roots = [(root.id, root.path, root.enabled) for root in self.config.skill_roots]
         self.skills.refresh(
             user_roots=roots,
             enabled_skills=set(self.config.enabled_skills),
@@ -794,9 +827,8 @@ class SearchService:
         """Wait briefly for MCP sessions then assemble the tool surface."""
         mcp_tools_available = False
         aliases: ToolAliasMap = ToolAliasMap()
-        if (
-            self.config.mcp_enabled
-            and any(server.enabled for server in self.config.mcp_servers)
+        if self.config.mcp_enabled and any(
+            server.enabled for server in self.config.mcp_servers
         ):
             self._configure_mcp()
             self._wait_for_connections()
@@ -828,13 +860,10 @@ class SearchService:
         }
         if mcp_tools_available:
             total_schema_bytes = 0
-            for alias, (server_id, original_name) in sorted(
-                aliases.aliases().items()
-            ):
-                schema = (
-                    self.mcp_host.list_server_tools(server_id).get(original_name)
-                    or {"type": "object", "properties": {}}
-                )
+            for alias, (server_id, original_name) in sorted(aliases.aliases().items()):
+                schema = self.mcp_host.list_server_tools(server_id).get(
+                    original_name
+                ) or {"type": "object", "properties": {}}
                 try:
                     schema_size = len(
                         json.dumps(schema, ensure_ascii=False).encode("utf-8")
@@ -862,19 +891,216 @@ class SearchService:
             surface["schema_bytes"] = total_schema_bytes
         self._last_tool_surface = surface
         provider_stub = create_provider(self.config.llm_provider, self.config.llm_model)
-        return provider_stub, aliases, tools, skills_registry, mcp_tools_available, bool(skills_registry)
+        return (
+            provider_stub,
+            aliases,
+            tools,
+            skills_registry,
+            mcp_tools_available,
+            bool(skills_registry),
+        )
 
     def _answer_start(self, params: dict[str, Any]) -> dict[str, Any]:
+        # Idempotency: if client supplied run_id and it already exists (live or
+        # terminal), return existing state instead of creating a new LLM call.
+        client_run_id = params.get("run_id")
+        fp = (
+            self._fingerprint(params)
+            if isinstance(client_run_id, str) and client_run_id
+            else ""
+        )
+        if isinstance(client_run_id, str) and client_run_id:
+            # Terminal cache first — no LLM cost, includes complete/failed/cancelled
+            term = self._get_terminal(client_run_id)
+            if term is not None:
+                payload, stored_fp = term
+                if stored_fp and stored_fp != fp:
+                    raise ServiceError("RUN_CONFLICT", "run_id fingerprint mismatch")
+                # Return stored terminal payload directly (already has status)
+                return payload
+            if self._is_expired_run(client_run_id):
+                raise ServiceError("RUN_EXPIRED", f"run '{client_run_id}' has expired")
+            # Live registry (approval_required / running) — fingerprint must match for all live states
+            try:
+                live = self.run_registry.get(client_run_id)
+                live_fp = getattr(live.state, "fingerprint", "")
+                if live_fp and live_fp != fp:
+                    raise ServiceError("RUN_CONFLICT", "run_id fingerprint mismatch")
+                if live.state.pending:
+                    return {
+                        "status": "approval_required",
+                        "run_id": client_run_id,
+                        "expires_at": (
+                            datetime.now(timezone.utc) + timedelta(seconds=600)
+                        ).isoformat(),
+                        "calls": [
+                            live._call_descriptor(p)
+                            for p in live.state.pending.values()
+                        ],  # type: ignore
+                    }
+                return {"status": "running", "run_id": client_run_id}
+            except Exception as exc:
+                code = getattr(exc, "code", "")
+                if code == "RUN_EXPIRED":
+                    # A run that reached expiry must never fall through to a
+                    # new execution: keep the fact and surface RUN_EXPIRED.
+                    self._remember_expired(client_run_id)
+                    raise ServiceError(
+                        "RUN_EXPIRED", f"run '{client_run_id}' has expired"
+                    ) from exc
+                if code not in {"RUN_NOT_FOUND", "RUN_CONFLICT"}:
+                    raise ServiceError(code or "BACKEND_ERROR", str(exc)) from exc
+                if self.run_registry.is_expired(client_run_id):
+                    # The registry recorded the expiry (e.g. an unrelated add()
+                    # swept it); mirror it into the service tombstone so status
+                    # and start keep reporting RUN_EXPIRED.
+                    self._remember_expired(client_run_id)
+                    raise ServiceError(
+                        "RUN_EXPIRED", f"run '{client_run_id}' has expired"
+                    ) from exc
+                if code == "RUN_CONFLICT":
+                    raise ServiceError("RUN_CONFLICT", str(exc)) from exc
+                # RUN_NOT_FOUND and genuinely unknown — fall through to new execution
         if not self._extensions_active():
-            # Legacy text-tool loop stays the default while both extensions
-            # are off (one-release compatibility, plan §5.3).
-            result = self._deep_answer(
-                {
-                    **params,
-                    "top_k": 12,
-                    "deep": True,
-                }
-            )
+            # Legacy text-tool loop — also idempotent via terminal cache.
+            # Provide common live-run metadata so answer_status returns running
+            # and cancel is atomic via the shared registry.
+            if isinstance(client_run_id, str) and client_run_id:
+                # Create live entry before _deep_answer so status is running
+                legacy_state = new_run_state(params["query"])
+                legacy_state.run_id = client_run_id
+                legacy_state.fingerprint = fp
+                legacy_run = type("LegacyRun", (), {"state": legacy_state})()
+                try:
+                    self.run_registry.add(legacy_run)
+                except AgentRunError as exc:
+                    if exc.code == "RUN_CONFLICT":
+                        term = self._get_terminal(client_run_id)
+                        if term is not None:
+                            payload_e, fp_e = term
+                            if fp_e and fp_e != fp:
+                                raise ServiceError(
+                                    "RUN_CONFLICT", "run_id fingerprint mismatch"
+                                ) from exc
+                            return payload_e
+                        try:
+                            live = self.run_registry.get(client_run_id)
+                            live_fp = getattr(live.state, "fingerprint", "")
+                            if live_fp and live_fp != fp:
+                                raise ServiceError(
+                                    "RUN_CONFLICT", "run_id fingerprint mismatch"
+                                ) from exc
+                            if getattr(live.state, "pending", None):
+                                # Legacy runs have no pending, but keep for consistency
+                                return {"status": "running", "run_id": client_run_id}
+                            return {"status": "running", "run_id": client_run_id}
+                        except Exception as exc2:
+                            term2 = self._get_terminal(client_run_id)
+                            if term2 is not None:
+                                payload2, fp2 = term2
+                                if fp2 and fp2 != fp:
+                                    raise ServiceError(
+                                        "RUN_CONFLICT", "run_id fingerprint mismatch"
+                                    ) from exc
+                                return payload2
+                            code2 = getattr(exc2, "code", "")
+                            if code2 == "RUN_EXPIRED" or self.run_registry.is_expired(
+                                client_run_id
+                            ):
+                                self._remember_expired(client_run_id)
+                                raise ServiceError(
+                                    "RUN_EXPIRED", f"run '{client_run_id}' has expired"
+                                ) from exc
+                            if code2 in {"RUN_NOT_FOUND", "RUN_CONFLICT"}:
+                                raise ServiceError(exc.code, exc.message) from exc
+                            raise ServiceError(
+                                code2 or "BACKEND_ERROR", str(exc2)
+                            ) from exc2
+                    raise ServiceError(exc.code, exc.message) from exc
+                # Consume pending cancel that raced registration
+                if self._consume_pending_cancel(client_run_id):
+                    payload = {"status": "cancelled", "run_id": client_run_id}
+                    self._publish_terminal_outcome(client_run_id, payload, fp)
+                    raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
+                try:
+                    result = self._deep_answer(
+                        {
+                            **params,
+                            "top_k": 12,
+                            "deep": True,
+                        }
+                    )
+                except ServiceError as exc:
+                    if isinstance(client_run_id, str) and client_run_id:
+                        payload_failed = {
+                            "status": "failed",
+                            "run_id": client_run_id,
+                            "code": exc.code,
+                            "message": exc.message,
+                        }
+                        winner = self._publish_terminal_outcome(
+                            client_run_id, payload_failed, fp
+                        )
+                        if winner.get("status") == "cancelled":
+                            raise ServiceError(
+                                "ANSWER_CANCELLED", "run was cancelled"
+                            ) from exc
+                    else:
+                        self.run_registry.remove(client_run_id)
+                    raise
+                except Exception as exc:
+                    if isinstance(client_run_id, str) and client_run_id:
+                        payload_failed = {
+                            "status": "failed",
+                            "run_id": client_run_id,
+                            "code": "BACKEND_ERROR",
+                            "message": f"{type(exc).__name__}: {exc}",
+                        }
+                        winner = self._publish_terminal_outcome(
+                            client_run_id, payload_failed, fp
+                        )
+                        if winner.get("status") == "cancelled":
+                            raise ServiceError(
+                                "ANSWER_CANCELLED", "run was cancelled"
+                            ) from exc
+                        raise ServiceError(
+                            "BACKEND_ERROR", f"{type(exc).__name__}: {exc}"
+                        ) from exc
+                    self.run_registry.remove(client_run_id)
+                    raise ServiceError(
+                        "BACKEND_ERROR", f"{type(exc).__name__}: {exc}"
+                    ) from exc
+                if isinstance(client_run_id, str) and client_run_id:
+                    payload = {
+                        "status": "complete",
+                        "run_id": client_run_id,
+                        "result": result,
+                    }
+                    winner = self._publish_terminal_outcome(client_run_id, payload, fp)
+                    if winner.get("status") == "cancelled":
+                        raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
+                    if winner.get("status") == "failed":
+                        raise ServiceError(
+                            winner.get("code", "BACKEND_ERROR"),
+                            winner.get("message", "failed"),
+                        )
+                    return winner
+                return {"status": "complete", "result": result}
+            # No run_id — direct execution without live tracking
+            try:
+                result = self._deep_answer(
+                    {
+                        **params,
+                        "top_k": 12,
+                        "deep": True,
+                    }
+                )
+            except ServiceError:
+                raise
+            except Exception as exc:
+                raise ServiceError(
+                    "BACKEND_ERROR", f"{type(exc).__name__}: {exc}"
+                ) from exc
             return {"status": "complete", "result": result}
         if self.index_rebuild_reason:
             raise ServiceError(
@@ -952,6 +1178,7 @@ class SearchService:
         client_run_id = params.get("run_id")
         if isinstance(client_run_id, str) and client_run_id:
             state.run_id = client_run_id
+        state.fingerprint = fp
         state.provider = provider
         run = StructuredAgentRun(
             state=state,
@@ -972,20 +1199,98 @@ class SearchService:
         )
         run.session_allowed = set(params.get("session_allowed_tools") or [])
         run.seed(list(params["conversation"]))
-        self.run_registry.add(run)
+        try:
+            self.run_registry.add(run)
+        except AgentRunError as exc:
+            if exc.code == "RUN_CONFLICT":
+                # Atomic claim lost — another concurrent start claimed same run_id.
+                # Return existing state idempotently; do not start a second LLM run.
+                term = self._get_terminal(state.run_id)
+                if term is not None:
+                    payload_e, fp_e = term
+                    if fp_e and fp_e != fp:
+                        raise ServiceError(
+                            "RUN_CONFLICT", "run_id fingerprint mismatch"
+                        ) from exc
+                    return payload_e
+                try:
+                    live = self.run_registry.get(state.run_id)
+                    live_fp = getattr(live.state, "fingerprint", "")
+                    if live_fp and live_fp != fp:
+                        raise ServiceError(
+                            "RUN_CONFLICT", "run_id fingerprint mismatch"
+                        ) from exc
+                    if live.state.pending:
+                        return {
+                            "status": "approval_required",
+                            "run_id": state.run_id,
+                            "expires_at": (
+                                datetime.now(timezone.utc) + timedelta(seconds=600)
+                            ).isoformat(),
+                            "calls": [
+                                live._call_descriptor(p)
+                                for p in live.state.pending.values()
+                            ],  # type: ignore
+                        }
+                    return {"status": "running", "run_id": state.run_id}
+                except Exception as exc2:
+                    term2 = self._get_terminal(state.run_id)
+                    if term2 is not None:
+                        payload2, fp2 = term2
+                        if fp2 and fp2 != fp:
+                            raise ServiceError(
+                                "RUN_CONFLICT", "run_id fingerprint mismatch"
+                            ) from exc
+                        return payload2
+                    code2 = getattr(exc2, "code", "")
+                    if code2 == "RUN_EXPIRED" or self.run_registry.is_expired(
+                        state.run_id
+                    ):
+                        self._remember_expired(state.run_id)
+                        raise ServiceError(
+                            "RUN_EXPIRED", f"run '{state.run_id}' has expired"
+                        ) from exc
+                    if code2 in {"RUN_NOT_FOUND", "RUN_CONFLICT"}:
+                        # Lost race but no existing state — propagate original conflict
+                        raise ServiceError(exc.code, exc.message) from exc
+                    raise ServiceError(code2 or "BACKEND_ERROR", str(exc2)) from exc2
+            raise ServiceError(exc.code, exc.message) from exc
         # A cancel that arrived between client dispatch and registration must
         # not be lost: consume the pending marker before advancing.
+        # Terminal must be published before live removal to avoid gap.
         if self._consume_pending_cancel(state.run_id):
-            self.run_registry.remove(state.run_id)
             state.cancelled = True
+            payload = {"status": "cancelled", "run_id": state.run_id}
+            self._publish_terminal_outcome(state.run_id, payload, fp)
             raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
         try:
             outcome = run.advance()
         except AgentRunError as exc:
-            self.run_registry.remove(state.run_id)
+            # Terminal must be published before live removal to avoid gap
+            if exc.code in {"ANSWER_CANCELLED", "RUN_CANCELLED"}:
+                payload = {"status": "cancelled", "run_id": state.run_id}
+                self._publish_terminal_outcome(state.run_id, payload, fp)
+                raise ServiceError("ANSWER_CANCELLED", exc.message) from exc
+            payload = {
+                "status": "failed",
+                "run_id": state.run_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            winner = self._publish_terminal_outcome(state.run_id, payload, fp)
+            if winner.get("status") == "cancelled":
+                raise ServiceError("ANSWER_CANCELLED", "run was cancelled") from exc
             raise ServiceError(exc.code, exc.message) from exc
         except ProviderError as exc:
-            self.run_registry.remove(state.run_id)
+            payload = {
+                "status": "failed",
+                "run_id": state.run_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            winner = self._publish_terminal_outcome(state.run_id, payload, fp)
+            if winner.get("status") == "cancelled":
+                raise ServiceError("ANSWER_CANCELLED", "run was cancelled") from exc
             raise ServiceError(exc.code, exc.message) from exc
         if outcome["status"] != "complete":
             expires = datetime.now(timezone.utc) + timedelta(seconds=600)
@@ -995,29 +1300,66 @@ class SearchService:
                 "expires_at": expires.isoformat(),
                 "calls": outcome["calls"],
             }
-        self.run_registry.remove(state.run_id)
-        return {
-            "status": "complete",
-            "run_id": state.run_id,
-            "result": self._assemble_agent_result(outcome, provider),
-        }
+        result = self._assemble_agent_result(outcome, provider)
+        payload = {"status": "complete", "run_id": state.run_id, "result": result}
+        winner = self._publish_terminal_outcome(state.run_id, payload, fp)
+        if winner.get("status") == "cancelled":
+            raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
+        if winner.get("status") == "failed":
+            raise ServiceError(
+                winner.get("code", "BACKEND_ERROR"), winner.get("message", "failed")
+            )
+        return winner
 
     def _answer_continue(self, params: dict[str, Any]) -> dict[str, Any]:
         run_id = str(params.get("run_id", ""))
         try:
             run = self.run_registry.get(run_id)
         except AgentRunError as exc:
+            if exc.code == "RUN_EXPIRED":
+                self._remember_expired(run_id)
+                raise ServiceError(
+                    "RUN_EXPIRED", f"run '{run_id}' has expired"
+                ) from exc
+            if exc.code == "RUN_NOT_FOUND":
+                raise self._missing_run_error(run_id) from exc
             raise ServiceError(exc.code, exc.message) from exc
+        # Preserve original fingerprint for terminal storage (first-wins)
+        orig_fp = getattr(run.state, "fingerprint", "")
         try:
             outcome = run.resume(list(params.get("decisions") or []))
         except AgentRunError as exc:
-            if exc.code in {"RUN_NOT_WAITING", "DECISION_MISMATCH",
-                            "DUPLICATE_DECISION", "INVALID_DECISION"}:
+            if exc.code in {
+                "RUN_NOT_WAITING",
+                "DECISION_MISMATCH",
+                "DUPLICATE_DECISION",
+                "INVALID_DECISION",
+            }:
                 raise ServiceError("ANSWER_INVALID_PARAMS", exc.message) from exc
-            self.run_registry.remove(run_id)
+            if exc.code in {"ANSWER_CANCELLED", "RUN_CANCELLED"}:
+                payload = {"status": "cancelled", "run_id": run_id}
+                self._publish_terminal_outcome(run_id, payload, orig_fp)
+                raise ServiceError("ANSWER_CANCELLED", exc.message) from exc
+            payload = {
+                "status": "failed",
+                "run_id": run_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            winner = self._publish_terminal_outcome(run_id, payload, orig_fp)
+            if winner.get("status") == "cancelled":
+                raise ServiceError("ANSWER_CANCELLED", "run was cancelled") from exc
             raise ServiceError(exc.code, exc.message) from exc
         except ProviderError as exc:
-            self.run_registry.remove(run_id)
+            payload = {
+                "status": "failed",
+                "run_id": run_id,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            winner = self._publish_terminal_outcome(run_id, payload, orig_fp)
+            if winner.get("status") == "cancelled":
+                raise ServiceError("ANSWER_CANCELLED", "run was cancelled") from exc
             raise ServiceError(exc.code, exc.message) from exc
         if outcome["status"] != "complete":
             self.run_registry.touch(run_id)
@@ -1028,12 +1370,59 @@ class SearchService:
                 "expires_at": expires.isoformat(),
                 "calls": outcome["calls"],
             }
-        self.run_registry.remove(run_id)
-        return {
-            "status": "complete",
-            "run_id": run_id,
-            "result": self._assemble_agent_result(outcome, run.state.provider),
-        }
+        result = self._assemble_agent_result(outcome, run.state.provider)
+        payload = {"status": "complete", "run_id": run_id, "result": result}
+        winner = self._publish_terminal_outcome(run_id, payload, orig_fp)
+        if winner.get("status") == "cancelled":
+            raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
+        if winner.get("status") == "failed":
+            raise ServiceError(
+                winner.get("code", "BACKEND_ERROR"), winner.get("message", "failed")
+            )
+        return winner
+
+    def _answer_status(self, params: dict[str, Any]) -> dict[str, Any]:
+        run_id = str(params.get("run_id", "")).strip()
+        if not run_id:
+            raise ServiceError("ANSWER_INVALID_PARAMS", "run_id must be provided")
+        # Terminal is authoritative — check first to close live→terminal gap
+        term = self._get_terminal(run_id)
+        if term is not None:
+            payload, _fp = term
+            return payload
+        try:
+            run = self.run_registry.get(run_id)
+            if run.state.pending:
+                return {
+                    "status": "approval_required",
+                    "run_id": run_id,
+                    "expires_at": (
+                        datetime.now(timezone.utc) + timedelta(seconds=600)
+                    ).isoformat(),
+                    "calls": [
+                        run._call_descriptor(p) for p in run.state.pending.values()
+                    ],  # type: ignore
+                }
+            return {"status": "running", "run_id": run_id}
+        except Exception as exc:
+            code = getattr(exc, "code", "")
+            if code == "RUN_NOT_FOUND":
+                term2 = self._get_terminal(run_id)
+                if term2 is not None:
+                    payload2, _fp2 = term2
+                    return payload2
+                raise self._missing_run_error(run_id) from exc
+            if code == "RUN_EXPIRED":
+                term2 = self._get_terminal(run_id)
+                if term2 is not None:
+                    payload2, _fp2 = term2
+                    return payload2
+                self._remember_expired(run_id)
+                raise ServiceError(
+                    "RUN_EXPIRED", f"run '{run_id}' has expired"
+                ) from exc
+            err_code = code if code else "BACKEND_ERROR"
+            raise ServiceError(err_code, str(exc)) from exc
 
     def _answer_cancel(self, params: dict[str, Any]) -> dict[str, Any]:
         return self.cancel_answer(str(params.get("run_id", "")))
@@ -1046,40 +1435,360 @@ class SearchService:
         method touches only lock-guarded state — the run registry, the
         cancelled flag and the MCP host's cancel registry — so the request
         handler thread can execute it directly.
+        Lock order: terminal -> pending -> registry. The cancelled terminal
+        is published BEFORE the live entry is removed so a capacity rejection
+        never drops the live entry without a protection marker.
         """
         if not run_id:
             return {"cancelled": False}
-        run = self.run_registry.remove(run_id)
-        if run is None:
-            # The run may not be registered yet (cancel raced answer_start).
-            # Record the intent; registration consumes it and aborts.
+        run = None
+        publish_rejected = False
+        with self._terminal_lock:
+            now = time.monotonic()
+            expired_term = [
+                k for k, (_, _, exp) in self._terminal_runs.items() if exp <= now
+            ]
+            for k in expired_term:
+                if self._remember_expired_locked(k):
+                    self._terminal_runs.pop(k, None)
+            if run_id in self._terminal_runs:
+                return {"cancelled": False}
+            if self._is_expired_run_locked(run_id):
+                return {"cancelled": False}
             with self._pending_cancel_lock:
-                self._pending_cancels.add(run_id)
-            return {"cancelled": False}
+                now2 = time.monotonic()
+                expired_p = [
+                    k for k, exp in self._pending_cancels.items() if exp <= now2
+                ]
+                for k in expired_p:
+                    self._pending_cancels.pop(k, None)
+                # Expired via registry (graveyard or TTL live) must not be
+                # parked or resurrected as a cancelled terminal.
+                if self.run_registry.is_expired(run_id):
+                    return {"cancelled": False}
+                # Peek live without removing yet (pending -> registry)
+                run_ref = None
+                fingerprint = ""
+                expired_live = False
+                with self.run_registry._lock:
+                    entry = self.run_registry._runs.get(run_id)
+                    if entry is not None:
+                        if (
+                            time.monotonic() - entry[1]
+                            > self.run_registry._graveyard_ttl_seconds
+                        ):
+                            # TTL already elapsed — do not resurrect as cancelled
+                            expired_live = True
+                        else:
+                            run_ref = entry[0]
+                            fingerprint = getattr(run_ref.state, "fingerprint", "")
+                    else:
+                        if self.run_registry._is_graveyarded_locked(run_id):
+                            expired_live = True
+                if expired_live:
+                    return {"cancelled": False}
+                if run_ref is None:
+                    # No live and not expired — park pending for racing start
+                    if (
+                        len(self._pending_cancels) >= self._pending_cancel_max
+                        and run_id not in self._pending_cancels
+                    ):
+                        oldest = min(
+                            self._pending_cancels.items(), key=lambda kv: kv[1]
+                        )
+                        self._pending_cancels.pop(oldest[0], None)
+                    self._pending_cancels[run_id] = now2 + self._pending_cancel_ttl
+                    return {"cancelled": False}
+                # Live run present and not expired — publish cancelled terminal first
+                payload = {"status": "cancelled", "run_id": run_id}
+                _, _, outcome = self._store_terminal(run_id, payload, fingerprint)
+                publish_rejected = outcome in {"expired", "capacity"}
+                # Pending for this id must not remain
+                self._pending_cancels.pop(run_id, None)
+                if outcome == "capacity":
+                    # Graveyard or retained expired resident protects the id
+                    self.run_registry.retire_protected(run_id)
+                    run = run_ref
+                elif outcome in ("stored", "existing", "expired"):
+                    removed = self.run_registry.remove(run_id)
+                    run = removed if removed is not None else run_ref
+                else:
+                    removed = self.run_registry.remove(run_id)
+                    run = removed if removed is not None else run_ref
+        assert run is not None
         run.state.cancelled = True
         cancelled = self.mcp_host.cancel_pending(run.state.active_calls)
+        if publish_rejected:
+            return {"cancelled": False, "calls_cancelled": cancelled}
         return {"cancelled": True, "calls_cancelled": cancelled}
 
     def _consume_pending_cancel(self, run_id: str) -> bool:
         with self._pending_cancel_lock:
-            if run_id in self._pending_cancels:
-                self._pending_cancels.discard(run_id)
+            exp = self._pending_cancels.get(run_id)
+            if exp is not None:
+                if time.monotonic() > exp:
+                    self._pending_cancels.pop(run_id, None)
+                    return False
+                self._pending_cancels.pop(run_id, None)
                 return True
             return False
+
+    def _sweep_expired_tombstones_locked(self, now: float) -> None:
+        stale = [k for k, exp in self._expired_runs.items() if exp <= now]
+        for key in stale:
+            self._expired_runs.pop(key, None)
+
+    def _remember_expired_locked(self, run_id: str) -> bool:
+        """Add run_id to the expired-run protection ledger.
+
+        Returns False only when the ledger is at capacity and every entry is
+        still inside its protection window. Protected entries are NEVER
+        evicted: dropping one would turn RUN_EXPIRED back into RUN_NOT_FOUND
+        and allow a duplicate LLM execution for the same run_id (idempotency
+        violation). Capacity policy: bounded ledger of
+        ``_expired_max_entries`` (default 4096 — far above realistic churn
+        inside the 600s protection window); entries past protection are swept
+        first; when the ledger is full of protected entries the caller keeps
+        its own record (the expired terminal entry) so protection never
+        degrades.
+        """
+        now = time.monotonic()
+        self._sweep_expired_tombstones_locked(now)
+        if run_id in self._expired_runs:
+            return True
+        if len(self._expired_runs) >= self._expired_max_entries:
+            return False
+        self._expired_runs[run_id] = now + self._expired_ttl_seconds
+        return True
+
+    def _remember_expired(self, run_id: str) -> bool:
+        """Best-effort mirror of an expiry into the service tombstone.
+
+        Returns False when the ledger is full of still-protected entries; the
+        registry's own protection ledger still reports RUN_EXPIRED, so the id
+        is not forgotten even then.
+        """
+        with self._terminal_lock:
+            return self._remember_expired_locked(run_id)
+
+    def _is_expired_run_locked(self, run_id: str) -> bool:
+        now = time.monotonic()
+        exp = self._expired_runs.get(run_id)
+        if exp is not None:
+            if exp <= now:
+                self._expired_runs.pop(run_id, None)
+                return False
+            return True
+        # An expired terminal that could not be moved to the ledger (ledger
+        # full of protected ids) still protects the id: the terminal entry
+        # itself marks it expired.
+        entry = self._terminal_runs.get(run_id)
+        if entry is not None and entry[2] <= now:
+            return True
+        return False
+
+    def _is_expired_run(self, run_id: str) -> bool:
+        with self._terminal_lock:
+            return self._is_expired_run_locked(run_id)
+
+    def _missing_run_error(self, run_id: str) -> ServiceError:
+        # The registry's own protection ledger may know the id expired even
+        # before the service tombstone does (e.g. an unrelated add() swept it).
+        # Mirror that fact into the service tombstone so the expiry survives
+        # the registry ledger's turnover, then report RUN_EXPIRED.
+        if self.run_registry.is_expired(run_id):
+            self._remember_expired(run_id)
+            return ServiceError("RUN_EXPIRED", f"run '{run_id}' has expired")
+        if self._is_expired_run(run_id):
+            return ServiceError("RUN_EXPIRED", f"run '{run_id}' has expired")
+        return ServiceError("RUN_NOT_FOUND", f"unknown run '{run_id}'")
+
+    def _fingerprint(self, params: dict[str, Any]) -> str:
+        import hashlib
+        import json as _json
+
+        # Stable fingerprint without prompt body: query + conversation + max_context + session_allowed
+        # Full SHA-256 hexdigest (64 chars) — not truncated.
+        data = {
+            "q": params.get("query", ""),
+            "c": params.get("conversation", []),
+            "m": params.get("max_context_chars", 0),
+            "s": sorted(params.get("session_allowed_tools", []) or []),
+        }
+        raw = _json.dumps(data, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def _store_terminal(
+        self, run_id: str, payload: dict[str, Any], fingerprint: str = ""
+    ) -> tuple[dict[str, Any] | None, str, str]:
+        """Atomically publish a terminal payload with first-terminal-wins.
+
+        Returns ``(winner, winner_fingerprint, outcome)`` where outcome is one
+        of:
+          "stored"   — ``payload`` became the terminal (first publish);
+          "existing" — a still-valid terminal already exists and wins; the
+                       returned winner is that existing terminal and the caller
+                       must use it for the RPC response;
+          "expired"  — the run_id is tombstoned (or its only terminal already
+                       expired) and is still inside the protection window: the
+                       publish is REJECTED because accepting it would resurrect
+                       an expired run. winner is None; the caller must treat
+                       the id as RUN_EXPIRED and never surface the rejected
+                       payload as a normal protocol response;
+          "capacity" — the expired-run protection ledger is full of
+                       still-protected ids and the LRU terminal that would have
+                       been evicted cannot be forgotten: the publish fails
+                       closed. winner is None; the caller must surface an
+                       explicit fail-closed error (idempotency is worth more
+                       than this slot).
+
+        Invariant: a run_id may be live, terminal, or tombstoned — never two
+        of them at once. Live and terminal may temporarily coexist only during
+        the publish-before-remove handoff inside answer_start/continue.
+        Sweep expired entries before the LRU eviction; TTL is fixed (no
+        sliding on get).
+        """
+        with self._terminal_lock:
+            now = time.monotonic()
+            # Sweep expired before LRU calculation. Move each expired terminal
+            # to the protection ledger; only when the ledger accepts it is the
+            # terminal entry dropped. If the ledger is full of protected ids we
+            # KEEP the expired terminal entry — it still marks the id expired,
+            # so a late writer cannot resurrect it.
+            expired = [
+                k for k, (_, _, exp) in self._terminal_runs.items() if exp <= now
+            ]
+            for k in expired:
+                if self._remember_expired_locked(k):
+                    self._terminal_runs.pop(k, None)
+            existing = self._terminal_runs.get(run_id)
+            if existing is not None:
+                e_payload, e_fp, e_exp = existing
+                if now <= e_exp:
+                    # First-terminal-wins: return existing winner without moving
+                    # recency (get moves recency, but a store attempt does not).
+                    return e_payload, e_fp, "existing"
+                # The id's only terminal already expired (it stayed resident
+                # because the ledger is full): the id is protected.
+                if self._remember_expired_locked(run_id):
+                    self._terminal_runs.pop(run_id, None)
+                return None, "", "expired"
+            if self._is_expired_run_locked(run_id):
+                return None, "", "expired"
+            # Enforce max size using true LRU (least recently used = first key).
+            if len(self._terminal_runs) >= self._terminal_max_entries:
+                lru_key = next(iter(self._terminal_runs))
+                if self._remember_expired_locked(lru_key):
+                    self._terminal_runs.pop(lru_key, None)
+                else:
+                    # Cannot evict without losing protection: fail closed.
+                    return None, "", "capacity"
+            expiry = now + self._terminal_ttl_seconds
+            self._terminal_runs[run_id] = (payload, fingerprint, expiry)
+            return payload, fingerprint, "stored"
+
+    def _publish_terminal(
+        self, run_id: str, payload: dict[str, Any], fingerprint: str = ""
+    ) -> tuple[dict[str, Any] | None, str, str]:
+        """Alias for _store_terminal — both return the final winner + outcome."""
+        return self._store_terminal(run_id, payload, fingerprint)
+
+    def _publish_terminal_outcome(
+        self, run_id: str, payload: dict[str, Any], fingerprint: str = ""
+    ) -> dict[str, Any]:
+        """Publish a terminal and normalize the outcome for RPC callers.
+
+        Lock order: terminal (inside _store_terminal) -> pending -> registry.
+        ``stored``/``existing``: terminal protects, live can be removed.
+        ``expired``: existing tombstone or expired terminal protects, live
+        removal is safe and the caller sees RUN_EXPIRED.
+        ``capacity``: no terminal slot and tombstone ledger is full of
+        still-protected ids — the live entry must be atomically moved to a
+        protected state before it is removed. ``retire_protected`` records
+        the id in the registry graveyard if there is space and removes the
+        live entry, otherwise it keeps the live entry as a cancelled,
+        back-dated expired resident so ``get``/``is_expired`` keep reporting
+        RUN_EXPIRED. In neither sub-case is the live entry dropped without
+        a protection marker, and the pending cancel is always cleared.
+        """
+        winner, _, outcome = self._store_terminal(run_id, payload, fingerprint)
+        # Pending is cleared first (terminal -> pending -> registry)
+        with self._pending_cancel_lock:
+            self._pending_cancels.pop(run_id, None)
+        if outcome == "capacity":
+            # Atomically protect current run_id before dropping live
+            self.run_registry.retire_protected(run_id)
+            raise ServiceError(
+                "BACKEND_CAPACITY",
+                "expired-run protection ledger is full; refusing new work "
+                "to preserve idempotency",
+            )
+        if outcome == "expired":
+            # Tombstone or expired terminal already protects the id
+            self.run_registry.remove(run_id)
+            raise ServiceError("RUN_EXPIRED", f"run '{run_id}' has expired")
+        # stored / existing: terminal protects
+        self.run_registry.remove(run_id)
+        assert winner is not None
+        return winner
+
+    def _get_terminal(self, run_id: str) -> tuple[dict[str, Any], str] | None:
+        with self._terminal_lock:
+            entry = self._terminal_runs.get(run_id)
+            if entry is None:
+                return None
+            payload, fp, exp = entry
+            if time.monotonic() > exp:
+                # Move to the protection ledger; if the ledger is full the
+                # expired entry itself keeps marking the id expired (protection
+                # is retained and the terminal body is no longer returned).
+                if self._remember_expired_locked(run_id):
+                    self._terminal_runs.pop(run_id, None)
+                return None
+            # LRU recency for eviction order, but TTL is fixed (do not extend expiry)
+            # Move to end for LRU without changing expiry
+            self._terminal_runs.pop(run_id, None)
+            self._terminal_runs[run_id] = (payload, fp, exp)
+            return payload, fp
+
+    def _store_completed(self, run_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        # Backward-compat wrapper — fingerprint empty means any fingerprint matches
+        winner, _, _outcome = self._store_terminal(run_id, payload, "")
+        assert winner is not None
+        return winner
+
+    def _get_completed(self, run_id: str) -> dict[str, Any] | None:
+        ent = self._get_terminal(run_id)
+        if ent is None:
+            return None
+        payload, _fp = ent
+        return payload
 
     def _assemble_agent_result(
         self, outcome: dict[str, Any], provider: Any | None
     ) -> dict[str, Any]:
+        def _as_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        def _as_float(value: Any, default: float) -> float:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return default
+
         sources_raw = list(outcome.get("sources") or [])
         sources = [
             GroundingSource(
                 id=str(item["id"]),
                 file_path=str(item["file_path"]),
-                start_line=int(item.get("start_line") or 1),
+                start_line=_as_int(item.get("start_line"), 1),
                 heading_path=[str(h) for h in item.get("heading_path") or []],
                 content=str(item.get("content") or ""),
-                rank=int(item.get("rank") or 0),
-                score=float(item.get("score") or 0.0),
+                rank=_as_int(item.get("rank"), 0),
+                score=_as_float(item.get("score"), 0.0),
             )
             for item in sources_raw
         ]
@@ -1110,9 +1819,7 @@ class SearchService:
         else:
             grounding_kind = "none"
         provider_id = str(
-            outcome.get("provider")
-            or getattr(provider, "provider_id", "")
-            or ""
+            outcome.get("provider") or getattr(provider, "provider_id", "") or ""
         )
         model_name = str(outcome.get("model") or getattr(provider, "model", "") or "")
         return {
@@ -1127,10 +1834,12 @@ class SearchService:
             "diagnostics": {
                 "deep": True,
                 "structured": True,
-                "turns": int(outcome.get("turns") or 0),
-                "tool_calls": int(outcome.get("tool_calls") or 0),
+                "turns": _as_int(outcome.get("turns"), 0),
+                "tool_calls": _as_int(outcome.get("tool_calls"), 0),
                 "retrieved_count": len(sources),
-                "context_chars": sum(len(str(s.get("content") or "")) for s in sources_raw),
+                "context_chars": sum(
+                    len(str(s.get("content") or "")) for s in sources_raw
+                ),
                 "answer_chars": len(answer),
                 **({"citation_warning": warning} if warning else {}),
             },
@@ -1210,7 +1919,9 @@ class SearchService:
             value = params.get("answerProjectRules", params.get("projectRules"))
             if isinstance(value, str):
                 cleaned = "".join(
-                    ch for ch in value.replace("\r\n", "\n") if ch >= " " or ch in "\t\n"
+                    ch
+                    for ch in value.replace("\r\n", "\n")
+                    if ch >= " " or ch in "\t\n"
                 )
                 self.config.project_rules = cleaned[:32000]
         return {"applied": True, **self.status()}

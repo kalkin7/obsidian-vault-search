@@ -834,13 +834,51 @@ export class BackendManager {
   ): Promise<T> {
     let runtime = this.runtime;
     if (!runtime) runtime = await this.readRuntime();
-    if (!runtime) throw new Error("Backend is not running");
-    const response: BackendResponse<T> = await requestBackend<T>(
-      runtime,
-      method,
-      params,
-      timeoutMs,
-    );
+    if (!runtime) throw new BackendCallError("LOCAL_BACKEND_UNAVAILABLE", "로컬 백엔드가 실행 중이 아닙니다.");
+    let response: BackendResponse<T>;
+    try {
+      response = await requestBackend<T>(
+        runtime,
+        method,
+        params,
+        timeoutMs,
+      );
+    } catch (error) {
+      // Local socket failures are already classified with safe codes in
+      // backend-protocol.ts; surface them as BackendCallError so the UI can
+      // distinguish local vs provider failures without seeing raw ECONNRESET.
+      if (error && typeof error === "object" && "code" in (error as Record<string, unknown>)) {
+        const local = error as { code: string; message: string; details?: unknown };
+        // Await runtime refresh so next call (e.g., answer_status recovery) uses fresh PID/port
+        let fresh: import("./types").RuntimeInfo | null = null;
+        try {
+          fresh = await this.readRuntime();
+        } catch {
+          fresh = null;
+        }
+        const pidChanged = !!fresh && fresh.pid !== runtime?.pid;
+        const portChanged = !!fresh && fresh.port !== runtime?.port;
+        const startedAtChanged = !!fresh && fresh.started_at !== (runtime as unknown as { started_at?: string })?.started_at;
+        const tokenChanged = !!fresh && fresh.token !== runtime?.token;
+        const instanceChanged = pidChanged || portChanged || startedAtChanged || tokenChanged;
+        if (fresh) {
+          this.runtime = fresh;
+        }
+        const recoveryDetails = {
+          ...(typeof local.details === "object" && local.details ? (local.details as Record<string, unknown>) : {}),
+          pidChanged,
+          portChanged,
+          startedAtChanged,
+          instanceChanged,
+          oldPid: runtime?.pid,
+          newPid: fresh?.pid ?? null,
+          oldPort: runtime?.port,
+          newPort: fresh?.port ?? null,
+        };
+        throw new BackendCallError(local.code, local.message, recoveryDetails);
+      }
+      throw error;
+    }
     if (!response.ok) {
       throw new BackendCallError(
         response.error?.code || "BACKEND_ERROR",

@@ -197,6 +197,7 @@ export interface RuntimeInfo {
   model_id: string;
   owner?: "plugin" | "standalone";
   parent_pid?: number;
+  started_at?: string;
 }
 
 export interface BackendResponse<T = unknown> {

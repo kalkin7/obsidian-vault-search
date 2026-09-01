@@ -11,6 +11,7 @@ import { AnswerRenderer, toNoteMarkdown } from "./answer-renderer";
 import {
   AnswerSession,
   type AnswerConversationMessage,
+  type AnswerStatusResponse,
   type AnswerTransport,
 } from "./answer-session";
 import {
@@ -239,9 +240,8 @@ export class VaultSearchItemView extends ItemView {
     document.addEventListener("mousedown", this.onDocClick, true);
     this.statusEl = this.contentEl.createDiv({ cls: "vault-ai-search-status" });
     this.answerEl = this.contentEl.createDiv({ cls: "vault-ai-search-answer" });
-    this.session = new AnswerSession(
-      this.buildTransport(),
-      (state) => this.renderAnswerState(state),
+    this.session = new AnswerSession(this.buildTransport(), (state) =>
+      this.renderAnswerState(state),
     );
     const footer = this.contentEl.createDiv({ cls: "vault-ai-search-footer" });
     this.inputEl = footer.createEl("textarea", {
@@ -519,6 +519,12 @@ export class VaultSearchItemView extends ItemView {
         ),
       cancel: (runId) =>
         this.owner.backend.call("answer_cancel", { run_id: runId }, 5_000),
+      status: (runId) =>
+        this.owner.backend.call<AnswerStatusResponse>(
+          "answer_status",
+          { run_id: runId },
+          5_000,
+        ),
     };
   }
 
@@ -647,10 +653,25 @@ export class VaultSearchItemView extends ItemView {
     const meta = block.createDiv({ cls: "vault-ai-search-thought" });
     meta.setText("답변을 사용할 수 없습니다");
     meta.addClass("vault-search-error");
+    const code = state.code || "";
     const message =
-      state.code === "LLM_AUTH_FAILED"
+      code === "LLM_AUTH_FAILED"
         ? "API 키가 유효하지 않습니다. 설정에서 프로바이더 API 키를 다시 확인해 주세요."
-        : state.message;
+        : code === "LOCAL_BACKEND_UNAVAILABLE" ||
+            code === "LOCAL_BACKEND_TIMEOUT" ||
+            code.startsWith("LOCAL_BACKEND")
+          ? "로컬 검색 서비스에 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
+          : code === "LLM_PROVIDER_UNAVAILABLE"
+            ? "AI 프로바이더에 일시적으로 연결할 수 없습니다. 잠시 후 다시 시도해 주세요."
+            : code === "LLM_TIMEOUT"
+              ? "AI 프로바이더 응답 시간이 초과되었습니다. 다시 시도해 주세요."
+              : code === "LLM_BAD_RESPONSE"
+                ? "AI 프로바이더 응답을 처리할 수 없습니다."
+                : code === "RUN_EXPIRED" || code === "RUN_NOT_FOUND"
+                  ? "이전 실행이 만료되었습니다. 다시 질문해 주세요."
+                  : state.message && !/read ECONNRESET/i.test(state.message)
+                    ? state.message
+                    : "일시적인 연결 오류가 발생했습니다. 다시 시도해 주세요.";
     block.createDiv({ cls: "vault-ai-search-answer-body" }).setText(message);
     if (state.evidence?.length) {
       this.renderMessageEvidence(block, state.evidence);
@@ -705,10 +726,7 @@ export class VaultSearchItemView extends ItemView {
     renderer.render(result.answer, result.citations, {
       onCopy: () => this.copyAnswer(noteMarkdown),
       onCreateNote: () =>
-        this.createAnswerNote(
-          this.lastQuery || "AI 검색 답변",
-          noteMarkdown,
-        ),
+        this.createAnswerNote(this.lastQuery || "AI 검색 답변", noteMarkdown),
       onInsertToActive: () => this.insertAnswerToActive(noteMarkdown),
     });
     if (result.toolActivity?.length) {
@@ -951,8 +969,7 @@ export class VaultSearchItemView extends ItemView {
     const sampleMarkdown = toNoteMarkdown(SAMPLE_ANSWER, SAMPLE_CITATIONS);
     renderer.render(SAMPLE_ANSWER, SAMPLE_CITATIONS, {
       onCopy: () => this.copyAnswer(sampleMarkdown),
-      onCreateNote: () =>
-        this.createAnswerNote("AI 검색 샘플", sampleMarkdown),
+      onCreateNote: () => this.createAnswerNote("AI 검색 샘플", sampleMarkdown),
       onInsertToActive: () => this.insertAnswerToActive(sampleMarkdown),
     });
     this.scrollToBottom();
@@ -975,8 +992,10 @@ export class VaultSearchItemView extends ItemView {
   }
 
   private copyAnswer(text: string): Promise<boolean> {
-    return copyMarkdownToClipboard(text, (ok) =>
-      new Notice(ok ? "답변을 복사했습니다." : "답변 복사에 실패했습니다."),
+    return copyMarkdownToClipboard(
+      text,
+      (ok) =>
+        new Notice(ok ? "답변을 복사했습니다." : "답변 복사에 실패했습니다."),
     );
   }
 

@@ -523,7 +523,7 @@ def load_config(
         llm_timeout_seconds=max(
             5.0,
             min(
-                60.0,
+                120.0,
                 _as_float(
                     raw.get("answerTimeoutSeconds", raw.get("llmTimeoutSeconds")), 45.0
                 ),

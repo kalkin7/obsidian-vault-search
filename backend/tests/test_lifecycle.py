@@ -17,20 +17,23 @@ import vault_search.cli as cli
 from vault_search.cli import call_runtime
 from vault_search.config import SearchConfig
 from vault_search.database import init_db
-from vault_search.protocol import request
+from vault_search.protocol import TransportError, request
 from vault_search.runtime import default_data_dir
 from vault_search.service import SearchService, ServiceError
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _start(tmp_path: Path, lazy: bool = False,
-           stale_artifacts: list[str] | None = None) -> tuple[subprocess.Popen[str], dict, Path]:
+def _start(
+    tmp_path: Path, lazy: bool = False, stale_artifacts: list[str] | None = None
+) -> tuple[subprocess.Popen[str], dict, Path]:
     vault = tmp_path / "vault"
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
     data = tmp_path / "data"
     if stale_artifacts:
         index = data / "index"
@@ -38,23 +41,47 @@ def _start(tmp_path: Path, lazy: bool = False,
         for name in stale_artifacts:
             (index / name).write_text("stale", encoding="utf-8")
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({
-        "vaultPath": str(vault), "dataDir": str(data), "modelId": "__fake__",
-        "includeGlobs": ["**/*.md"], "excludeGlobs": [".obsidian/**"],
-        "loadPolicy": "first-search" if lazy else "vault-open",
-        "heartbeatTimeoutSeconds": 60,
-    }), encoding="utf-8")
+    config.write_text(
+        json.dumps(
+            {
+                "vaultPath": str(vault),
+                "dataDir": str(data),
+                "modelId": "__fake__",
+                "includeGlobs": ["**/*.md"],
+                "excludeGlobs": [".obsidian/**"],
+                "loadPolicy": "first-search" if lazy else "vault-open",
+                "heartbeatTimeoutSeconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     process = subprocess.Popen(
-        [sys.executable, "-X", "utf8", "-m", "vault_search", "serve",
-         "--config", str(config), "--watch-stdin"],
-        cwd=BACKEND_ROOT, env=env, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "vault_search",
+            "serve",
+            "--config",
+            str(config),
+            "--watch-stdin",
+        ],
+        cwd=BACKEND_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
 
     def _drain_stdout() -> None:
         for _line in process.stdout or ():
             pass
+
     # The server emits every state transition on stdout. Without a reader the
     # pipe buffer fills and the server blocks on print(); drain it on a daemon
     # thread so shutdown can complete. stderr stays attached for diagnostics.
@@ -63,9 +90,15 @@ def _start(tmp_path: Path, lazy: bool = False,
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         if runtime_path.exists():
-            return process, json.loads(runtime_path.read_text(encoding="utf-8")), runtime_path
+            return (
+                process,
+                json.loads(runtime_path.read_text(encoding="utf-8")),
+                runtime_path,
+            )
         if process.poll() is not None:
-            raise AssertionError(process.stderr.read() if process.stderr else "backend exited")
+            raise AssertionError(
+                process.stderr.read() if process.stderr else "backend exited"
+            )
         time.sleep(0.05)
     process.kill()
     raise AssertionError("runtime.json was not created")
@@ -84,9 +117,17 @@ def _wait_ready(runtime: dict, timeout: float = 10) -> dict:
                 )
             raise AssertionError("backend did not become ready")
         try:
-            response = request(runtime["host"], runtime["port"], runtime["token"],
-                               "status", timeout=1)
-        except (TimeoutError, ConnectionResetError) as exc:
+            response = request(
+                runtime["host"], runtime["port"], runtime["token"], "status", timeout=1
+            )
+        except (
+            TimeoutError,
+            ConnectionResetError,
+            ConnectionAbortedError,
+            BrokenPipeError,
+            TransportError,
+            OSError,
+        ) as exc:
             # A cold full-suite run can stall the accept/serve path for over
             # the 1s socket budget once; retry inside the deadline instead of
             # failing a healthy backend.
@@ -107,10 +148,18 @@ def test_service_build_search_auth_and_shutdown(tmp_path: Path):
     unauthorized = request(runtime["host"], runtime["port"], "wrong", "status")
     assert unauthorized["error"]["code"] == "UNAUTHORIZED"
     _wait_ready(runtime)
-    rebuilt = request(runtime["host"], runtime["port"], runtime["token"], "rebuild_all", timeout=10)
+    rebuilt = request(
+        runtime["host"], runtime["port"], runtime["token"], "rebuild_all", timeout=10
+    )
     assert rebuilt["ok"] and rebuilt["data"]["files"] == 1
-    searched = request(runtime["host"], runtime["port"], runtime["token"], "search",
-                       {"query": "전기차 충전기", "top_k": 5}, timeout=5)
+    searched = request(
+        runtime["host"],
+        runtime["port"],
+        runtime["token"],
+        "search",
+        {"query": "전기차 충전기", "top_k": 5},
+        timeout=5,
+    )
     assert searched["ok"] and searched["data"]["results"]
     request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
     process.wait(timeout=5)
@@ -144,7 +193,13 @@ def test_lazy_model_and_parent_eof(tmp_path: Path):
         status = request(runtime["host"], runtime["port"], runtime["token"], "status")
         assert status["data"]["state"] == "idle"
         assert status["data"]["index_validation_state"] == "pending"
-        first = request(runtime["host"], runtime["port"], runtime["token"], "search", {"query": "전기차"})
+        first = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "search",
+            {"query": "전기차"},
+        )
         error_code = first["error"]["code"]
         assert error_code in {"MODEL_LOADING", "INDEX_REBUILD_REQUIRED"}
 
@@ -153,10 +208,17 @@ def test_lazy_model_and_parent_eof(tmp_path: Path):
         if error_code == "MODEL_LOADING":
             # Model loading started on first search: wait for resolution to ready
             assert final_status["state"] in {"ready", "ready_no_index"}
-            assert final_status["index_validation_state"] in {"pending", "compatible", "incompatible"}
+            assert final_status["index_validation_state"] in {
+                "pending",
+                "compatible",
+                "incompatible",
+            }
             if final_status["index_validation_state"] == "incompatible":
                 assert final_status["index_rebuild_required"] is True
-                assert final_status["recommended_action"] in {"rebuild_all", "rebuild_vectors"}
+                assert final_status["recommended_action"] in {
+                    "rebuild_all",
+                    "rebuild_vectors",
+                }
             else:
                 assert final_status["index_rebuild_required"] is False
         elif error_code == "INDEX_REBUILD_REQUIRED":
@@ -164,8 +226,14 @@ def test_lazy_model_and_parent_eof(tmp_path: Path):
             assert final_status["state"] == "ready_no_index"
             assert final_status["index_validation_state"] == "incompatible"
             assert final_status["index_rebuild_required"] is True
-            assert final_status["recommended_action"] == first["error"]["details"]["recommended_action"]
-            assert final_status["recommended_action"] in {"rebuild_all", "rebuild_vectors"}
+            assert (
+                final_status["recommended_action"]
+                == first["error"]["details"]["recommended_action"]
+            )
+            assert final_status["recommended_action"] in {
+                "rebuild_all",
+                "rebuild_vectors",
+            }
     finally:
         assert process.stdin is not None
         process.stdin.close()
@@ -177,22 +245,39 @@ def test_lazy_model_and_parent_eof(tmp_path: Path):
 def test_answer_cancel_retry_idempotency_and_non_retry_methods(tmp_path: Path):
     from vault_search.protocol import _IDEMPOTENT_METHODS
 
-    # Non-idempotent methods must never be in retry set
+    from vault_search.protocol import _NON_IDEMPOTENT_METHODS
+
+    # Non-idempotent methods must never be in the generic transport retry set
     assert "answer_start" not in _IDEMPOTENT_METHODS
     assert "answer_continue" not in _IDEMPOTENT_METHODS
-    # Safe idempotent cancel must be present
+    assert "shutdown" not in _IDEMPOTENT_METHODS
+    # Cancel is application-idempotent: a second cancel is a no-op.
     assert "answer_cancel" in _IDEMPOTENT_METHODS
+    for method in _NON_IDEMPOTENT_METHODS:
+        assert method not in _IDEMPOTENT_METHODS
 
     process, runtime, runtime_path = _start(tmp_path)
     try:
         _wait_ready(runtime)
         # Calling cancel on non-existent or completed run is idempotent and safe
-        res1 = request(runtime["host"], runtime["port"], runtime["token"], "answer_cancel", {"run_id": "nonexistent_run_12345"})
+        res1 = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "answer_cancel",
+            {"run_id": "nonexistent_run_12345"},
+        )
         assert res1["ok"] is True
         assert res1["data"]["cancelled"] is False
 
         # Repeating cancel produces no errors or corrupted state
-        res2 = request(runtime["host"], runtime["port"], runtime["token"], "answer_cancel", {"run_id": "nonexistent_run_12345"})
+        res2 = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "answer_cancel",
+            {"run_id": "nonexistent_run_12345"},
+        )
         assert res2["ok"] is True
         assert res2["data"]["cancelled"] is False
     finally:
@@ -203,18 +288,34 @@ def test_answer_cancel_retry_idempotency_and_non_retry_methods(tmp_path: Path):
 def test_lazy_first_search_builds_index_and_retries_success(tmp_path: Path):
     process, runtime, runtime_path = _start(tmp_path, lazy=True)
     try:
-        first = request(runtime["host"], runtime["port"], runtime["token"], "search",
-                        {"query": "전기차"})
+        first = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "search",
+            {"query": "전기차"},
+        )
         assert first["error"]["code"] in {"MODEL_LOADING", "INDEX_REBUILD_REQUIRED"}
         _wait_ready(runtime)
-        rebuilt = request(runtime["host"], runtime["port"], runtime["token"],
-                          "rebuild_all", timeout=10)
+        rebuilt = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "rebuild_all",
+            timeout=10,
+        )
         assert rebuilt["ok"] and rebuilt["data"]["files"] == 1
         status = request(runtime["host"], runtime["port"], runtime["token"], "status")
         assert status["data"]["index_validation_state"] == "compatible"
         assert status["data"]["index_rebuild_required"] is False
-        searched = request(runtime["host"], runtime["port"], runtime["token"], "search",
-                           {"query": "전기차", "top_k": 5}, timeout=5)
+        searched = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "search",
+            {"query": "전기차", "top_k": 5},
+            timeout=5,
+        )
         assert searched["ok"] and searched["data"]["results"]
     finally:
         request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
@@ -230,8 +331,13 @@ def test_index_rebuild_required_exposes_cached_state(tmp_path: Path):
         assert status["data"]["index_rebuild_required"] is True
         assert status["data"]["recommended_action"] == "rebuild_all"
         assert status["data"]["index_problems"]
-        searched = request(runtime["host"], runtime["port"], runtime["token"], "search",
-                           {"query": "전기차", "top_k": 5})
+        searched = request(
+            runtime["host"],
+            runtime["port"],
+            runtime["token"],
+            "search",
+            {"query": "전기차", "top_k": 5},
+        )
         assert searched["error"]["code"] == "INDEX_REBUILD_REQUIRED"
         assert searched["error"]["details"]["recommended_action"] == "rebuild_all"
     finally:
@@ -244,26 +350,56 @@ def test_standalone_server_ignores_heartbeat_and_exits_on_idle(tmp_path: Path):
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
     data = tmp_path / "data"
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({
-        "vaultPath": str(vault), "dataDir": str(data), "modelId": "__fake__",
-        "includeGlobs": ["**/*.md"], "excludeGlobs": [".obsidian/**"],
-        "loadPolicy": "first-search", "heartbeatTimeoutSeconds": 5,
-    }), encoding="utf-8")
+    config.write_text(
+        json.dumps(
+            {
+                "vaultPath": str(vault),
+                "dataDir": str(data),
+                "modelId": "__fake__",
+                "includeGlobs": ["**/*.md"],
+                "excludeGlobs": [".obsidian/**"],
+                "loadPolicy": "first-search",
+                "heartbeatTimeoutSeconds": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     process = subprocess.Popen(
-        [sys.executable, "-X", "utf8", "-m", "vault_search", "serve",
-         "--config", str(config), "--owner", "standalone", "--lazy-model",
-         "--idle-exit-seconds", "3"],
-        cwd=BACKEND_ROOT, env=env, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "vault_search",
+            "serve",
+            "--config",
+            str(config),
+            "--owner",
+            "standalone",
+            "--lazy-model",
+            "--idle-exit-seconds",
+            "3",
+        ],
+        cwd=BACKEND_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
 
     def _drain_stdout() -> None:
         for _line in process.stdout or ():
             pass
+
     threading.Thread(target=_drain_stdout, daemon=True).start()
 
     runtime_path = data / "runtime.json"
@@ -297,27 +433,65 @@ def test_standalone_idle_exit_suppressed_during_rebuild(tmp_path: Path):
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
     data = tmp_path / "data"
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({
-        "vaultPath": str(vault), "dataDir": str(data), "modelId": "__fake__",
-        "includeGlobs": ["**/*.md"], "excludeGlobs": [".obsidian/**"],
-        "loadPolicy": "first-search", "heartbeatTimeoutSeconds": 5,
-    }), encoding="utf-8")
+    config.write_text(
+        json.dumps(
+            {
+                "vaultPath": str(vault),
+                "dataDir": str(data),
+                "modelId": "__fake__",
+                "includeGlobs": ["**/*.md"],
+                "excludeGlobs": [".obsidian/**"],
+                "loadPolicy": "first-search",
+                "heartbeatTimeoutSeconds": 5,
+            }
+        ),
+        encoding="utf-8",
+    )
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     process = subprocess.Popen(
-        [sys.executable, "-X", "utf8", "-m", "vault_search", "serve",
-         "--config", str(config), "--owner", "standalone", "--lazy-model",
-         "--idle-exit-seconds", "3"],
-        cwd=BACKEND_ROOT, env=env, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "vault_search",
+            "serve",
+            "--config",
+            str(config),
+            "--owner",
+            "standalone",
+            "--lazy-model",
+            "--idle-exit-seconds",
+            "3",
+        ],
+        cwd=BACKEND_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
+
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
 
     def _drain_stdout() -> None:
         for _line in process.stdout or ():
-            pass
+            stdout_lines.append(_line)
+
+    def _drain_stderr() -> None:
+        for _line in process.stderr or ():
+            stderr_lines.append(_line)
+
     threading.Thread(target=_drain_stdout, daemon=True).start()
+    threading.Thread(target=_drain_stderr, daemon=True).start()
 
     runtime_path = data / "runtime.json"
     deadline = time.monotonic() + 10
@@ -332,17 +506,79 @@ def test_standalone_idle_exit_suppressed_during_rebuild(tmp_path: Path):
     try:
         # Keep the service busy with a long-ish operation well past the 3s
         # idle window; the watcher must not shut it down mid-operation.
-        request(runtime["host"], runtime["port"], runtime["token"],
-                "load_model", timeout=10)
-        request(runtime["host"], runtime["port"], runtime["token"],
-                "rebuild_all", timeout=15)
+        try:
+            request(
+                runtime["host"],
+                runtime["port"],
+                runtime["token"],
+                "load_model",
+                timeout=10,
+            )
+            request(
+                runtime["host"],
+                runtime["port"],
+                runtime["token"],
+                "rebuild_all",
+                timeout=15,
+            )
+        except Exception as req_exc:
+            # Diagnostic evidence for flaky RST analysis — redact token
+            time.sleep(0.2)
+            poll = process.poll()
+            runtime_exists = runtime_path.exists()
+            runtime_content = ""
+            try:
+                raw = runtime_path.read_text(encoding="utf-8")
+                data_json = json.loads(raw)
+                redacted = dict(data_json)
+                if "token" in redacted:
+                    redacted["token"] = "<redacted>"
+                runtime_content = json.dumps(redacted, ensure_ascii=False)[:500]
+                token_val = data_json.get("token", "")
+            except Exception:
+                runtime_content = "<unreadable>"
+                token_val = runtime.get("token", "")
+            # Collect recent lifecycle events from captured stdout
+            recent_events = "".join(stdout_lines[-20:])
+            recent_stderr = "".join(stderr_lines[-20:])
+            # Redact token from tails if present
+            if token_val:
+                recent_events = recent_events.replace(token_val, "<redacted>")
+                recent_stderr = recent_stderr.replace(token_val, "<redacted>")
+                runtime_content = runtime_content.replace(token_val, "<redacted>")
+            # Also ensure no Authorization or prompt leak in diagnostics
+            for secret in ("Authorization", "Bearer"):
+                recent_events = recent_events.replace(secret, "<redacted>")
+                recent_stderr = recent_stderr.replace(secret, "<redacted>")
+            raise AssertionError(
+                f"rebuild_all request failed: {type(req_exc).__name__}: {req_exc}\n"
+                f"poll={poll} runtime_exists={runtime_exists} runtime={runtime_content}\n"
+                f"stdout_tail={recent_events[-1000:]}\n"
+                f"stderr_tail={recent_stderr[-1000:]}"
+            ) from req_exc
         time.sleep(2)
-        assert process.poll() is None
+        poll_after = process.poll()
+        if poll_after is not None:
+            recent_events = "".join(stdout_lines[-20:])
+            recent_stderr = "".join(stderr_lines[-20:])
+            # Redact token in case it leaked into logs
+            token_val = runtime.get("token", "")
+            if token_val:
+                recent_events = recent_events.replace(token_val, "<redacted>")
+                recent_stderr = recent_stderr.replace(token_val, "<redacted>")
+            raise AssertionError(
+                f"idle watcher terminated process unexpectedly poll={poll_after}\n"
+                f"stdout_tail={recent_events[-2000:]}\n"
+                f"stderr_tail={recent_stderr[-2000:]}"
+            )
         status = request(runtime["host"], runtime["port"], runtime["token"], "status")
         assert status["ok"] and status["data"]["state"] in {"ready", "ready_no_index"}
     finally:
         if process.poll() is None:
-            request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
+            try:
+                request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
+            except Exception:
+                pass
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
@@ -355,18 +591,31 @@ def test_cli_spawn_standalone_and_attach(tmp_path: Path):
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
     data = default_data_dir(vault)
     index = data / "index"
     index.mkdir(parents=True)
     config = data / "service-config.json"
-    config.write_text(json.dumps({
-        "vaultPath": str(vault), "dataDir": str(data), "modelId": "__fake__",
-        "includeGlobs": ["**/*.md"], "excludeGlobs": [".obsidian/**"],
-        "loadPolicy": "first-search", "heartbeatTimeoutSeconds": 60,
-    }), encoding="utf-8")
+    config.write_text(
+        json.dumps(
+            {
+                "vaultPath": str(vault),
+                "dataDir": str(data),
+                "modelId": "__fake__",
+                "includeGlobs": ["**/*.md"],
+                "excludeGlobs": [".obsidian/**"],
+                "loadPolicy": "first-search",
+                "heartbeatTimeoutSeconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
     machine = data / "machine.json"
-    machine.write_text(json.dumps({"pythonExecutable": sys.executable}), encoding="utf-8")
+    machine.write_text(
+        json.dumps({"pythonExecutable": sys.executable}), encoding="utf-8"
+    )
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     monkeypatch = pytest.MonkeyPatch()
@@ -390,20 +639,28 @@ def test_rebuild_vectors_rejects_tokenizer_mismatch(tmp_path: Path):
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
-    config = SearchConfig(vault_path=vault, data_dir=tmp_path / "data", model_id="__fake__")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
+    config = SearchConfig(
+        vault_path=vault, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     config.index_dir.mkdir(parents=True, exist_ok=True)
     from vault_search.indexing import IndexManager
     from vault_search.model_manager import ModelManager
+
     model = ModelManager(config)
     model.load()
     index = IndexManager(config, model, None)
     index.rebuild_all()
     # Corrupt the tokenizer metadata to simulate a tokenizer change.
     import json
+
     metadata = json.loads(config.metadata_path.read_text(encoding="utf-8"))
     metadata["tokenizer_version"] = "some-other-tokenizer"
-    config.metadata_path.write_text(json.dumps(metadata, ensure_ascii=False), encoding="utf-8")
+    config.metadata_path.write_text(
+        json.dumps(metadata, ensure_ascii=False), encoding="utf-8"
+    )
     with pytest.raises(RuntimeError, match="rebuild_all"):
         index.rebuild_vectors()
 
@@ -413,11 +670,16 @@ def test_rebuild_vectors_rejects_scope_mismatch(tmp_path: Path):
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
-    config = SearchConfig(vault_path=vault, data_dir=tmp_path / "data", model_id="__fake__")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
+    config = SearchConfig(
+        vault_path=vault, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     config.index_dir.mkdir(parents=True, exist_ok=True)
     from vault_search.indexing import IndexManager
     from vault_search.model_manager import ModelManager
+
     model = ModelManager(config)
     model.load()
     index = IndexManager(config, model, None)
@@ -433,8 +695,12 @@ def test_rebuild_all_archives_future_schema_and_recovers(tmp_path: Path):
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
     (vault / "notes" / "sample.md").write_text(
-        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.", encoding="utf-8")
-    config = SearchConfig(vault_path=vault, data_dir=tmp_path / "data", model_id="__fake__")
+        "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
+        encoding="utf-8",
+    )
+    config = SearchConfig(
+        vault_path=vault, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     config.index_dir.mkdir(parents=True)
     connection = sqlite3.connect(str(config.db_path))
     connection.executescript("""
@@ -445,6 +711,7 @@ def test_rebuild_all_archives_future_schema_and_recovers(tmp_path: Path):
     connection.close()
     from vault_search.indexing import IndexManager
     from vault_search.model_manager import ModelManager
+
     model = ModelManager(config)
     model.load()
     index = IndexManager(config, model, None)
@@ -452,6 +719,7 @@ def test_rebuild_all_archives_future_schema_and_recovers(tmp_path: Path):
     assert result["files"] == 1 and result["chunks"] == 1
     assert list(config.index_dir.glob("chunks.db.unreadable-*.bak"))
     from vault_search.search import SearchEngine
+
     engine = SearchEngine(config, model, None)
     results = engine.search("전기차", top_k=5)
     assert results and results[0]["file_path"] == "notes/sample.md"
@@ -461,21 +729,47 @@ def test_listening_event_never_contains_token(tmp_path: Path):
     vault = tmp_path / "vault"
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
-    (vault / "notes" / "sample.md").write_text("# 전기차 충전기\n\n본문", encoding="utf-8")
+    (vault / "notes" / "sample.md").write_text(
+        "# 전기차 충전기\n\n본문", encoding="utf-8"
+    )
     data = tmp_path / "data"
     config = tmp_path / "config.json"
-    config.write_text(json.dumps({
-        "vaultPath": str(vault), "dataDir": str(data), "modelId": "__fake__",
-        "includeGlobs": ["**/*.md"], "excludeGlobs": [".obsidian/**"],
-        "loadPolicy": "first-search", "heartbeatTimeoutSeconds": 60,
-    }), encoding="utf-8")
+    config.write_text(
+        json.dumps(
+            {
+                "vaultPath": str(vault),
+                "dataDir": str(data),
+                "modelId": "__fake__",
+                "includeGlobs": ["**/*.md"],
+                "excludeGlobs": [".obsidian/**"],
+                "loadPolicy": "first-search",
+                "heartbeatTimeoutSeconds": 60,
+            }
+        ),
+        encoding="utf-8",
+    )
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     process = subprocess.Popen(
-        [sys.executable, "-X", "utf8", "-m", "vault_search", "serve",
-         "--config", str(config), "--watch-stdin"],
-        cwd=BACKEND_ROOT, env=env, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "vault_search",
+            "serve",
+            "--config",
+            str(config),
+            "--watch-stdin",
+        ],
+        cwd=BACKEND_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
     try:
         runtime_path = data / "runtime.json"
         deadline = time.monotonic() + 10
@@ -502,10 +796,25 @@ def test_second_backend_for_same_data_dir_fails_cleanly(tmp_path: Path):
     env = dict(os.environ)
     env["PYTHONPATH"] = str(BACKEND_ROOT)
     second = subprocess.Popen(
-        [sys.executable, "-X", "utf8", "-m", "vault_search", "serve",
-         "--config", str(config), "--watch-stdin"],
-        cwd=BACKEND_ROOT, env=env, stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
+        [
+            sys.executable,
+            "-X",
+            "utf8",
+            "-m",
+            "vault_search",
+            "serve",
+            "--config",
+            str(config),
+            "--watch-stdin",
+        ],
+        cwd=BACKEND_ROOT,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+    )
     try:
         stdout, stderr = second.communicate(timeout=5)
         assert second.returncode == 2
@@ -533,7 +842,9 @@ def test_backend_startup_removes_unreferenced_operation_artifacts(tmp_path: Path
 
 
 def test_invalid_match_mode_is_invalid_params(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service.index = SimpleNamespace()  # type: ignore[assignment]
@@ -544,7 +855,9 @@ def test_invalid_match_mode_is_invalid_params(tmp_path: Path):
 
 
 def test_invalid_search_intent_is_invalid_params(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service.index = SimpleNamespace()  # type: ignore[assignment]
@@ -555,7 +868,9 @@ def test_invalid_search_intent_is_invalid_params(tmp_path: Path):
 
 
 def test_invalid_reconcile_mode_is_invalid_params(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service.index = SimpleNamespace()  # type: ignore[assignment]
@@ -566,12 +881,15 @@ def test_invalid_reconcile_mode_is_invalid_params(tmp_path: Path):
 
 
 def test_reconcile_defaults_to_fast_and_forwards_mode(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     modes: list[str] = []
     service.index = SimpleNamespace(
-        reconcile=lambda mode: modes.append(mode) or {"mode": mode})  # type: ignore[assignment]
+        reconcile=lambda mode: modes.append(mode) or {"mode": mode}
+    )  # type: ignore[assignment]
     service.search_engine = SimpleNamespace()  # type: ignore[assignment]
     assert service.call("reconcile", {}) == {"mode": "fast"}
     assert service.call("reconcile", {"mode": "strict"}) == {"mode": "strict"}
@@ -579,8 +897,11 @@ def test_reconcile_defaults_to_fast_and_forwards_mode(tmp_path: Path):
 
 
 def test_status_and_heartbeat_use_cached_counts_during_index_operation(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service._cached_counts = {"files": 7, "chunks": 11}
@@ -620,7 +941,9 @@ def test_status_and_heartbeat_use_cached_counts_during_index_operation(
     assert count_calls[0][1] is True
 
 
-def test_future_schema_with_missing_tables_reports_controlled_incompatibility(tmp_path: Path):
+def test_future_schema_with_missing_tables_reports_controlled_incompatibility(
+    tmp_path: Path,
+):
     data = tmp_path / "data"
     index = data / "index"
     index.mkdir(parents=True)
@@ -646,14 +969,19 @@ def test_future_schema_with_missing_tables_reports_controlled_incompatibility(tm
     assert error.value.code == "INDEX_REBUILD_REQUIRED"
 
 
-def test_pending_recovery_failure_keeps_service_ready_with_retry_warning(tmp_path: Path):
+def test_pending_recovery_failure_keeps_service_ready_with_retry_warning(
+    tmp_path: Path,
+):
     events: list[tuple[str, dict]] = []
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     config.index_dir.mkdir(parents=True)
     connection = init_db(config.db_path)
     connection.execute(
         "INSERT INTO pending_paths (file_path, operation, queued_at)"
-        " VALUES ('note.md', 'changed', 0)")
+        " VALUES ('note.md', 'changed', 0)"
+    )
     connection.commit()
     connection.close()
     service = SearchService(config, lambda event, data: events.append((event, data)))
@@ -676,7 +1004,8 @@ def test_pending_recovery_failure_keeps_service_ready_with_retry_warning(tmp_pat
     connection = sqlite3.connect(str(config.db_path))
     try:
         assert connection.execute("SELECT file_path FROM pending_paths").fetchall() == [
-            ("note.md",)]
+            ("note.md",)
+        ]
     finally:
         connection.close()
     service.call("sync_paths", {"changed": ["note.md"], "deleted": []})
@@ -684,7 +1013,9 @@ def test_pending_recovery_failure_keeps_service_ready_with_retry_warning(tmp_pat
 
 
 def test_startup_lexical_migration_failure_routes_rebuild_required(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service.index = SimpleNamespace()  # type: ignore[assignment]
@@ -696,7 +1027,9 @@ def test_startup_lexical_migration_failure_routes_rebuild_required(tmp_path: Pat
 
 
 def test_idle_unload_releases_model_after_timeout(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.model.model = object()  # fake a loaded model
     service.state = "ready"
@@ -712,7 +1045,9 @@ def test_idle_unload_releases_model_after_timeout(tmp_path: Path):
 
 
 def test_idle_unload_skips_recent_activity(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.model.model = object()
     service.state = "ready"
@@ -726,7 +1061,9 @@ def test_idle_unload_skips_recent_activity(tmp_path: Path):
 
 
 def test_idle_unload_uses_default_period(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.model.model = object()
     service.state = "ready"
@@ -740,7 +1077,9 @@ def test_idle_unload_uses_default_period(tmp_path: Path):
 
 
 def test_idle_unload_disabled_when_timeout_is_zero(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.model.model = object()
     service.state = "ready"
@@ -754,16 +1093,28 @@ def test_idle_unload_disabled_when_timeout_is_zero(tmp_path: Path):
 
 
 def test_search_updates_last_activity(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service.state = "ready"
     service.last_activity = time.monotonic() - 100
     service.index = SimpleNamespace()  # type: ignore[assignment]
     service.search_engine = SimpleNamespace(
         search_detailed=lambda query, **kwargs: SimpleNamespace(
-            results=[], candidate_pool_size=0, requested_top_k=5, returned_count=0,
-            to_dict=lambda: {"results": [], "diagnostics": {
-                "candidate_pool_size": 0, "requested_top_k": 5, "returned_count": 0}})
+            results=[],
+            candidate_pool_size=0,
+            requested_top_k=5,
+            returned_count=0,
+            to_dict=lambda: {
+                "results": [],
+                "diagnostics": {
+                    "candidate_pool_size": 0,
+                    "requested_top_k": 5,
+                    "returned_count": 0,
+                },
+            },
+        )
     )  # type: ignore[assignment]
     (tmp_path / "data" / "index").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data" / "index" / "chunks.db").write_text("", encoding="utf-8")
@@ -774,20 +1125,28 @@ def test_search_updates_last_activity(tmp_path: Path):
 
 
 def test_status_includes_capabilities(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
     service._capabilities = None
 
     status = service.status()
 
     assert set(status["capabilities"]) == {
-        "onnx_available", "cuda_available", "tensorrt_available",
-        "model_available", "derived_model_available"}
+        "onnx_available",
+        "cuda_available",
+        "tensorrt_available",
+        "model_available",
+        "derived_model_available",
+    }
     assert set(status["capabilities"].values()) <= {True, False}
 
 
 def test_provision_onnx_requires_onnx_engine(tmp_path: Path):
-    config = SearchConfig(vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__")
+    config = SearchConfig(
+        vault_path=tmp_path, data_dir=tmp_path / "data", model_id="__fake__"
+    )
     service = SearchService(config, lambda _event, _data: None)
 
     with pytest.raises(ServiceError) as error:
@@ -797,14 +1156,20 @@ def test_provision_onnx_requires_onnx_engine(tmp_path: Path):
 
 def test_provision_onnx_generates_derived(monkeypatch, tmp_path: Path):
     config = SearchConfig(
-        vault_path=tmp_path, data_dir=tmp_path / "data",
-        model_id="intfloat/multilingual-e5-base", engine="onnx")
+        vault_path=tmp_path,
+        data_dir=tmp_path / "data",
+        model_id="intfloat/multilingual-e5-base",
+        engine="onnx",
+    )
     service = SearchService(config, lambda _event, _data: None)
     monkeypatch.setattr(
-        "vault_search.model_manager._resolve_model_dir", lambda model_id: tmp_path)
+        "vault_search.model_manager._resolve_model_dir", lambda model_id: tmp_path
+    )
     target = tmp_path / "onnx" / "model-pooled-normalized.onnx"
     monkeypatch.setattr(
-        "vault_search.onnx_provision.provision", lambda model_dir, verify_graph=True: target)
+        "vault_search.onnx_provision.provision",
+        lambda model_dir, verify_graph=True: target,
+    )
 
     result = service.provision_onnx()
 
@@ -815,12 +1180,41 @@ def test_provision_onnx_generates_derived(monkeypatch, tmp_path: Path):
 
 def test_provision_onnx_model_not_found(monkeypatch, tmp_path: Path):
     config = SearchConfig(
-        vault_path=tmp_path, data_dir=tmp_path / "data",
-        model_id="intfloat/multilingual-e5-base", engine="onnx")
+        vault_path=tmp_path,
+        data_dir=tmp_path / "data",
+        model_id="intfloat/multilingual-e5-base",
+        engine="onnx",
+    )
     service = SearchService(config, lambda _event, _data: None)
     monkeypatch.setattr(
-        "vault_search.model_manager._resolve_model_dir", lambda model_id: None)
+        "vault_search.model_manager._resolve_model_dir", lambda model_id: None
+    )
 
     with pytest.raises(ServiceError) as error:
         service.provision_onnx()
     assert error.value.code == "MODEL_NOT_FOUND"
+
+
+def test_status_rpc_loop_no_reset(tmp_path: Path):
+    """Client half-close + no server SHUT_WR should survive 30 sequential RPCs."""
+    process, runtime, _runtime_path = _start(tmp_path)
+    try:
+        _wait_ready(runtime)
+        for _i in range(30):
+            response = request(
+                runtime["host"], runtime["port"], runtime["token"], "status", timeout=2
+            )
+            assert response["ok"] is True
+        shutdown = request(
+            runtime["host"], runtime["port"], runtime["token"], "shutdown", timeout=2
+        )
+        assert shutdown["ok"] is True
+        process.wait(timeout=5)
+    finally:
+        if process.poll() is None:
+            with contextlib.suppress(Exception):
+                request(runtime["host"], runtime["port"], runtime["token"], "shutdown")
+            with contextlib.suppress(Exception):
+                process.wait(timeout=5)
+            if process.poll() is None:
+                process.kill()

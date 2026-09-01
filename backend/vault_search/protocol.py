@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import socket
+import time
 import uuid
 from typing import Any
 
@@ -66,9 +67,7 @@ def _validate_client_run_id(value: Any) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not _RUN_ID_PATTERN.match(value):
-        raise ProtocolError(
-            "run_id must match [A-Za-z0-9_-]{8,64} when provided"
-        )
+        raise ProtocolError("run_id must match [A-Za-z0-9_-]{8,64} when provided")
     return value
 
 
@@ -123,14 +122,19 @@ def validate_answer_continue_params(params: dict[str, Any]) -> dict[str, Any]:
             raise ProtocolError(f"duplicate call_id in decisions: {call_id}")
         seen.add(call_id)
         if choice not in {"allow_once", "allow_session", "reject"}:
-            raise ProtocolError(
-                "decision must be allow_once, allow_session, or reject"
-            )
+            raise ProtocolError("decision must be allow_once, allow_session, or reject")
         decisions.append({"call_id": call_id, "decision": str(choice)})
     return {"run_id": run_id.strip(), "decisions": decisions}
 
 
 def validate_answer_cancel_params(params: dict[str, Any]) -> dict[str, Any]:
+    run_id = params.get("run_id")
+    if not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 64:
+        raise ProtocolError("run_id must be provided")
+    return {"run_id": run_id.strip()}
+
+
+def validate_answer_status_params(params: dict[str, Any]) -> dict[str, Any]:
     run_id = params.get("run_id")
     if not isinstance(run_id, str) or not run_id.strip() or len(run_id) > 64:
         raise ProtocolError("run_id must be provided")
@@ -153,13 +157,21 @@ def _validate_mcp_http_url(url: Any) -> str:
     if len(url) > MAX_MCP_URL_CHARS:
         raise ProtocolError(f"http url must be at most {MAX_MCP_URL_CHARS} characters")
     if any(ord(c) <= 32 or ord(c) == 127 for c in url):
-        raise ProtocolError("http url contains invalid whitespace or control characters")
+        raise ProtocolError(
+            "http url contains invalid whitespace or control characters"
+        )
     from urllib.parse import urlsplit
 
     try:
         parts = urlsplit(url)
-        if parts.scheme.lower() not in {"http", "https"} or not parts.netloc or not parts.hostname:
-            raise ProtocolError("http url must be an absolute http or https URL with a hostname")
+        if (
+            parts.scheme.lower() not in {"http", "https"}
+            or not parts.netloc
+            or not parts.hostname
+        ):
+            raise ProtocolError(
+                "http url must be an absolute http or https URL with a hostname"
+            )
     except Exception as exc:
         if isinstance(exc, ProtocolError):
             raise
@@ -185,8 +197,13 @@ def validate_mcp_secrets_params(params: dict[str, Any]) -> dict[str, Any]:
         raise ProtocolError(f"servers count exceeds limit of {MAX_MCP_SERVER_COUNT}")
     if len(http_urls_dict) > MAX_MCP_SERVER_COUNT:
         raise ProtocolError(f"http_urls count exceeds limit of {MAX_MCP_SERVER_COUNT}")
-    if len(set(servers_dict.keys()) | set(http_urls_dict.keys())) > MAX_MCP_SERVER_COUNT:
-        raise ProtocolError(f"total server count exceeds limit of {MAX_MCP_SERVER_COUNT}")
+    if (
+        len(set(servers_dict.keys()) | set(http_urls_dict.keys()))
+        > MAX_MCP_SERVER_COUNT
+    ):
+        raise ProtocolError(
+            f"total server count exceeds limit of {MAX_MCP_SERVER_COUNT}"
+        )
 
     cleaned_servers: dict[str, dict[str, str]] = {}
     for server_id, values in servers_dict.items():
@@ -194,10 +211,16 @@ def validate_mcp_secrets_params(params: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(values, dict):
             raise ProtocolError("each server must map env names to values")
         if len(values) > MAX_MCP_SERVER_ENV_COUNT:
-            raise ProtocolError(f"env count for server exceeds limit of {MAX_MCP_SERVER_ENV_COUNT}")
+            raise ProtocolError(
+                f"env count for server exceeds limit of {MAX_MCP_SERVER_ENV_COUNT}"
+            )
         entry: dict[str, str] = {}
         for name, value in values.items():
-            if not isinstance(name, str) or not name or len(name) > MAX_SECRET_NAME_CHARS:
+            if (
+                not isinstance(name, str)
+                or not name
+                or len(name) > MAX_SECRET_NAME_CHARS
+            ):
                 raise ProtocolError("env name must be 1-128 characters")
             if any(ord(c) < 32 or ord(c) == 127 for c in name):
                 raise ProtocolError("env name contains invalid control characters")
@@ -261,15 +284,21 @@ def _bounded_int(value: Any, minimum: int, maximum: int, name: str) -> int:
     return result
 
 
-# Methods that are safe to re-issue when the connection dies during the
-# READ phase (Windows loopback can reset a socket whose peer closed right
-# after writing the response). Non-idempotent methods are never retried.
+# Read-only / snapshot methods that are safe to re-issue when the connection
+# dies during the READ phase (Windows loopback can RST after the server wrote
+# the response). Non-idempotent methods — answer_start, answer_continue,
+# shutdown, rebuild_* — are never retried here. Callers recover those via
+# run_id + answer_status instead of blindly retransmitting. answer_cancel is
+# application-idempotent (a second cancel is a no-op) so a read-phase retry
+# is safe; start/continue/shutdown are not.
 _IDEMPOTENT_METHODS = frozenset(
     {
         "answer_cancel",
+        "answer_status",
         "health",
         "status",
         "heartbeat",
+        "load_model",
         "mcp_status",
         "mcp_refresh",
         "set_mcp_secrets",
@@ -278,6 +307,45 @@ _IDEMPOTENT_METHODS = frozenset(
         "search",
     }
 )
+
+_NON_IDEMPOTENT_METHODS = frozenset(
+    {
+        "answer_start",
+        "answer_continue",
+        "shutdown",
+    }
+)
+
+_RETRYABLE_WINERR = {10054, 10053, 10058, 10060}
+_RETRYABLE_MSG = ("connection reset", "broken pipe", "connection aborted", "timed out")
+
+
+class TransportError(OSError):
+    """Socket failure tagged with the RPC stage that failed.
+
+    stage:
+      connect — request bytes were not sent
+      write   — send may or may not have reached the server
+      read    — request was sent; the response may have been lost
+    """
+
+    def __init__(self, stage: str, cause: BaseException):
+        super().__init__(str(cause))
+        self.stage = stage
+        self.errno = getattr(cause, "errno", None)
+
+
+def _is_retryable_transport(exc: BaseException) -> bool:
+    if isinstance(
+        exc,
+        (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, TransportError),
+    ):
+        return True
+    errno_val = getattr(exc, "errno", None)
+    if errno_val in _RETRYABLE_WINERR:
+        return True
+    msg = str(exc).lower()
+    return any(tok in msg for tok in _RETRYABLE_MSG)
 
 
 def request(
@@ -288,15 +356,33 @@ def request(
     params: dict[str, Any] | None = None,
     timeout: float = 2.0,
 ) -> dict[str, Any]:
-    attempts = 2 if method in _IDEMPOTENT_METHODS else 1
+    # Idempotent methods may be retried on mid-read RST (Windows loopback quirk).
+    # Non-idempotent callers must not be retried blindly — they use run_id
+    # idempotency / answer_status recovery instead.
+    if method in _NON_IDEMPOTENT_METHODS:
+        attempts = 1
+    elif method in _IDEMPOTENT_METHODS:
+        attempts = 3
+    else:
+        attempts = 1
     last_error: Exception | None = None
     for attempt in range(attempts):
         try:
             return _request_once(host, port, token, method, params, timeout)
-        except ConnectionResetError as exc:
-            # Only a mid-read reset reaches here; the request was fully
-            # sent, so re-issuing an idempotent method is safe.
+        except (
+            ConnectionResetError,
+            ConnectionAbortedError,
+            BrokenPipeError,
+            OSError,
+        ) as exc:
+            if method not in _IDEMPOTENT_METHODS:
+                raise
+            if not _is_retryable_transport(exc):
+                raise
             last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.05 * (2**attempt))
+                continue
     assert last_error is not None
     raise last_error
 
@@ -317,15 +403,35 @@ def _request_once(
         "params": params or {},
     }
     encoded = (json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8")
-    with socket.create_connection(
-        (host, port), timeout=min(timeout, 1.0)
-    ) as connection:
-        connection.settimeout(timeout)
-        connection.sendall(encoded)
-        file = connection.makefile("rb")
-        line = file.readline(MAX_MESSAGE_BYTES + 1)
+    stage = "connect"
+    try:
+        with socket.create_connection(
+            (host, port), timeout=min(timeout, 1.0)
+        ) as connection:
+            try:
+                connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except OSError:
+                pass
+            connection.settimeout(timeout)
+            stage = "write"
+            connection.sendall(encoded)
+            stage = "read"
+            file = connection.makefile("rb")
+            line = file.readline(MAX_MESSAGE_BYTES + 1)
+    except (
+        ConnectionResetError,
+        ConnectionAbortedError,
+        BrokenPipeError,
+        OSError,
+    ) as exc:
+        raise TransportError(stage, exc) from exc
     if not line:
-        raise ProtocolError("Backend returned no response")
+        # Empty read after a reset usually means the response was discarded.
+        # Surface as a read-stage transport error so idempotent methods retry
+        # and non-idempotent callers can recover via answer_status.
+        raise TransportError(
+            "read", ConnectionResetError("Backend returned no response")
+        )
     if len(line) > MAX_MESSAGE_BYTES:
         raise ProtocolError("Backend response is too large")
     try:

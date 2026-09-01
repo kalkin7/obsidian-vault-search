@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import contextlib
+import errno as errno_module
 import json
 import os
+import random
+import re
+import socket
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 
 def _error_snippet(exc: urllib.error.URLError) -> str:
@@ -27,6 +32,206 @@ def _normalize_effort(value: str) -> str:
     if effort in {"none", "low", "medium", "high", "xhigh", "max"}:
         return effort
     return ""
+
+
+# ---------------------------------------------------------------------------
+# Observability helpers (Requirement A) — no secrets are ever logged.
+# ---------------------------------------------------------------------------
+
+_RETRYABLE_ERRNOS = {
+    # POSIX — ECANCELED is explicit cancellation (e.g., task cancelled) and
+    # must not be retried as a transient network error.
+    errno_module.ECONNRESET,
+    errno_module.ECONNABORTED,
+    errno_module.EPIPE,
+    errno_module.ETIMEDOUT,
+    # Windows (WSA*)
+    10053,  # WSAECONNABORTED
+    10054,  # WSAECONNRESET
+    10058,  # WSAESHUTDOWN (close during transfer)
+    10060,  # WSAETIMEDOUT
+}
+
+
+def _safe_host(endpoint: str) -> str:
+    try:
+        parsed = urlparse(endpoint)
+        return parsed.hostname or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _normalize_errno(exc: BaseException) -> str | int | None:
+    """Return a safe errno/code without leaking payload."""
+    # Direct errno
+    code = getattr(exc, "errno", None)
+    if isinstance(code, int):
+        return code
+    # Wrapped reason
+    reason = getattr(exc, "reason", None)
+    if reason is not None:
+        rcode = getattr(reason, "errno", None)
+        if isinstance(rcode, int):
+            return rcode
+        # reason may be string containing code name
+        rstr = str(reason)
+        for name in (
+            "ECONNRESET",
+            "EPIPE",
+            "ETIMEDOUT",
+            "ECONNABORTED",
+            "WSAECONNRESET",
+            "WSAECONNABORTED",
+        ):
+            if name in rstr:
+                return name
+        # Try extract Windows code
+        m = re.search(r"\[WinError\s+(\d+)\]", rstr)
+        if m:
+            try:
+                return int(m.group(1))
+            except ValueError:
+                pass
+    # Fall back to exception class name
+    return type(exc).__name__
+
+
+def _is_retryable_os_error(exc: BaseException) -> bool:
+    """Whether exc is a transient transport error eligible for retry."""
+    # ECANCELED is explicit cancellation — never retry (Issue #2)
+    ecanceled = getattr(errno_module, "ECANCELED", 125)
+    if getattr(exc, "errno", None) == ecanceled:
+        return False
+    reason = getattr(exc, "reason", None)
+    if getattr(reason, "errno", None) == ecanceled:
+        return False
+    if isinstance(
+        exc,
+        (
+            ConnectionResetError,
+            ConnectionAbortedError,
+            BrokenPipeError,
+            TimeoutError,
+            socket.timeout,
+        ),
+    ):
+        return True
+    # Check errno
+    code = getattr(exc, "errno", None)
+    if isinstance(code, int) and code in _RETRYABLE_ERRNOS:
+        return True
+    reason = getattr(exc, "reason", None)
+    if reason is not None:
+        if isinstance(
+            reason,
+            (
+                ConnectionResetError,
+                ConnectionAbortedError,
+                BrokenPipeError,
+                TimeoutError,
+                socket.timeout,
+                OSError,
+            ),
+        ):
+            # Check nested errno
+            rcode = getattr(reason, "errno", None)
+            if isinstance(rcode, int) and rcode in _RETRYABLE_ERRNOS:
+                return True
+            if isinstance(
+                reason,
+                (
+                    ConnectionResetError,
+                    ConnectionAbortedError,
+                    BrokenPipeError,
+                    TimeoutError,
+                    socket.timeout,
+                ),
+            ):
+                return True
+            # String-based detection for wrapped messages
+            rstr = str(reason).lower()
+            if any(
+                tok in rstr
+                for tok in (
+                    "timed out",
+                    "connection reset",
+                    "broken pipe",
+                    "connection aborted",
+                )
+            ):
+                return True
+            # Also check errno string names inside
+            if any(
+                name.lower() in rstr
+                for name in (
+                    "econnreset",
+                    "epipe",
+                    "etimedout",
+                    "econnaborted",
+                    "wsaeconnreset",
+                )
+            ):
+                return True
+        # errno on reason
+        rcode = getattr(reason, "errno", None)
+        if isinstance(rcode, int) and rcode in _RETRYABLE_ERRNOS:
+            return True
+    # Message fallback
+    msg = str(exc).lower()
+    if "timed out" in msg and "http" not in msg:  # avoid http body messages
+        # Timeout strings from urllib are retryable
+        if isinstance(exc, urllib.error.URLError):
+            return True
+    if any(
+        tok in msg for tok in ("connection reset", "broken pipe", "connection aborted")
+    ):
+        return True
+    return False
+
+
+def _parse_retry_after(value: str | None, remaining: float) -> float | None:
+    if not value:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    # Seconds form (RFC 7231 Section 7.1.3)
+    try:
+        secs = float(value)
+        if 0 <= secs <= remaining:
+            return secs
+        if secs > remaining:
+            return None
+        return None
+    except ValueError:
+        pass
+    # HTTP-date form — use standard library parser
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(value)
+        if dt is None:
+            return None
+        # parsedate_to_datetime may return naive datetime (no tz) for
+        # obsolete formats; treat as UTC
+        if dt.tzinfo is None:
+            import datetime as _dt
+
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        import datetime as _dt
+
+        now = _dt.datetime.now(_dt.timezone.utc)
+        delta = (dt - now).total_seconds()
+        if delta < 0:
+            # Past date — treat as 0 delay (immediate retry if time remains)
+            delta = 0.0
+        if 0 <= delta <= remaining:
+            return delta
+        if delta > remaining:
+            return None
+        return None
+    except Exception:
+        return None
 
 
 class ProviderError(RuntimeError):
@@ -150,14 +355,72 @@ class _BaseProvider:
                 ),
             },
         )
+        host = _safe_host(self.endpoint)
         deadline = time.monotonic() + max(0.0, timeout_seconds)
-        for attempt in range(2):
+        # Retryable transport errors: up to 3 total attempts (B requirement)
+        max_attempts = 3
+        for attempt in range(max_attempts):
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise ProviderError("LLM_TIMEOUT", "Provider request timed out")
+            attempt_start = time.monotonic()
             try:
                 with urllib.request.urlopen(request, timeout=remaining) as response:
-                    raw = response.read(2 * 1024 * 1024 + 1)
+                    # capture safe response headers for observability
+                    headers = {}
+                    try:
+                        headers = {k.lower(): v for k, v in response.headers.items()}  # type: ignore[attr-defined]
+                    except Exception:
+                        try:
+                            headers = dict(response.info())  # type: ignore
+                        except Exception:
+                            headers = {}
+                    x_req_id = (
+                        headers.get("x-request-id") or headers.get("x-requestid") or ""
+                    )
+                    # This read can itself raise ConnectionResetError/BrokenPipeError
+                    try:
+                        raw = response.read(2 * 1024 * 1024 + 1)
+                    # pi-lens-ignore: no-boolean-in-except
+                    except (
+                        ConnectionResetError,
+                        ConnectionAbortedError,
+                        BrokenPipeError,
+                        TimeoutError,
+                        OSError,
+                    ) as exc:
+                        # Treat as transient if retry budget remains
+                        # socket.timeout is TimeoutError alias — single path
+                        if attempt + 1 < max_attempts and _is_retryable_os_error(exc):
+                            # compute backoff before retry
+                            backoff = self._backoff_delay(
+                                attempt,
+                                remaining - (time.monotonic() - attempt_start),
+                                headers.get("retry-after"),
+                            )
+                            if backoff is not None and backoff <= (
+                                deadline - time.monotonic()
+                            ):
+                                # observability: safe structured log — contract is provider/host/attempt/elapsed/x_request_id only
+                                self._log_retry(
+                                    attempt=attempt + 1,
+                                    host=host,
+                                    elapsed=time.monotonic() - attempt_start,
+                                    x_request_id=x_req_id,
+                                )
+                                time.sleep(backoff)
+                                continue
+                        # No retry or not retryable — map to stable code
+                        if (
+                            isinstance(exc, TimeoutError)
+                            or "timed out" in str(exc).lower()
+                        ):
+                            raise ProviderError(
+                                "LLM_TIMEOUT", "Provider request timed out"
+                            ) from exc
+                        raise ProviderError(
+                            "LLM_PROVIDER_UNAVAILABLE", "Provider connection failed"
+                        ) from exc
                     if len(raw) > 2 * 1024 * 1024:
                         raise ProviderError(
                             "LLM_BAD_RESPONSE", "Provider response is too large"
@@ -172,16 +435,31 @@ class _BaseProvider:
             # flags its and/or expressions; the except clause itself is plain.
             # pi-lens-ignore: no-boolean-in-except
             except urllib.error.URLError as exc:
+                # Extract safe diagnostics
+                elapsed = time.monotonic() - attempt_start
+                # Try to get headers for retry-after even on error
+                retry_after = None
+                x_req_id = ""
                 if isinstance(exc, urllib.error.HTTPError):
-                    code = exc.code
-                    if code in {429, 500, 502, 503, 504} and attempt == 0:
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise ProviderError(
-                                "LLM_TIMEOUT", "Provider request timed out"
-                            ) from exc
-                        time.sleep(min(0.5, remaining))
-                        continue
+                    try:
+                        retry_after = (
+                            exc.headers.get("Retry-After")
+                            if hasattr(exc, "headers") and exc.headers
+                            else None
+                        )  # type: ignore
+                        x_req_id = (
+                            (
+                                exc.headers.get("X-Request-Id")
+                                or exc.headers.get("x-request-id")
+                                or ""
+                            )
+                            if hasattr(exc, "headers") and exc.headers
+                            else ""
+                        )
+                    except Exception:
+                        retry_after = None
+                if isinstance(exc, urllib.error.HTTPError):
+                    code = exc.code  # type: ignore
                     if code in {401, 403}:
                         # Cloudflare bot filtering (403 error 1010) is NOT an auth
                         # failure — report it distinctly so users are not told
@@ -200,13 +478,67 @@ class _BaseProvider:
                         raise ProviderError(
                             "LLM_AUTH_FAILED", "Provider authentication failed"
                         ) from exc
+                    if code in {408, 429, 500, 502, 503, 504}:
+                        # Retryable HTTP codes only: 408, 429, and limited 5xx.
+                        # 409 Conflict and other 5xx (501/505/...) are not transient.
+                        if attempt + 1 < max_attempts:
+                            remaining_after = deadline - time.monotonic()
+                            if remaining_after <= 0:
+                                raise ProviderError(
+                                    "LLM_TIMEOUT", "Provider request timed out"
+                                ) from exc
+                            # If Retry-After exceeds deadline, do not retry — timeout
+                            if (
+                                retry_after is not None
+                                and _is_retry_after_exceeds_deadline(
+                                    retry_after, remaining_after
+                                )
+                            ):
+                                raise ProviderError(
+                                    "LLM_TIMEOUT", "Provider request timed out"
+                                ) from exc
+                            backoff = self._backoff_delay(
+                                attempt, remaining_after, retry_after
+                            )
+                            if backoff is not None and backoff <= remaining_after:
+                                self._log_retry(
+                                    attempt=attempt + 1,
+                                    host=host,
+                                    elapsed=elapsed,
+                                    x_request_id=x_req_id,
+                                )
+                                time.sleep(backoff)
+                                continue
+                            # No time for backoff — treat as timeout
+                            raise ProviderError(
+                                "LLM_TIMEOUT", "Provider request timed out"
+                            ) from exc
+                        # Retries exhausted or no time — map to stable codes
+                        if code == 429:
+                            raise ProviderError(
+                                "LLM_RATE_LIMITED",
+                                "Provider rate limit reached",
+                                http_code=code,
+                            ) from exc
+                        if code in {500, 502, 503, 504}:
+                            raise ProviderError(
+                                "LLM_PROVIDER_UNAVAILABLE",
+                                "Provider is temporarily unavailable",
+                                http_code=code,
+                            ) from exc
+                        # 408 maps to unavailable after retries
+                        raise ProviderError(
+                            "LLM_PROVIDER_UNAVAILABLE",
+                            "Provider is temporarily unavailable",
+                            http_code=code,
+                        ) from exc
                     if code == 429:
                         raise ProviderError(
                             "LLM_RATE_LIMITED",
                             "Provider rate limit reached",
                             http_code=code,
                         ) from exc
-                    if 500 <= code < 600:
+                    if code in {500, 502, 503, 504}:
                         raise ProviderError(
                             "LLM_PROVIDER_UNAVAILABLE",
                             "Provider is temporarily unavailable",
@@ -217,6 +549,39 @@ class _BaseProvider:
                         f"Provider rejected the request (HTTP {code})",
                         http_code=code,
                     ) from exc
+                # Non-HTTP URLError — check retryable transport errors
+                if _is_retryable_os_error(exc):
+                    if attempt + 1 < max_attempts:
+                        remaining_after = deadline - time.monotonic()
+                        if remaining_after <= 0:
+                            raise ProviderError(
+                                "LLM_TIMEOUT", "Provider request timed out"
+                            ) from exc
+                        backoff = self._backoff_delay(attempt, remaining_after, None)
+                        if backoff is not None and backoff <= remaining_after:
+                            self._log_retry(
+                                attempt=attempt + 1,
+                                host=host,
+                                elapsed=elapsed,
+                                x_request_id=x_req_id,
+                            )
+                            time.sleep(backoff)
+                            continue
+                        # Retryable but no time left for backoff -> timeout
+                        raise ProviderError(
+                            "LLM_TIMEOUT", "Provider request timed out"
+                        ) from exc
+                    # Retryable but exhausted -> map to appropriate code
+                    reason_str = str(getattr(exc, "reason", "")).lower()
+                    if "timed out" in reason_str or isinstance(
+                        getattr(exc, "reason", None), TimeoutError
+                    ):
+                        raise ProviderError(
+                            "LLM_TIMEOUT", "Provider request timed out"
+                        ) from exc
+                    raise ProviderError(
+                        "LLM_PROVIDER_UNAVAILABLE", "Provider connection failed"
+                    ) from exc
                 reason = str(getattr(exc, "reason", ""))
                 if "timed out" in reason.lower() or isinstance(
                     getattr(exc, "reason", None), TimeoutError
@@ -224,18 +589,171 @@ class _BaseProvider:
                     raise ProviderError(
                         "LLM_TIMEOUT", "Provider request timed out"
                     ) from exc
+                # Non-retryable transport — do not retry
                 raise ProviderError(
                     "LLM_PROVIDER_UNAVAILABLE", "Provider connection failed"
                 ) from exc
+            # pi-lens-ignore: no-boolean-in-except
+            except (
+                ConnectionResetError,
+                ConnectionAbortedError,
+                BrokenPipeError,
+            ) as exc:
+                elapsed = time.monotonic() - attempt_start
+                if attempt + 1 < max_attempts and _is_retryable_os_error(exc):
+                    remaining_after = deadline - time.monotonic()
+                    if remaining_after <= 0:
+                        raise ProviderError(
+                            "LLM_TIMEOUT", "Provider request timed out"
+                        ) from exc
+                    backoff = self._backoff_delay(attempt, remaining_after, None)
+                    if backoff is not None and backoff <= remaining_after:
+                        self._log_retry(
+                            attempt=attempt + 1,
+                            host=host,
+                            elapsed=elapsed,
+                            x_request_id="",
+                        )
+                        time.sleep(backoff)
+                        continue
+                raise ProviderError(
+                    "LLM_PROVIDER_UNAVAILABLE", "Provider connection failed"
+                ) from exc
+            # pi-lens-ignore: no-boolean-in-except
             except TimeoutError as exc:
+                # Direct TimeoutError — also covers socket.timeout (alias) — retry within deadline
+                if attempt + 1 < max_attempts:
+                    remaining_after = deadline - time.monotonic()
+                    if remaining_after > 0:
+                        backoff = self._backoff_delay(attempt, remaining_after, None)
+                        if backoff is not None and backoff <= remaining_after:
+                            self._log_retry(
+                                attempt=attempt + 1,
+                                host=host,
+                                elapsed=time.monotonic() - attempt_start,
+                                x_request_id="",
+                            )
+                            time.sleep(backoff)
+                            continue
                 raise ProviderError(
                     "LLM_TIMEOUT", "Provider request timed out"
+                ) from exc
+            # pi-lens-ignore: no-boolean-in-except
+            except OSError as exc:
+                # Generic OSError (e.g., Windows socket errors not wrapped as URLError)
+                if _is_retryable_os_error(exc) and attempt + 1 < max_attempts:
+                    remaining_after = deadline - time.monotonic()
+                    if remaining_after > 0:
+                        backoff = self._backoff_delay(attempt, remaining_after, None)
+                        if backoff is not None and backoff <= remaining_after:
+                            self._log_retry(
+                                attempt=attempt + 1,
+                                host=host,
+                                elapsed=time.monotonic() - attempt_start,
+                                x_request_id="",
+                            )
+                            time.sleep(backoff)
+                            continue
+                    # If retryable but no time, map to timeout when appropriate
+                    if exc.errno in (errno_module.ETIMEDOUT, 10060):
+                        raise ProviderError(
+                            "LLM_TIMEOUT", "Provider request timed out"
+                        ) from exc
+                # Non-retryable OSError -> unavailable
+                if exc.errno in (errno_module.ETIMEDOUT, 10060):
+                    raise ProviderError(
+                        "LLM_TIMEOUT", "Provider request timed out"
+                    ) from exc
+                raise ProviderError(
+                    "LLM_PROVIDER_UNAVAILABLE", "Provider connection failed"
                 ) from exc
             except json.JSONDecodeError as exc:
                 raise ProviderError(
                     "LLM_BAD_RESPONSE", "Provider returned invalid JSON"
                 ) from exc
         raise ProviderError("LLM_PROVIDER_UNAVAILABLE", "Provider request failed")
+
+    def _backoff_delay(
+        self, attempt: int, remaining: float, retry_after: str | None
+    ) -> float | None:
+        """Compute backoff delay; respect Retry-After and remaining deadline."""
+        if retry_after is not None:
+            parsed = _parse_retry_after(retry_after, remaining)
+            if parsed is not None:
+                return parsed
+            # If Retry-After is present but exceeds remaining, signal timeout path
+            if _is_retry_after_exceeds_deadline(retry_after, remaining):
+                return None
+        # Exponential backoff with jitter: 0.2 * 2^attempt, capped at 1.5s
+        base = 0.2 * (2**attempt)
+        capped = min(base, 1.5)
+        jitter = random.uniform(0, 0.2 * capped)
+        delay = capped + jitter
+        # Never exceed remaining
+        if delay > remaining:
+            # If even minimal backoff exceeds deadline, don't sleep
+            return None
+        return delay
+
+    def _log_retry(
+        self,
+        *,
+        attempt: int,
+        host: str,
+        elapsed: float,
+        x_request_id: str,
+    ) -> None:
+        # Structured safe log — no secrets, no body. Emit to stderr via print
+        # so it lands in backend.log without polluting stdout protocol stream.
+        # Contract: only provider, host, attempt, elapsed, x-request-id
+        import sys
+
+        safe = {
+            "event": "llm_retry",
+            "data": {
+                "provider": self.provider_id,
+                "host": host,
+                "attempt": attempt,
+                "elapsed": round(elapsed, 3),
+                "x_request_id": x_request_id[:64] if x_request_id else None,
+            },
+        }
+        try:
+            print(json.dumps(safe, ensure_ascii=False), file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
+def _is_retry_after_exceeds_deadline(value: str | None, remaining: float) -> bool:
+    if value is None:
+        return False
+    value = value.strip()
+    if not value:
+        return False
+    try:
+        secs = float(value)
+        return secs > remaining
+    except ValueError:
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        dt = parsedate_to_datetime(value)
+        if dt is None:
+            return False
+        if dt.tzinfo is None:
+            import datetime as _dt
+
+            dt = dt.replace(tzinfo=_dt.timezone.utc)
+        import datetime as _dt
+
+        now = _dt.datetime.now(_dt.timezone.utc)
+        delta = (dt - now).total_seconds()
+        if delta < 0:
+            delta = 0.0
+        return delta > remaining
+    except Exception:
+        return False
 
 
 class OpenAIResponsesProvider(_BaseProvider):
@@ -262,7 +780,9 @@ class OpenAIResponsesProvider(_BaseProvider):
         for message in messages:
             role = message.get("role")
             if role == "user":
-                items.append({"role": "user", "content": str(message.get("content", ""))})
+                items.append(
+                    {"role": "user", "content": str(message.get("content", ""))}
+                )
             elif role == "assistant":
                 text = message.get("content")
                 if isinstance(text, str) and text:
@@ -360,8 +880,7 @@ class OpenAIResponsesProvider(_BaseProvider):
             if exc.http_code in {400, 422}:
                 raise ProviderError(
                     "LLM_TOOLS_UNSUPPORTED",
-                    "Provider rejected native tool calling (HTTP "
-                    f"{exc.http_code})",
+                    f"Provider rejected native tool calling (HTTP {exc.http_code})",
                     http_code=exc.http_code,
                 ) from exc
             raise
@@ -543,8 +1062,7 @@ class OpenAICompatibleProvider(_BaseProvider):
             if exc.http_code in {400, 422}:
                 raise ProviderError(
                     "LLM_TOOLS_UNSUPPORTED",
-                    "Provider rejected native tool calling (HTTP "
-                    f"{exc.http_code})",
+                    f"Provider rejected native tool calling (HTTP {exc.http_code})",
                     http_code=exc.http_code,
                 ) from exc
             raise
