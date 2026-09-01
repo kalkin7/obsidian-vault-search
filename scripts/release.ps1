@@ -9,12 +9,12 @@ $ErrorActionPreference = "Stop"
 # BRAT-compatible release automation.
 #
 # BRAT requires every release to carry BOTH the plugin zip AND the individual
-# assets (main.js, manifest.json, styles.css, versions.json, and the icon).
+# assets (main.js, manifest.json, styles.css, and versions.json).
 # Uploading only the
 # zip makes BRAT unable to update — exactly what happened in v0.1.4.
 #
 # Usage:
-#   .\scripts\release.ps1 -Version 0.1.5 [-SkipBuild] [-SkipPublish]
+#   .\scripts\release.ps1 -Version <version> [-SkipBuild] [-SkipPublish]
 #
 # Steps:
 #   1. Validate version consistency across manifest/package/pyproject/__init__/constants
