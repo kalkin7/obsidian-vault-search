@@ -33,7 +33,7 @@ def expected_metadata(
         "chunk_overlap": config.chunk_overlap,
         "chunking_strategy": config.chunking_strategy,
         "chunker_version": 1 if config.chunking_strategy == "paragraph-v1" else 2,
-        "tokenizer_version": "kiwi-pos-v1",
+        "tokenizer_version": "kiwi-pos-v2-userdict",
         "scope_config_hash": config.scope_hash(),
     }
     if config.engine == "onnx":
