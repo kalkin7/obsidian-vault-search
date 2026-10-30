@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.68";
+var BACKEND_VERSION = "0.1.69";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -3108,7 +3108,8 @@ var LLM_PROVIDER_DEFAULTS = {
   },
   "opencode-go": {
     name: "OpenCode Go",
-    model: "deepseek-v4-flash",
+    // OpenCode Go renamed this catalog entry (deepseek-v4-flash is retired).
+    model: "deepseek-v4.1-flash",
     env: "OPENCODE_GO_API_KEY"
   },
   deepseek: {
@@ -3124,12 +3125,28 @@ var LLM_SECRET_IDS = {
 };
 var LLM_MODEL_ENDPOINTS = {
   openai: "https://api.openai.com/v1/models",
-  "opencode-go": "https://opencode.ai/zen/go/v1/models",
+  // The Go gateway moved from /zen/go to /inference/go (the old path still
+  // resolves, but the documented base URL is the former).
+  "opencode-go": "https://opencode.ai/inference/go/v1/models",
   deepseek: "https://api.deepseek.com/models"
 };
+var LLM_CHAT_ENDPOINTS = {
+  openai: "https://api.openai.com/v1/responses",
+  "opencode-go": "https://opencode.ai/inference/go/openai/v1/chat/completions",
+  deepseek: "https://api.deepseek.com/chat/completions"
+};
+var LLM_CLIENT_USER_AGENT = "obsidian-vault-search (Obsidian plugin)";
+var RETIRED_MODEL_ALIASES = {
+  "deepseek-v4-flash": "deepseek-v4.1-flash"
+};
+function migrateModelId(model) {
+  const trimmed = model.trim();
+  return RETIRED_MODEL_ALIASES[trimmed] || trimmed;
+}
 var REASONING_EFFORT_LEVELS = {
   "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
   "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
+  "deepseek-v4.1-flash": ["none", "low", "high", "max"],
   "deepseek-v4-flash": ["none", "low", "high", "max"],
   "deepseek-v4-pro": ["none", "low", "high", "max"],
   "glm-5": ["none", "low", "high", "max"],
@@ -3473,9 +3490,45 @@ function mergeProviderEnvironment(inherited, providerValues) {
   Object.assign(environment, providerValues);
   return environment;
 }
+function createSessionId() {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi && typeof cryptoApi.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+  return `vault-search-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+function readErrorBody(response) {
+  try {
+    const parsed = response.json;
+    if (parsed && typeof parsed === "object" && Object.keys(parsed).length) {
+      return parsed;
+    }
+  } catch {
+  }
+  try {
+    if (typeof response.text === "string" && response.text.trim()) {
+      return JSON.parse(response.text);
+    }
+  } catch {
+  }
+  return null;
+}
+function errorDetail(response) {
+  const data = readErrorBody(response);
+  const root = data || {};
+  const error = root.error ?? root;
+  const parts = [error?.type, error?.message, root.message].filter((part) => typeof part === "string" && !!part.trim()).map((part) => part.trim());
+  return parts.join(": ") || `HTTP ${response.status}`;
+}
 async function validateProviderApiKey(provider, apiKey) {
   const defaults = LLM_PROVIDER_DEFAULTS[provider];
-  const url = provider === "openai" ? "https://api.openai.com/v1/responses" : LLM_MODEL_ENDPOINTS[provider].replace(/\/models$/, "/chat/completions");
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    "User-Agent": LLM_CLIENT_USER_AGENT
+  };
+  if (provider === "opencode-go") {
+    headers["x-opencode-session"] = createSessionId();
+  }
   const body = provider === "openai" ? JSON.stringify({
     model: defaults.model,
     input: "hi",
@@ -3487,18 +3540,31 @@ async function validateProviderApiKey(provider, apiKey) {
   });
   try {
     const response = await (0, import_obsidian.requestUrl)({
-      url,
+      url: LLM_CHAT_ENDPOINTS[provider],
       method: "POST",
       contentType: "application/json",
-      headers: { Authorization: `Bearer ${apiKey}` },
+      headers,
       body,
       throw: false
     });
-    if (response.status === 401 || response.status === 403) return "invalid";
-    if (response.status >= 200 && response.status < 400) return "valid";
-    return "unverified";
-  } catch {
-    return "unverified";
+    const detail = errorDetail(response);
+    if (response.status === 401 || response.status === 403) {
+      const lowered = detail.toLowerCase();
+      const notCredential = lowered.includes("session") || lowered.includes("1010") || lowered.includes("cloudflare");
+      return notCredential ? { status: "rejected", detail } : { status: "invalid", detail };
+    }
+    if (response.status >= 200 && response.status < 400) {
+      return { status: "valid", detail: "" };
+    }
+    if (response.status === 400 || response.status === 404 || response.status === 422) {
+      return { status: "rejected", detail };
+    }
+    return { status: "unverified", detail };
+  } catch (error) {
+    return {
+      status: "unverified",
+      detail: error instanceof Error ? error.message : ""
+    };
   }
 }
 
@@ -6840,12 +6906,14 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         }
         button.setDisabled(true);
         try {
-          const status = await validateProviderApiKey(targetProvider, key);
+          const probe = await validateProviderApiKey(targetProvider, key);
           let message;
-          if (status === "valid") {
+          if (probe.status === "valid") {
             message = `${targetProviderInfo.name} \uD0A4\uAC00 \uC720\uD6A8\uD569\uB2C8\uB2E4.`;
-          } else if (status === "invalid") {
+          } else if (probe.status === "invalid") {
             message = `${targetProviderInfo.name}\uAC00 \uC774 \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uD655\uC778\uD574 \uC8FC\uC138\uC694.`;
+          } else if (probe.status === "rejected") {
+            message = `${targetProviderInfo.name} \uAC8C\uC774\uD2B8\uC6E8\uC774\uAC00 \uC694\uCCAD\uC744 \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4: ${probe.detail}. \uD0A4 \uC790\uCCB4\uB294 \uC720\uD6A8\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4(\uBAA8\uB378/\uB9AC\uC804/\uC138\uC158 \uC124\uC815 \uD655\uC778). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
           } else {
             message = `${targetProviderInfo.name} \uD0A4 \uC778\uC99D\uC744 \uD655\uC778\uD560 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4 (\uB124\uD2B8\uC6CC\uD06C/provider \uC0C1\uD0DC). \uC800\uC7A5\uC740 \uAC00\uB2A5\uD569\uB2C8\uB2E4.`;
           }
@@ -10565,6 +10633,7 @@ function normalizeFavoriteModels(raw, fallbackProvider) {
       }
     }
     if (!model) continue;
+    model = migrateModelId(model);
     const key = `${provider}::${model}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -10757,8 +10826,8 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     }
     if (!(this.settings.answerProvider in { openai: true, "opencode-go": true, deepseek: true }))
       this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
-    this.settings.answerModel = String(
-      this.settings.answerModel || DEFAULT_SETTINGS.answerModel
+    this.settings.answerModel = migrateModelId(
+      String(this.settings.answerModel || DEFAULT_SETTINGS.answerModel)
     );
     if (!["auto", "none", "low", "medium", "high", "xhigh", "max"].includes(
       this.settings.answerReasoningEffort
@@ -10855,8 +10924,8 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       if (this.backend.status.state !== "stopped") await this.backend.restart();
       return;
     }
-    const status = await validateProviderApiKey(provider, secret);
-    if (status === "invalid") {
+    const probe = await validateProviderApiKey(provider, secret);
+    if (probe.status === "invalid") {
       throw new Error(
         `${LLM_PROVIDER_DEFAULTS[provider].name}\uAC00 \uC774 API \uD0A4\uB97C \uAC70\uBD80\uD588\uC2B5\uB2C8\uB2E4. \uD0A4\uB97C \uB2E4\uC2DC \uBCF5\uC0AC\uD558\uAC70\uB098 provider \uCF58\uC194\uC5D0\uC11C \uAD6C\uB3C5/\uD0A4 \uC0C1\uD0DC\uB97C \uD655\uC778\uD574 \uC8FC\uC138\uC694.`
       );

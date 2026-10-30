@@ -15,6 +15,7 @@ import {
   LLM_MODEL_ENDPOINTS,
   LLM_PROVIDER_DEFAULTS,
   MAX_MCP_URL_CHARS,
+  migrateModelId,
   reasoningEffortLevels,
   VIEW_TYPE_VAULT_AI_SEARCH,
 } from "./constants";
@@ -101,6 +102,7 @@ function normalizeFavoriteModels(
       }
     }
     if (!model) continue;
+    model = migrateModelId(model);
     const key = `${provider}::${model}`;
     if (!seen.has(key)) {
       seen.add(key);
@@ -320,8 +322,8 @@ export default class VaultSearchPlugin extends Plugin {
       )
     )
       this.settings.answerProvider = DEFAULT_SETTINGS.answerProvider;
-    this.settings.answerModel = String(
-      this.settings.answerModel || DEFAULT_SETTINGS.answerModel,
+    this.settings.answerModel = migrateModelId(
+      String(this.settings.answerModel || DEFAULT_SETTINGS.answerModel),
     );
     if (
       !["auto", "none", "low", "medium", "high", "xhigh", "max"].includes(
@@ -441,9 +443,10 @@ export default class VaultSearchPlugin extends Plugin {
     }
     // Probe the real chat endpoint before saving: the models endpoint does
     // not validate keys, so a definitive 401/403 here is the only reliable
-    // way to catch a wrong or expired key at save time.
-    const status = await validateProviderApiKey(provider, secret);
-    if (status === "invalid") {
+    // way to catch a wrong or expired key at save time. A non-auth gateway
+    // refusal (retired model, region block) must not block saving.
+    const probe = await validateProviderApiKey(provider, secret);
+    if (probe.status === "invalid") {
       throw new Error(
         `${LLM_PROVIDER_DEFAULTS[provider].name}가 이 API 키를 거부했습니다. ` +
           "키를 다시 복사하거나 provider 콘솔에서 구독/키 상태를 확인해 주세요.",

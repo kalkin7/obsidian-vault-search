@@ -69,27 +69,50 @@ describe("LLM secrets", () => {
     ).toEqual({ OPENAI_API_KEY: "", OTHER_ENV: "kept" });
   });
 
-  it("rejects a key the provider answers 401 to (real chat endpoint probe)", async () => {
+  it("probes the Go chat endpoint with a routing session header", async () => {
     mockRequestUrl.mockResolvedValue(response(401));
-    expect(await validateProviderApiKey("opencode-go", "bad-key")).toBe(
-      "invalid",
-    );
+    const probe = await validateProviderApiKey("opencode-go", "bad-key");
+    expect(probe.status).toBe("invalid");
     const call = mockRequestUrl.mock.calls[0][0] as {
       url: string;
       headers: Record<string, string>;
+      body: string;
     };
-    expect(call.url).toBe("https://opencode.ai/zen/go/v1/chat/completions");
+    expect(call.url).toBe(
+      "https://opencode.ai/inference/go/openai/v1/chat/completions",
+    );
     expect(call.headers.Authorization).toBe("Bearer bad-key");
+    // OpenCode Go rejects requests without this header before checking the key.
+    expect(call.headers["x-opencode-session"]).toBeTruthy();
+    expect(call.headers["User-Agent"]).toContain("obsidian-vault-search");
+    expect(JSON.parse(call.body).model).toBe("deepseek-v4.1-flash");
   });
 
   it("returns valid on success and unverified when the provider cannot be reached", async () => {
     mockRequestUrl.mockResolvedValue(response(200));
-    expect(await validateProviderApiKey("deepseek", "good-key")).toBe("valid");
-    // A non-2xx/3xx status (or a network failure) must not block saving — it
+    expect((await validateProviderApiKey("deepseek", "good-key")).status).toBe(
+      "valid",
+    );
+    // A transient status (or a network failure) must not block saving — it
     // reports "unverified" instead of claiming the key is invalid.
     mockRequestUrl.mockResolvedValue(response(503));
-    expect(await validateProviderApiKey("opencode-go", "maybe-key")).toBe(
-      "unverified",
-    );
+    expect(
+      (await validateProviderApiKey("opencode-go", "maybe-key")).status,
+    ).toBe("unverified");
+  });
+
+  it("distinguishes a gateway refusal (retired model) from an invalid key", async () => {
+    mockRequestUrl.mockResolvedValue({
+      ...(response(400) as Record<string, unknown>),
+      text: JSON.stringify({
+        error: {
+          type: "server_error",
+          message: "Upstream request failed: Model is unavailable.",
+        },
+      }),
+    });
+    const probe = await validateProviderApiKey("opencode-go", "good-key");
+    expect(probe.status).toBe("rejected");
+    expect(probe.detail).toContain("Model is unavailable");
   });
 });

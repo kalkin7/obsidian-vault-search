@@ -3,7 +3,7 @@ import type { LLMProviderId, VaultSearchSettings } from "./types";
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-export const BACKEND_VERSION = "0.1.68";
+export const BACKEND_VERSION = "0.1.69";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
 /** Bounds mirrored by the Python side (plan §6.2/§6.3). */
@@ -119,7 +119,8 @@ export const LLM_PROVIDER_DEFAULTS = {
   },
   "opencode-go": {
     name: "OpenCode Go",
-    model: "deepseek-v4-flash",
+    // OpenCode Go renamed this catalog entry (deepseek-v4-flash is retired).
+    model: "deepseek-v4.1-flash",
     env: "OPENCODE_GO_API_KEY",
   },
   deepseek: {
@@ -137,9 +138,33 @@ export const LLM_SECRET_IDS = {
 
 export const LLM_MODEL_ENDPOINTS = {
   openai: "https://api.openai.com/v1/models",
-  "opencode-go": "https://opencode.ai/zen/go/v1/models",
+  // The Go gateway moved from /zen/go to /inference/go (the old path still
+  // resolves, but the documented base URL is the former).
+  "opencode-go": "https://opencode.ai/inference/go/v1/models",
   deepseek: "https://api.deepseek.com/models",
 } as const;
+
+/** Chat endpoints probed to validate a key. The models endpoint does not check
+ *  credentials, so a real completion request is the only reliable proof. */
+export const LLM_CHAT_ENDPOINTS = {
+  openai: "https://api.openai.com/v1/responses",
+  "opencode-go": "https://opencode.ai/inference/go/openai/v1/chat/completions",
+  deepseek: "https://api.deepseek.com/chat/completions",
+} as const;
+
+/** Sent so gateways can identify the client instead of a generic HTTP stack. */
+export const LLM_CLIENT_USER_AGENT = "obsidian-vault-search (Obsidian plugin)";
+
+/** OpenCode Go dropped `deepseek-v4-flash`; saved settings keep the old id
+ *  until they are migrated, which would fail with "Model is unavailable". */
+export const RETIRED_MODEL_ALIASES: Record<string, string> = {
+  "deepseek-v4-flash": "deepseek-v4.1-flash",
+};
+
+export function migrateModelId(model: string): string {
+  const trimmed = model.trim();
+  return RETIRED_MODEL_ALIASES[trimmed] || trimmed;
+}
 
 /** Reasoning-effort levels each model supports.
  *
@@ -163,6 +188,7 @@ export const LLM_MODEL_ENDPOINTS = {
 const REASONING_EFFORT_LEVELS: Record<string, readonly string[]> = {
   "gpt-5.6-luna": ["none", "low", "medium", "high", "xhigh", "max"],
   "gpt-5.6-terra": ["none", "low", "medium", "high", "xhigh", "max"],
+  "deepseek-v4.1-flash": ["none", "low", "high", "max"],
   "deepseek-v4-flash": ["none", "low", "high", "max"],
   "deepseek-v4-pro": ["none", "low", "high", "max"],
   "glm-5": ["none", "low", "high", "max"],

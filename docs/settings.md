@@ -95,6 +95,19 @@ and reaches the sidecar process only as an environment variable it sets at
 startup; a host-process key can never leak in (provider env vars are
 unconditionally overwritten from the stored secrets).
 
+- **OpenCode Go** — the Go gateway moved to
+  `https://opencode.ai/inference/go/...`, requires an `x-opencode-session`
+  header on chat requests (it rejects them with HTTP 400 `MissingSessionID`
+  before checking the key), and renamed `deepseek-v4-flash` to
+  `deepseek-v4.1-flash`. The plugin sends a session id per conversation and
+  migrates the retired model id on load. DeepSeek V4.x models also require
+  **Settings › Privacy › Regions › Global** in the OpenCode console; otherwise
+  the gateway answers `Model is unavailable`.
+- **Key test** — the settings **테스트** button calls the real chat endpoint
+  with a one-token prompt. A 401/403 reports a rejected key; a 400/404/422
+  reports a gateway refusal (retired model, region block) with the provider
+  message; only network/5xx results show the "확인할 수 없습니다" notice.
+
 - **Agentic (deep) answers** — every question runs an agent loop: the model can
   call `search` (hybrid, top-40), `read` (a vault file — scoped to the
   include/exclude globs, `../` and out-of-vault symlinks rejected), and `grep`

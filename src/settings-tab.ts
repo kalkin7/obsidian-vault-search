@@ -245,12 +245,14 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           }
           button.setDisabled(true);
           try {
-            const status = await validateProviderApiKey(targetProvider, key);
+            const probe = await validateProviderApiKey(targetProvider, key);
             let message: string;
-            if (status === "valid") {
+            if (probe.status === "valid") {
               message = `${targetProviderInfo.name} 키가 유효합니다.`;
-            } else if (status === "invalid") {
+            } else if (probe.status === "invalid") {
               message = `${targetProviderInfo.name}가 이 키를 거부했습니다. 키를 다시 확인해 주세요.`;
+            } else if (probe.status === "rejected") {
+              message = `${targetProviderInfo.name} 게이트웨이가 요청을 거부했습니다: ${probe.detail}. 키 자체는 유효할 수 있습니다(모델/리전/세션 설정 확인). 저장은 가능합니다.`;
             } else {
               message = `${targetProviderInfo.name} 키 인증을 확인할 수 없습니다 (네트워크/provider 상태). 저장은 가능합니다.`;
             }

@@ -10,9 +10,23 @@ import socket
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlparse
+
+from vault_search import __version__
+
+# A browser-like User-Agent is required: some gateways (e.g. OpenCode Go behind
+# Cloudflare) return 403 error 1010 for the default "Python-urllib/3.x"
+# signature even with a perfectly valid key. The product token at the end keeps
+# the client identifiable, which the Go gateway asks for.
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36 "
+    f"obsidian-vault-search/{__version__}"
+)
 
 
 def _error_snippet(exc: urllib.error.URLError) -> str:
@@ -23,6 +37,27 @@ def _error_snippet(exc: urllib.error.URLError) -> str:
     with contextlib.suppress(Exception):
         return exc.read(200).decode("utf-8", errors="replace")
     return ""
+
+
+def _error_message(exc: urllib.error.URLError) -> str:
+    """Extract a short provider error message so gateway refusals (retired
+    model id, missing routing header, region block) are diagnosable instead of
+    a bare "HTTP 400"."""
+    snippet = _error_snippet(exc)
+    if not snippet:
+        return ""
+    with contextlib.suppress(Exception):
+        value = json.loads(snippet)
+        if isinstance(value, dict):
+            error = value.get("error")
+            if isinstance(error, dict):
+                message = error.get("message")
+                if isinstance(message, str) and message.strip():
+                    return message.strip()[:200]
+            message = value.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:200]
+    return snippet.strip()[:200]
 
 
 def _normalize_effort(value: str) -> str:
@@ -323,12 +358,20 @@ class LLMProvider(Protocol):
 
 class _BaseProvider:
     def __init__(
-        self, provider_id: str, model: str, api_key: str | None, endpoint: str
+        self,
+        provider_id: str,
+        model: str,
+        api_key: str | None,
+        endpoint: str,
+        session_id: str = "",
     ):
         self.provider_id = provider_id
         self.model = model
         self._api_key = api_key
         self.endpoint = endpoint
+        # Gateways such as OpenCode Go route per conversation and reject
+        # requests that arrive without a stable session id.
+        self.session_id = session_id
 
     def _request(
         self, payload: dict[str, Any], timeout_seconds: float
@@ -338,22 +381,18 @@ class _BaseProvider:
                 "LLM_API_KEY_MISSING", f"{self.provider_id} API key is not configured"
             )
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        # A browser-like User-Agent is required: some gateways (e.g. OpenCode
-        # Zen behind Cloudflare) return 403 error 1010 for the default
-        # "Python-urllib/3.x" signature even with a perfectly valid key.
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": USER_AGENT,
+        }
+        if self.session_id:
+            headers["x-opencode-session"] = self.session_id
         request = urllib.request.Request(
             self.endpoint,
             data=data,
             method="POST",
-            headers={
-                "Authorization": f"Bearer {self._api_key}",
-                "Content-Type": "application/json",
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/126.0.0.0 Safari/537.36"
-                ),
-            },
+            headers=headers,
         )
         host = _safe_host(self.endpoint)
         deadline = time.monotonic() + max(0.0, timeout_seconds)
@@ -544,9 +583,11 @@ class _BaseProvider:
                             "Provider is temporarily unavailable",
                             http_code=code,
                         ) from exc
+                    detail = _error_message(exc)
                     raise ProviderError(
                         "LLM_BAD_RESPONSE",
-                        f"Provider rejected the request (HTTP {code})",
+                        f"Provider rejected the request (HTTP {code})"
+                        + (f": {detail}" if detail else ""),
                         http_code=code,
                     ) from exc
                 # Non-HTTP URLError — check retryable transport errors
@@ -1125,7 +1166,8 @@ def create_provider(provider_id: str, model: str) -> LLMProvider:
             provider_id,
             model,
             os.environ.get("OPENCODE_GO_API_KEY"),
-            "https://opencode.ai/zen/go/v1/chat/completions",
+            "https://opencode.ai/inference/go/openai/v1/chat/completions",
+            session_id=f"vault-search-{uuid.uuid4()}",
         )
     if provider_id == "deepseek":
         return OpenAICompatibleProvider(

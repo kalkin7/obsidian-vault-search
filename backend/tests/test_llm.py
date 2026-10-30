@@ -87,6 +87,58 @@ def test_provider_maps_cloudflare_403_to_unavailable_not_auth(monkeypatch):
     assert "bot protection" in exc.value.message
 
 
+def test_go_provider_sends_session_header_and_current_base_url(monkeypatch):
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout=0):
+        captured["headers"] = {k.lower(): v for k, v in request.headers.items()}
+        captured["url"] = request.full_url
+        return _FakeResponse({"choices": [{"message": {"content": "hi"}}], "model": "m"})
+
+    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-test")
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    from vault_search.llm import create_provider
+
+    provider = create_provider("opencode-go", "deepseek-v4.1-flash")
+    provider.complete(
+        system="s",
+        messages=[{"role": "user", "content": "q"}],
+        max_output_tokens=10,
+        timeout_seconds=5.0,
+    )
+    assert (
+        captured["url"]
+        == "https://opencode.ai/inference/go/openai/v1/chat/completions"
+    )
+    # Go rejects chat requests without a session id before checking the key.
+    assert captured["headers"]["x-opencode-session"].startswith("vault-search-")
+    assert "obsidian-vault-search/" in captured["headers"]["user-agent"]
+
+
+def test_provider_reports_gateway_refusal_detail(monkeypatch):
+    def fake_urlopen(request, timeout=0):
+        raise urllib.error.HTTPError(
+            "https://x",
+            400,
+            "Bad Request",
+            Message(),
+            io.BytesIO(
+                b'{"error":{"message":"Upstream request failed: Model is unavailable."}}'
+            ),
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(ProviderError) as exc:
+        _provider().complete(
+            system="s",
+            messages=[{"role": "user", "content": "q"}],
+            max_output_tokens=10,
+            timeout_seconds=5.0,
+        )
+    assert exc.value.code == "LLM_BAD_RESPONSE"
+    assert "Model is unavailable" in exc.value.message
+
+
 def test_provider_accepts_openai_content_parts_list(monkeypatch):
     def fake_urlopen(request, timeout=0):
         return _FakeResponse(
