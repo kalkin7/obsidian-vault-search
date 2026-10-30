@@ -586,7 +586,9 @@ def test_standalone_idle_exit_suppressed_during_rebuild(tmp_path: Path):
                 process.wait(timeout=5)
 
 
-def test_cli_spawn_standalone_and_attach(tmp_path: Path):
+def test_cli_spawn_standalone_and_attach(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     vault = tmp_path / "vault"
     (vault / ".obsidian").mkdir(parents=True)
     (vault / "notes").mkdir()
@@ -594,6 +596,10 @@ def test_cli_spawn_standalone_and_attach(tmp_path: Path):
         "# 전기차 충전기\n\n전기차 충전기 설치 경과와 안전 검토 내용입니다.",
         encoding="utf-8",
     )
+    # Keep the default data dir inside this test's tmp tree. pytest recycles
+    # `pytest-N` temp directory names, so a hash of the vault path can collide
+    # with a data dir left by an earlier session and make `index.mkdir` fail.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "localappdata"))
     data = default_data_dir(vault)
     index = data / "index"
     index.mkdir(parents=True)
