@@ -14,7 +14,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 from .agent_prompt import build_agent_system_prompt, wrap_skill_instructions
 from .agent_tools import (
@@ -38,6 +38,23 @@ MAX_TOTAL_TOOL_CALLS = 30
 MAX_TOOL_CALLS_PER_TURN = 6
 MAX_ACTIVE_RUNS = 4
 APPROVAL_TTL_SECONDS = 600.0
+
+
+class LiveRun(Protocol):
+    """Surface the run registry and the service need from a live run.
+
+    ``StructuredAgentRun`` (native tool calling) and ``LegacyDeepRun`` (the
+    text-tool loop) both implement it, so ``answer_start``/``answer_continue``
+    and ``answer_status`` treat both answer paths identically.
+    """
+
+    state: RunState
+
+    def advance(self) -> dict[str, Any]: ...
+
+    def resume(self, decisions: list[dict[str, Any]]) -> dict[str, Any]: ...
+
+    def _call_descriptor(self, pending: PendingCall) -> dict[str, Any]: ...
 
 
 class AgentRunError(Exception):
@@ -127,6 +144,8 @@ class StructuredAgentRun:
         max_context_chars: int,
         max_output_tokens: int,
         timeout_seconds: float,
+        max_turns: int | None = None,
+        max_tool_calls_per_turn: int | None = None,
     ) -> None:
         self.state = state
         self.system_prompt = system_prompt
@@ -141,6 +160,17 @@ class StructuredAgentRun:
         self.max_context_chars = min(32000, max(8000, max_context_chars))
         self.max_output_tokens = max_output_tokens
         self.timeout_seconds = timeout_seconds
+        # User-configurable caps (defaults stay the module constants so tests
+        # that monkeypatch them keep working).
+        self.max_turns = max(1, MAX_TURNS if max_turns is None else int(max_turns))
+        self.max_tool_calls_per_turn = max(
+            1,
+            (
+                MAX_TOOL_CALLS_PER_TURN
+                if max_tool_calls_per_turn is None
+                else int(max_tool_calls_per_turn)
+            ),
+        )
         # Vault evidence accumulated during this run ([S#]-addressable).
         self.sources: list[dict[str, Any]] = []
         self.source_chars = 0
@@ -447,7 +477,7 @@ class StructuredAgentRun:
         while True:
             if self.state.cancelled:
                 raise AgentRunError("ANSWER_CANCELLED", "run was cancelled")
-            if self.state.turns >= MAX_TURNS:
+            if self.state.turns >= self.max_turns:
                 return self._finalize_forced()
             try:
                 turn = self._complete_turn(
@@ -473,17 +503,17 @@ class StructuredAgentRun:
             # Calls beyond the per-turn cap must never dangle: the assistant
             # transcript keeps every provider call, so each one needs exactly
             # one tool result (fix §7).
-            batch = turn.tool_calls[:MAX_TOOL_CALLS_PER_TURN]
+            batch = turn.tool_calls[: self.max_tool_calls_per_turn]
             overflow_results: list[tuple[ProviderToolCall, NormalizedToolResult]] = [
                 (
                     call,
                     tool_error_result(
                         "TOOL_BUDGET_EXHAUSTED",
-                        f"more than {MAX_TOOL_CALLS_PER_TURN} tool calls "
+                        f"more than {self.max_tool_calls_per_turn} tool calls "
                         "in one turn were not executed",
                     ),
                 )
-                for call in turn.tool_calls[MAX_TOOL_CALLS_PER_TURN:]
+                for call in turn.tool_calls[self.max_tool_calls_per_turn :]
             ]
             asks: list[PendingCall] = []
             auto: list[tuple[ProviderToolCall, NormalizedToolResult]] = []
@@ -715,7 +745,7 @@ class AgentRunRegistry:
     """
 
     def __init__(self, max_active: int = MAX_ACTIVE_RUNS) -> None:
-        self._runs: dict[str, tuple[StructuredAgentRun, float]] = {}
+        self._runs: dict[str, tuple[LiveRun, float]] = {}
         self._max_active = max_active
         self._graveyard: dict[str, float] = {}
         self._graveyard_ttl_seconds = APPROVAL_TTL_SECONDS
@@ -764,7 +794,7 @@ class AgentRunRegistry:
                 return True
             return self._is_graveyarded_locked(run_id)
 
-    def add(self, run: StructuredAgentRun) -> None:
+    def add(self, run: LiveRun) -> None:
         with self._lock:
             self.sweep_expired_locked()
             run_id = run.state.run_id
@@ -783,7 +813,7 @@ class AgentRunRegistry:
                 )
             self._runs[run_id] = (run, time.monotonic())
 
-    def get(self, run_id: str) -> StructuredAgentRun:
+    def get(self, run_id: str) -> LiveRun:
         with self._lock:
             entry = self._runs.get(run_id)
             if entry is not None and time.monotonic() - entry[1] > APPROVAL_TTL_SECONDS:
@@ -812,7 +842,7 @@ class AgentRunRegistry:
             if entry is not None:
                 self._runs[run_id] = (entry[0], time.monotonic())
 
-    def remove(self, run_id: str) -> StructuredAgentRun | None:
+    def remove(self, run_id: str) -> LiveRun | None:
         with self._lock:
             entry = self._runs.pop(run_id, None)
             return entry[0] if entry else None

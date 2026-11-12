@@ -356,6 +356,22 @@ export default class VaultSearchPlugin extends Plugin {
           DEFAULT_SETTINGS.answerTimeoutSeconds,
       ),
     );
+    this.settings.answerDeepMaxTurns = Math.max(
+      1,
+      Math.min(
+        30,
+        Number(this.settings.answerDeepMaxTurns) ||
+          DEFAULT_SETTINGS.answerDeepMaxTurns,
+      ),
+    );
+    this.settings.answerDeepMaxToolCallsPerTurn = Math.max(
+      1,
+      Math.min(
+        16,
+        Number(this.settings.answerDeepMaxToolCallsPerTurn) ||
+          DEFAULT_SETTINGS.answerDeepMaxToolCallsPerTurn,
+      ),
+    );
     const mcpMigration = migrateMcpHttpUrls(this.app, this.settings);
     const failedIds = new Set(mcpMigration.failedServers.map((s) => s.id));
     if (mcpMigration.failedServers.length > 0) {

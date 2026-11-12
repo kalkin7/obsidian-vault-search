@@ -10,7 +10,7 @@ import socketserver
 import sys
 import threading
 import time
-from typing import Any
+from typing import Any, cast
 
 from . import __version__
 from .config import load_config
@@ -53,11 +53,25 @@ _PARAM_VALIDATORS = {
     "set_mcp_secrets": validate_mcp_secrets_params,
 }
 
-try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
-except Exception:
-    pass
+
+def _configure_stream_encoding() -> None:
+    """Best-effort UTF-8 for the console streams.
+
+    ``TextIO.reconfigure`` exists on the concrete stream at runtime but is
+    absent from the TextIO type, so it is resolved through ``getattr`` (a
+    missing or failing reconfigure must never stop the sidecar).
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
+
+_configure_stream_encoding()
 
 
 class BackendTask:
@@ -93,7 +107,7 @@ class RequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         request_id: Any = None
         method: str | None = None
-        server: BackendServer | None = None  # type: ignore[assignment]
+        server: BackendServer | None = None
         incremented = False
         try:
             line = self.rfile.readline(MAX_MESSAGE_BYTES + 1)
@@ -118,7 +132,9 @@ class RequestHandler(socketserver.StreamRequestHandler):
                     method=method,
                 )
                 return
-            server = self.server  # type: ignore[assignment]
+            # BaseRequestHandler.server is typed as BaseServer; the concrete
+            # instance is always the BackendServer that created this handler.
+            server = cast(BackendServer, self.server)
             if not secrets.compare_digest(str(payload.get("token", "")), server.token):
                 self._send(
                     False,
@@ -331,7 +347,11 @@ def run_server(args: argparse.Namespace) -> int:
     token = secrets.token_urlsafe(32)
     service = SearchService(config, emit)
     server = BackendServer(("127.0.0.1", 0), RequestHandler, service, token)
-    host, port = server.server_address
+    # server_address is a tuple whose arity depends on the address family
+    # (AF_INET: (host, port)); index access keeps it family-agnostic.
+    address = server.server_address
+    host = str(address[0])
+    port = address[1]
     runtime = {
         "runtime_schema": 1,
         "protocol_version": PROTOCOL_VERSION,

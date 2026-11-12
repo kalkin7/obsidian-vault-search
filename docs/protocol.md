@@ -156,7 +156,9 @@ history, logs, or responses beyond the approval card itself.
   "decisions": [
     { "call_id": "...", "decision": "allow_once" },
     { "call_id": "...", "decision": "allow_session" },
-    { "call_id": "...", "decision": "reject" }
+    { "call_id": "...", "decision": "reject" },
+    { "call_id": "turn_budget", "decision": "extend" },
+    { "call_id": "turn_budget", "decision": "answer_now" }
   ]
 }
 ```
@@ -166,6 +168,15 @@ missing ids reject the whole request (`ANSWER_INVALID_PARAMS`). `reject`
 feeds the model a structured `USER_REJECTED_TOOL_CALL` result and the loop
 continues. `allow_session` grants the tool alias for the current conversation
 only. A continue may return another `approval_required` or a `complete`.
+
+`turn_budget` is the reserved call id of the deep-answer turn-budget boundary
+(the text-tool loop without MCP/skills). When the configured investigation
+budget is spent the run pauses with that single pending call, and `extend`
+(one more turn budget) or `answer_now` (answer from the gathered `[S#]`
+sources) resumes it. The two vocabularies never mix: an `extend`/`answer_now`
+decision on an MCP pause, or a tool decision on `turn_budget`, is rejected as
+`INVALID_DECISION`.
+
 Runs expire after 10 minutes (`RUN_EXPIRED`), at most 4 runs are active
 (`TOO_MANY_RUNS`), and every provider call id executes at most once even
 across duplicate continues.

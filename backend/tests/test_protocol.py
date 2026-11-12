@@ -21,11 +21,14 @@ def test_answer_contract_is_normalized_and_bounded():
     assert value["max_context_chars"] == 24000
 
 
-@pytest.mark.parametrize("params", [
-    {"query": ""},
-    {"query": "x", "top_k": 13},
-    {"query": "x", "conversation": [{"role": "user", "content": "x"}]},
-])
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"query": ""},
+        {"query": "x", "top_k": 13},
+        {"query": "x", "conversation": [{"role": "user", "content": "x"}]},
+    ],
+)
 def test_answer_contract_rejects_invalid_params(params):
     with pytest.raises(ProtocolError):
         validate_answer_params(params)
@@ -81,7 +84,6 @@ def test_answer_continue_requires_full_decision_coverage():
     assert value["run_id"] == "run-1"
     for params in (
         {"run_id": "", "decisions": []},
-
         {"run_id": "r"},
         {"run_id": "r", "decisions": []},
         {
@@ -98,6 +100,19 @@ def test_answer_continue_requires_full_decision_coverage():
             validate_answer_continue_params(params)
 
 
+def test_answer_continue_accepts_deep_budget_decisions():
+    # The deep-answer turn-budget boundary carries its own decision vocabulary;
+    # the MCP tool vocabulary keeps validating unchanged.
+    for choice in ("extend", "answer_now"):
+        value = validate_answer_continue_params(
+            {
+                "run_id": "run-1",
+                "decisions": [{"call_id": "turn_budget", "decision": choice}],
+            }
+        )
+        assert value["decisions"] == [{"call_id": "turn_budget", "decision": choice}]
+
+
 def test_answer_cancel_requires_run_id():
     assert validate_answer_cancel_params({"run_id": " r "}) == {"run_id": "r"}
     with pytest.raises(ProtocolError):
@@ -107,9 +122,7 @@ def test_answer_cancel_requires_run_id():
 
 
 def test_mcp_secrets_bounds_and_shape():
-    value = validate_mcp_secrets_params(
-        {"servers": {"srv-1": {"TOKEN": "abc"}}}
-    )
+    value = validate_mcp_secrets_params({"servers": {"srv-1": {"TOKEN": "abc"}}})
     assert value["servers"] == {"srv-1": {"TOKEN": "abc"}}
     with pytest.raises(ProtocolError):
         validate_mcp_secrets_params({"nope": {}})
@@ -118,14 +131,10 @@ def test_mcp_secrets_bounds_and_shape():
     with pytest.raises(ProtocolError):
         validate_mcp_secrets_params({"servers": {"s": {"n": "v" * (8 * 1024 + 1)}}})
     with pytest.raises(ProtocolError):
-        validate_mcp_secrets_params(
-            {"servers": {"s": {"n" * 129: "v"}}}
-        )
+        validate_mcp_secrets_params({"servers": {"s": {"n" * 129: "v"}}})
     # Aggregate payload bound: many small values exceeding 32 KiB.
     big = {
-        "servers": {
-            f"s{i}": {f"N{j}": "x" * 4000 for j in range(9)} for i in range(10)
-        }
+        "servers": {f"s{i}": {f"N{j}": "x" * 4000 for j in range(9)} for i in range(10)}
     }
     with pytest.raises(ProtocolError):
         validate_mcp_secrets_params(big)
@@ -165,7 +174,9 @@ def test_validate_mcp_secrets_params_with_http_urls():
         "https://example.com/mcp token=123",
         "https://example.com/mcp\ntoken=123",
     ):
-        with pytest.raises(ProtocolError, match="whitespace or control characters") as exc_info:
+        with pytest.raises(
+            ProtocolError, match="whitespace or control characters"
+        ) as exc_info:
             validate_mcp_secrets_params({"http_urls": {"s2": ws_url}})
         # Error must never echo the input URL
         assert "token=123" not in str(exc_info.value)
@@ -193,32 +204,66 @@ def test_validate_mcp_secrets_params_with_http_urls():
         validate_mcp_secrets_params({"servers": {"s" * 65: {}}})
 
     # Server count limits: 20 accept, 21 reject
-    assert len(validate_mcp_secrets_params({"servers": {f"s{i}": {} for i in range(20)}})["servers"]) == 20
+    assert (
+        len(
+            validate_mcp_secrets_params({"servers": {f"s{i}": {} for i in range(20)}})[
+                "servers"
+            ]
+        )
+        == 20
+    )
     with pytest.raises(ProtocolError, match="servers count exceeds limit of 20"):
         validate_mcp_secrets_params({"servers": {f"s{i}": {} for i in range(21)}})
 
     # HTTP URL count limits: 20 accept, 21 reject
-    assert len(validate_mcp_secrets_params({"http_urls": {f"s{i}": "https://example.com" for i in range(20)}})["http_urls"]) == 20
+    assert (
+        len(
+            validate_mcp_secrets_params(
+                {"http_urls": {f"s{i}": "https://example.com" for i in range(20)}}
+            )["http_urls"]
+        )
+        == 20
+    )
     with pytest.raises(ProtocolError, match="http_urls count exceeds limit of 20"):
-        validate_mcp_secrets_params({"http_urls": {f"s{i}": "https://example.com" for i in range(21)}})
+        validate_mcp_secrets_params(
+            {"http_urls": {f"s{i}": "https://example.com" for i in range(21)}}
+        )
 
     # Server union count limit: 11 stdio + 10 http = 21 unique servers -> reject
     with pytest.raises(ProtocolError, match="total server count exceeds limit of 20"):
-        validate_mcp_secrets_params({
-            "servers": {f"stdio_{i}": {} for i in range(11)},
-            "http_urls": {f"http_{i}": "https://example.com" for i in range(10)},
-        })
+        validate_mcp_secrets_params(
+            {
+                "servers": {f"stdio_{i}": {} for i in range(11)},
+                "http_urls": {f"http_{i}": "https://example.com" for i in range(10)},
+            }
+        )
 
     # Same server in both is counted once in union (10 servers duplicated across both = 10 union)
-    assert len(validate_mcp_secrets_params({
-        "servers": {f"s{i}": {} for i in range(10)},
-        "http_urls": {f"s{i}": "https://example.com" for i in range(10)},
-    })["servers"]) == 10
+    assert (
+        len(
+            validate_mcp_secrets_params(
+                {
+                    "servers": {f"s{i}": {} for i in range(10)},
+                    "http_urls": {f"s{i}": "https://example.com" for i in range(10)},
+                }
+            )["servers"]
+        )
+        == 10
+    )
 
     # Env count limits: 32 accept, 33 reject
-    assert len(validate_mcp_secrets_params({"servers": {"s1": {f"ENV_{i}": "val" for i in range(32)}}})["servers"]["s1"]) == 32
+    assert (
+        len(
+            validate_mcp_secrets_params(
+                {"servers": {"s1": {f"ENV_{i}": "val" for i in range(32)}}}
+            )["servers"]["s1"]
+        )
+        == 32
+    )
     with pytest.raises(ProtocolError, match="env count for server exceeds limit of 32"):
-        validate_mcp_secrets_params({"servers": {"s1": {f"ENV_{i}": "val" for i in range(33)}}})
+        validate_mcp_secrets_params(
+            {"servers": {"s1": {f"ENV_{i}": "val" for i in range(33)}}}
+        )
 
     # Env name with control characters
     with pytest.raises(ProtocolError, match="control characters"):
@@ -227,25 +272,38 @@ def test_validate_mcp_secrets_params_with_http_urls():
     # 32 KiB payload size boundary
     # Construct payload just below 32 KiB
     big_val = "x" * 7000
-    res_32k = validate_mcp_secrets_params({
-        "servers": {
-            "s1": {"V1": big_val, "V2": big_val, "V3": big_val, "V4": big_val}
+    res_32k = validate_mcp_secrets_params(
+        {
+            "servers": {
+                "s1": {"V1": big_val, "V2": big_val, "V3": big_val, "V4": big_val}
+            }
         }
-    })
+    )
     assert len(res_32k["servers"]["s1"]["V1"]) == 7000
 
     # Exceed 32 KiB total payload bytes
     with pytest.raises(ProtocolError, match="exceeds 32 KiB"):
-        validate_mcp_secrets_params({
-            "servers": {
-                f"s{i}": {f"KEY_{j}": "a" * 1500 for j in range(2)} for i in range(15)
+        validate_mcp_secrets_params(
+            {
+                "servers": {
+                    f"s{i}": {f"KEY_{j}": "a" * 1500 for j in range(2)}
+                    for i in range(15)
+                }
             }
-        })
+        )
 
     # Empty payloads
-    assert validate_mcp_secrets_params({"servers": {}}) == {"servers": {}, "http_urls": {}}
-    assert validate_mcp_secrets_params({"http_urls": {}}) == {"servers": {}, "http_urls": {}}
-    with pytest.raises(ProtocolError, match="'servers' or 'http_urls' object is required"):
+    assert validate_mcp_secrets_params({"servers": {}}) == {
+        "servers": {},
+        "http_urls": {},
+    }
+    assert validate_mcp_secrets_params({"http_urls": {}}) == {
+        "servers": {},
+        "http_urls": {},
+    }
+    with pytest.raises(
+        ProtocolError, match="'servers' or 'http_urls' object is required"
+    ):
         validate_mcp_secrets_params({})
 
 
@@ -255,9 +313,7 @@ def test_validate_mcp_secrets_params_with_http_urls():
 
 
 def test_answer_start_accepts_client_run_id():
-    params = validate_answer_start_params(
-        {"query": "질문", "run_id": "abc-DEF_12345"}
-    )
+    params = validate_answer_start_params({"query": "질문", "run_id": "abc-DEF_12345"})
     assert params["run_id"] == "abc-DEF_12345"
 
 

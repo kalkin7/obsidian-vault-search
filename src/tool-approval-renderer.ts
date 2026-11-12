@@ -96,6 +96,91 @@ export function renderToolApprovalCard(
   );
 }
 
+/** Turn-budget prompt for the deep-answer loop: the investigation paused at
+ *  its configured turn limit, so the user chooses between more research and
+ *  answering from what was already gathered. */
+export function renderTurnBudgetCard(
+  container: HTMLElement,
+  call: PendingToolCall,
+  callbacks: ApprovalCardCallbacks,
+): void {
+  const card = container.createDiv({ cls: "vault-tool-approval" });
+  const head = card.createDiv({ cls: "vault-tool-approval-head" });
+  const title = head.createDiv({ cls: "vault-tool-approval-title" });
+  title.createEl("span", {
+    text: "조사 한도 도달",
+    cls: "vault-tool-approval-name",
+  });
+  const badge = title.createEl("span", {
+    text: "선택 필요",
+    cls: "vault-tool-approval-badge",
+  });
+  badge.setAttribute("aria-label", "조사 계속 여부 선택 대기");
+
+  card.createDiv({
+    cls: "vault-tool-approval-description",
+    text:
+      call.description ||
+      "조사 한도에 도달했습니다. 조사를 더 할까요, 아니면 지금까지 모은 자료로 답변할까요?",
+  });
+
+  const turns = Number(call.arguments?.turns ?? 0);
+  const sources = Number(call.arguments?.sources ?? 0);
+  card.createDiv({
+    cls: "vault-tool-approval-description",
+    text: `지금까지 조사 ${turns}턴 · 근거 ${sources}건`,
+  });
+
+  const actions = card.createDiv({ cls: "vault-tool-approval-actions" });
+  let settled = false;
+  const guard = (button: HTMLButtonElement, decision: AnswerDecision) => {
+    if (settled) return;
+    settled = true;
+    for (const child of Array.from(actions.querySelectorAll("button"))) {
+      (child as HTMLButtonElement).disabled = true;
+    }
+    callbacks.onDecide(decision);
+  };
+  const extend = actions.createEl("button", {
+    text: "계속 조사",
+    cls: "mod-cta",
+    attr: {
+      type: "button",
+      "aria-label": "조사 횟수를 늘려 계속 조사합니다",
+    },
+  });
+  extend.addEventListener("click", () =>
+    guard(extend, { call_id: call.call_id, decision: "extend" }),
+  );
+  const answerNow = actions.createEl("button", {
+    text: "지금 답변",
+    attr: {
+      type: "button",
+      "aria-label": "지금까지 모은 자료로 답변합니다",
+    },
+  });
+  answerNow.addEventListener("click", () =>
+    guard(answerNow, { call_id: call.call_id, decision: "answer_now" }),
+  );
+  const cancel = actions.createEl("button", {
+    text: "취소",
+    attr: { type: "button", "aria-label": "조사와 답변을 취소합니다" },
+  });
+  cancel.addEventListener("click", () => {
+    if (settled) return;
+    settled = true;
+    for (const child of Array.from(actions.querySelectorAll("button"))) {
+      (child as HTMLButtonElement).disabled = true;
+    }
+    callbacks.onCancel();
+  });
+}
+
+/** True when a pending call is the deep-answer turn-budget prompt. */
+export function isTurnBudgetCall(call: PendingToolCall): boolean {
+  return call.call_id === "turn_budget" || call.annotations?.kind === "turn_budget";
+}
+
 /** Running state with cancel — shown between approval and completion. */
 export function renderToolRunning(
   container: HTMLElement,

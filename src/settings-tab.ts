@@ -544,6 +544,41 @@ export class VaultSearchSettingTab extends PluginSettingTab {
           );
         }),
       );
+    new Setting(parent)
+      .setName("딥 답변 조사 횟수")
+      .setDesc(
+        "1~30회. 한도에 도달하면 계속 조사할지 지금까지 모은 자료로 답변할지 묻습니다.",
+      )
+      .addText((text) =>
+        text.setValue(String(draft.answerDeepMaxTurns)).onChange((value) => {
+          draft.answerDeepMaxTurns = Math.max(
+            1,
+            Math.min(
+              30,
+              this.nonnegativeNumber(value, draft.answerDeepMaxTurns),
+            ),
+          );
+        }),
+      );
+    new Setting(parent)
+      .setName("턴당 도구 호출 수")
+      .setDesc("1~16개. 한 조사 턴에서 실행할 최대 도구 호출 수입니다.")
+      .addText((text) =>
+        text
+          .setValue(String(draft.answerDeepMaxToolCallsPerTurn))
+          .onChange((value) => {
+            draft.answerDeepMaxToolCallsPerTurn = Math.max(
+              1,
+              Math.min(
+                16,
+                this.nonnegativeNumber(
+                  value,
+                  draft.answerDeepMaxToolCallsPerTurn,
+                ),
+              ),
+            );
+          }),
+      );
 
     this.heading(parent, "AI Vault 히스토리");
     new Setting(parent)

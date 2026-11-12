@@ -30,6 +30,7 @@ from .deep_answer import (  # pyright: ignore[reportMissingImports] — resolves
     DEEP_SYSTEM_PROMPT,
     MIN_DEEP_OUTPUT_TOKENS,
     DeepAnswerEngine,
+    LegacyDeepRun,
     grep_vault,
 )
 from .errors import (
@@ -606,11 +607,16 @@ class SearchService:
             },
         }
 
-    def _deep_answer(self, params: dict[str, Any]) -> dict[str, Any]:
-        """Agentic answer: the model iteratively searches / reads / greps the
-        vault (CLI-agent quality) until it has enough evidence, then answers
-        with [S#] citations. Works with any plain chat model — tool calls
-        travel as ``TOOL: name(args)`` lines in the model text."""
+    def _build_deep_engine(
+        self, params: dict[str, Any]
+    ) -> tuple[DeepAnswerEngine, Any]:
+        """Build the text-tool loop and its provider for one deep answer.
+
+        Shared by the one-shot ``answer`` RPC and the resumable
+        ``answer_start`` path so both use identical tools, scope, and budgets.
+        The caller owns the returned engine (a paused run keeps it alive in the
+        registry until ``answer_continue``).
+        """
         if self.index_rebuild_reason:
             raise ServiceError(
                 "INDEX_REBUILD_REQUIRED",
@@ -693,7 +699,21 @@ class SearchService:
             timeout_seconds=self.config.llm_timeout_seconds,
             max_context_chars=params.get("max_context_chars")
             or self.config.llm_max_context_chars,
+            max_turns=self.config.llm_deep_max_turns,
+            max_tool_calls_per_turn=self.config.llm_deep_max_tool_calls_per_turn,
         )
+        return engine, provider
+
+    def _deep_answer(self, params: dict[str, Any]) -> dict[str, Any]:
+        """Agentic answer: the model iteratively searches / reads / greps the
+        vault (CLI-agent quality) until it has enough evidence, then answers
+        with [S#] citations. Works with any plain chat model — tool calls
+        travel as ``TOOL: name(args)`` lines in the model text.
+
+        One-shot path: it never pauses for the turn-budget prompt; it answers
+        from what it gathered instead.
+        """
+        engine, provider = self._build_deep_engine(params)
         try:
             outcome = engine.run(
                 query=params["query"],
@@ -705,34 +725,7 @@ class SearchService:
                 exc.message,
                 {"evidence": [source.evidence() for source in engine.sources]},
             ) from exc
-        sources = outcome["sources"]
-        answer, citations, warning = normalize_citations(outcome["text"], sources)
-        if not answer:
-            raise ServiceError("LLM_BAD_RESPONSE", "Provider returned an empty answer")
-        # Without any gathered evidence the model must not fall back to general
-        # knowledge: report the explicit insufficiency message (mirrors the
-        # single-shot GROUNDING_EMPTY behavior).
-        if not sources and "충분한 근거를 찾지 못" not in answer:
-            answer = "볼트에서 충분한 근거를 찾지 못했습니다."
-        if len(answer) > 32000:
-            raise ServiceError("ANSWER_TOO_LARGE", "Provider answer is too large")
-        return {
-            "answer": answer,
-            "citations": citations,
-            "evidence": [source.evidence() for source in sources],
-            "provider": provider.provider_id,
-            "model": provider.model,
-            "grounded": bool(citations),
-            "diagnostics": {
-                "deep": True,
-                "turns": outcome["turns"],
-                "tool_calls": outcome["tool_calls"],
-                "retrieved_count": len(sources),
-                "context_chars": sum(len(source.content) for source in sources),
-                "answer_chars": len(answer),
-                **({"citation_warning": warning} if warning else {}),
-            },
-        }
+        return self._assemble_deep_result(outcome, provider)
 
     # ------------------------------------------------------------------
     # API agent extensions (MCP / skills / project rules / structured runs)
@@ -970,13 +963,25 @@ class SearchService:
             # Provide common live-run metadata so answer_status returns running
             # and cancel is atomic via the shared registry.
             if isinstance(client_run_id, str) and client_run_id:
-                # Create live entry before _deep_answer so status is running
+                # Create live entry before the loop runs so answer_status reports
+                # running and cancel is atomic via the shared registry. The
+                # engine is kept alive in the run object: a run that pauses at
+                # the turn budget resumes from the same messages and sources.
+                engine, provider = self._build_deep_engine(
+                    {**params, "top_k": 12, "deep": True}
+                )
                 legacy_state = new_run_state(params["query"])
                 legacy_state.run_id = client_run_id
                 legacy_state.fingerprint = fp
-                legacy_run = type("LegacyRun", (), {"state": legacy_state})()
+                legacy_state.provider = provider
+                legacy_run = LegacyDeepRun(
+                    state=legacy_state,
+                    engine=engine,
+                    query=params["query"],
+                    conversation=list(params["conversation"]),
+                )
                 try:
-                    self.run_registry.add(legacy_run)  # type: ignore[arg-type]
+                    self.run_registry.add(legacy_run)
                 except AgentRunError as exc:
                     if exc.code == "RUN_CONFLICT":
                         term = self._get_terminal(client_run_id)
@@ -995,8 +1000,18 @@ class SearchService:
                                     "RUN_CONFLICT", "run_id fingerprint mismatch"
                                 ) from exc
                             if getattr(live.state, "pending", None):
-                                # Legacy runs have no pending, but keep for consistency
-                                return {"status": "running", "run_id": client_run_id}
+                                return {
+                                    "status": "approval_required",
+                                    "run_id": client_run_id,
+                                    "expires_at": (
+                                        datetime.now(timezone.utc)
+                                        + timedelta(seconds=600)
+                                    ).isoformat(),
+                                    "calls": [
+                                        live._call_descriptor(p)
+                                        for p in live.state.pending.values()
+                                    ],  # type: ignore
+                                }
                             return {"status": "running", "run_id": client_run_id}
                         except Exception as exc2:
                             term2 = self._get_terminal(client_run_id)
@@ -1025,15 +1040,68 @@ class SearchService:
                 if self._consume_pending_cancel(client_run_id):
                     payload = {"status": "cancelled", "run_id": client_run_id}
                     self._publish_terminal_outcome(client_run_id, payload, fp)
+                    # The terminal is authoritative; drop the live entry so the
+                    # paused engine (messages + sources) is not held for the TTL.
+                    self.run_registry.remove(client_run_id)
                     raise ServiceError("ANSWER_CANCELLED", "run was cancelled")
                 try:
-                    result = self._deep_answer(
-                        {
-                            **params,
-                            "top_k": 12,
-                            "deep": True,
-                        }
+                    outcome = legacy_run.advance()
+                    result = (
+                        self._assemble_deep_result(outcome, provider)
+                        if outcome.get("status") == "complete"
+                        else None
                     )
+                except AgentRunError as exc:
+                    if exc.code in {"ANSWER_CANCELLED", "RUN_CANCELLED"}:
+                        payload_cancelled = {
+                            "status": "cancelled",
+                            "run_id": client_run_id,
+                        }
+                        self._publish_terminal_outcome(
+                            client_run_id, payload_cancelled, fp
+                        )
+                        raise ServiceError("ANSWER_CANCELLED", exc.message) from exc
+                    payload_failed = {
+                        "status": "failed",
+                        "run_id": client_run_id,
+                        "code": exc.code,
+                        "message": exc.message,
+                    }
+                    winner = self._publish_terminal_outcome(
+                        client_run_id, payload_failed, fp
+                    )
+                    if winner.get("status") == "cancelled":
+                        raise ServiceError(
+                            "ANSWER_CANCELLED", "run was cancelled"
+                        ) from exc
+                    raise ServiceError(exc.code, exc.message) from exc
+                except ProviderError as exc:
+                    # Keep the provider's own error code (LLM_TIMEOUT etc.) and
+                    # hand back the evidence gathered so far, exactly like the
+                    # one-shot deep path.
+                    payload_failed = {
+                        "status": "failed",
+                        "run_id": client_run_id,
+                        "code": exc.code,
+                        "message": exc.message,
+                    }
+                    winner = self._publish_terminal_outcome(
+                        client_run_id, payload_failed, fp
+                    )
+                    if winner.get("status") == "cancelled":
+                        raise ServiceError(
+                            "ANSWER_CANCELLED", "run was cancelled"
+                        ) from exc
+                    raise ServiceError(
+                        exc.code,
+                        exc.message,
+                        {
+                            "evidence": [
+                                source.evidence()
+                                for source in legacy_run.engine.sources
+                            ]
+                        },
+                    ) from exc
                 except ServiceError as exc:
                     if isinstance(client_run_id, str) and client_run_id:
                         payload_failed = {
@@ -1074,6 +1142,18 @@ class SearchService:
                     raise ServiceError(
                         "BACKEND_ERROR", f"{type(exc).__name__}: {exc}"
                     ) from exc
+                if outcome.get("status") == "approval_required":
+                    # Turn budget reached: the run stays live (engine state and
+                    # gathered sources intact) until the user chooses
+                    # extend / answer_now via answer_continue.
+                    self.run_registry.touch(client_run_id)
+                    expires = datetime.now(timezone.utc) + timedelta(seconds=600)
+                    return {
+                        "status": "approval_required",
+                        "run_id": client_run_id,
+                        "expires_at": expires.isoformat(),
+                        "calls": outcome["calls"],
+                    }
                 if isinstance(client_run_id, str) and client_run_id:
                     payload = {
                         "status": "complete",
@@ -1200,6 +1280,8 @@ class SearchService:
                 self.config.llm_max_output_tokens, MIN_DEEP_OUTPUT_TOKENS
             ),
             timeout_seconds=self.config.llm_timeout_seconds,
+            max_turns=self.config.llm_deep_max_turns,
+            max_tool_calls_per_turn=self.config.llm_deep_max_tool_calls_per_turn,
         )
         run.session_allowed = set(params.get("session_allowed_tools") or [])
         run.seed(list(params["conversation"]))
@@ -1374,7 +1456,7 @@ class SearchService:
                 "expires_at": expires.isoformat(),
                 "calls": outcome["calls"],
             }
-        result = self._assemble_agent_result(outcome, run.state.provider)
+        result = self._assemble_run_result(outcome, run)
         payload = {"status": "complete", "run_id": run_id, "result": result}
         winner = self._publish_terminal_outcome(run_id, payload, orig_fp)
         if winner.get("status") == "cancelled":
@@ -1768,6 +1850,68 @@ class SearchService:
         payload, _fp = ent
         return payload
 
+    def _assemble_run_result(self, outcome: dict[str, Any], run: Any) -> dict[str, Any]:
+        """Assemble a completed run's payload with the assembler its loop uses.
+
+        Structured (native tool calling) and legacy (text-tool) runs share the
+        registry and the wire protocol but report slightly different
+        diagnostics, so the run declares which assembler applies.
+        """
+        if getattr(run, "assemble_mode", "") == "deep":
+            return self._assemble_deep_result(outcome, run.state.provider)
+        return self._assemble_agent_result(outcome, run.state.provider)
+
+    def _assemble_deep_result(
+        self, outcome: dict[str, Any], provider: Any | None
+    ) -> dict[str, Any]:
+        """Normalize a text-tool loop outcome into the answer payload.
+
+        Shared by the one-shot deep answer and a resumed legacy run, so a
+        paused-then-answered run returns exactly the same shape as an
+        uninterrupted one.
+        """
+        sources = [
+            GroundingSource(
+                id=str(item.get("id") or ""),
+                file_path=str(item.get("file_path") or ""),
+                start_line=max(1, int(item.get("start_line") or 1)),
+                heading_path=[str(h) for h in item.get("heading_path") or []],
+                content=str(item.get("content") or ""),
+                rank=int(item.get("rank") or 0),
+                score=float(item.get("score") or 0.0),
+            )
+            for item in list(outcome.get("sources") or [])
+        ]
+        answer, citations, warning = normalize_citations(
+            str(outcome.get("text") or ""), sources
+        )
+        if not answer:
+            raise ServiceError("LLM_BAD_RESPONSE", "Provider returned an empty answer")
+        # Without any gathered evidence the model must not fall back to general
+        # knowledge: report the explicit insufficiency message (mirrors the
+        # single-shot GROUNDING_EMPTY behavior).
+        if not sources and "충분한 근거를 찾지 못" not in answer:
+            answer = "볼트에서 충분한 근거를 찾지 못했습니다."
+        if len(answer) > 32000:
+            raise ServiceError("ANSWER_TOO_LARGE", "Provider answer is too large")
+        return {
+            "answer": answer,
+            "citations": citations,
+            "evidence": [source.evidence() for source in sources],
+            "provider": str(getattr(provider, "provider_id", "") or ""),
+            "model": str(getattr(provider, "model", "") or ""),
+            "grounded": bool(citations),
+            "diagnostics": {
+                "deep": True,
+                "turns": int(outcome.get("turns") or 0),
+                "tool_calls": int(outcome.get("tool_calls") or 0),
+                "retrieved_count": len(sources),
+                "context_chars": sum(len(source.content) for source in sources),
+                "answer_chars": len(answer),
+                **({"citation_warning": warning} if warning else {}),
+            },
+        }
+
     def _assemble_agent_result(
         self, outcome: dict[str, Any], provider: Any | None
     ) -> dict[str, Any]:
@@ -1898,6 +2042,13 @@ class SearchService:
         for key, attribute, minimum, maximum in (
             ("answerMaxContextChars", "llm_max_context_chars", 8000, 32000),
             ("answerMaxOutputTokens", "llm_max_output_tokens", 128, 8000),
+            ("answerDeepMaxTurns", "llm_deep_max_turns", 1, 30),
+            (
+                "answerDeepMaxToolCallsPerTurn",
+                "llm_deep_max_tool_calls_per_turn",
+                1,
+                16,
+            ),
         ):
             if key in params:
                 try:  # noqa: SIM105 — ast-grep guard recognition prefers try/except

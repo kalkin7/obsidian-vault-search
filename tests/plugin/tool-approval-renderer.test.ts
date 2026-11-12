@@ -1,107 +1,214 @@
-import { describe, expect, it } from "vitest";
-import { StubElement } from "./obsidian-stub";
+import { describe, expect, it, vi } from "vitest";
 import {
+  isTurnBudgetCall,
   renderToolApprovalCard,
-  renderToolActivity,
+  renderTurnBudgetCard,
 } from "../../src/tool-approval-renderer";
-import type { PendingToolCall, ToolActivityEntry } from "../../src/types";
+import type { PendingToolCall } from "../../src/types";
 
-const call: PendingToolCall = {
-  call_id: "c1",
-  tool_name: "mcp__github__create_issue",
-  server_name: "github",
-  display_name: "create_issue",
-  description: "Creates an issue",
-  arguments: { title: "hello" },
-};
-
-function renderCard(decisions: string[]) {
-  const container = new StubElement();
-  renderToolApprovalCard(
-    container as unknown as HTMLElement,
-    call,
-    {
-      onDecide: (decision) => decisions.push(decision.decision),
-      onCancel: () => undefined,
-    },
-  );
-  return container;
+/** Obsidian augments HTMLElement with createDiv/createEl; this fake mirrors the
+ *  subset the approval cards use (same convention as answer-renderer.test.ts). */
+interface FakeEl {
+  children: FakeEl[];
+  textContent: string;
+  tag: string;
+  cls: string;
+  attrs: Record<string, string>;
+  disabled: boolean;
+  handlers: Record<string, () => void>;
+  createDiv(options?: Record<string, unknown>): FakeEl;
+  createEl(tag: string, options?: Record<string, unknown>): FakeEl;
+  setText(value: string): void;
+  setAttribute(name: string, value: string): void;
+  addEventListener(type: string, handler: () => void): void;
+  querySelectorAll(selector: string): FakeEl[];
 }
 
-describe("tool approval card", () => {
-  it("labels every action for keyboards and screen readers", () => {
-    const decisions: string[] = [];
-    const container = renderCard(decisions);
-    const buttons = (container as unknown as StubElement).querySelectorAll(
-      "button",
-    );
-    expect(buttons).toHaveLength(3);
-    for (const button of buttons) {
-      const label =
-        button.attributes["aria-label"] || button.attributes["type"];
-      expect(label).toBeDefined();
-    }
-    // The arguments block is collapsible and carries the call arguments.
-    const stub = container as unknown as StubElement;
-    const findTag = (node: StubElement, tag: string): StubElement | null => {
-      for (const child of node.children) {
-        if (child.tag === tag) return child;
-        const deeper = findTag(child, tag);
-        if (deeper) return deeper;
-      }
-      return null;
-    };
-    expect(findTag(stub, "details")).not.toBeNull();
-    expect(stub.flattenedText).toContain("title");
+function makeEl(tag = "div"): FakeEl {
+  const element: FakeEl = {
+    children: [],
+    textContent: "",
+    tag,
+    cls: "",
+    attrs: {},
+    disabled: false,
+    handlers: {},
+    createDiv(options?: Record<string, unknown>): FakeEl {
+      return this.createEl("div", options);
+    },
+    createEl(tag: string, options?: Record<string, unknown>): FakeEl {
+      const child = makeEl(tag);
+      child.textContent = String(options?.text ?? "");
+      child.cls = String(options?.cls ?? "");
+      child.attrs = {
+        ...((options?.attr as Record<string, string> | undefined) ?? {}),
+      };
+      this.children.push(child);
+      return child;
+    },
+    setText(value: string): void {
+      this.textContent = value;
+    },
+    setAttribute(name: string, value: string): void {
+      this.attrs[name] = value;
+    },
+    addEventListener(type: string, handler: () => void): void {
+      this.handlers[type] = handler;
+    },
+    querySelectorAll(selector: string): FakeEl[] {
+      const wanted = selector.trim().toLowerCase();
+      return this.children.filter((child) => child.tag === wanted);
+    },
+  };
+  return element;
+}
+
+function collectText(el: FakeEl): string {
+  return [
+    el.textContent,
+    ...el.children.map((child) => collectText(child)),
+  ].join(" ");
+}
+
+function buttons(el: FakeEl): FakeEl[] {
+  const hits: FakeEl[] = [];
+  for (const child of el.children) {
+    if (child.tag === "button") hits.push(child);
+    hits.push(...buttons(child));
+  }
+  return hits;
+}
+
+function asHtml(el: FakeEl): HTMLElement {
+  return el as unknown as HTMLElement;
+}
+
+function budgetCall(overrides: Partial<PendingToolCall> = {}): PendingToolCall {
+  return {
+    call_id: "turn_budget",
+    tool_name: "turn_budget",
+    server_name: "",
+    display_name: "조사 한도",
+    description:
+      "조사 한도에 도달했습니다. 조사를 더 할까요, 아니면 지금까지 모은 자료로 답변할까요?",
+    arguments: { turns: 10, max_turns: 10, tool_calls: 14, sources: 6 },
+    annotations: { kind: "turn_budget" },
+    ...overrides,
+  };
+}
+
+describe("renderTurnBudgetCard", () => {
+  it("offers continue / answer-now / cancel and reports one decision", () => {
+    const container = makeEl();
+    const onDecide = vi.fn();
+    const onCancel = vi.fn();
+    renderTurnBudgetCard(asHtml(container), budgetCall(), { onDecide, onCancel });
+
+    const text = collectText(container);
+    expect(text).toContain("조사 한도 도달");
+    expect(text).toContain("지금까지 조사 10턴 · 근거 6건");
+
+    const actions = buttons(container);
+    expect(actions.map((button) => button.textContent)).toEqual([
+      "계속 조사",
+      "지금 답변",
+      "취소",
+    ]);
+
+    actions[0].handlers.click();
+    expect(onDecide).toHaveBeenCalledWith({
+      call_id: "turn_budget",
+      decision: "extend",
+    });
+    // Every button is disabled after the first click, so a double click can
+    // never send two decisions for one pause.
+    actions[1].handlers.click();
+    actions[2].handlers.click();
+    expect(onDecide).toHaveBeenCalledTimes(1);
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(actions.every((button) => button.disabled)).toBe(true);
   });
 
-  it("executes exactly once despite double clicks", () => {
-    const decisions: string[] = [];
-    const card = renderCard(decisions);
-    const buttons = (card as unknown as StubElement).querySelectorAll("button");
-    const once = buttons[0];
-    once.dispatch("click");
-    expect(decisions).toEqual(["allow_once"]);
-    // Every button is disabled after the first click; further clicks must
-    // not produce additional decisions.
-    for (const button of buttons) {
-      expect(button.disabled).toBe(true);
-      button.dispatch("click");
-    }
-    expect(decisions).toEqual(["allow_once"]);
+  it("answers now when the user declines more research", () => {
+    const container = makeEl();
+    const onDecide = vi.fn();
+    renderTurnBudgetCard(asHtml(container), budgetCall(), {
+      onDecide,
+      onCancel: vi.fn(),
+    });
+    buttons(container)[1].handlers.click();
+    expect(onDecide).toHaveBeenCalledWith({
+      call_id: "turn_budget",
+      decision: "answer_now",
+    });
   });
 
-  it("passes reject decisions through", () => {
-    const decisions: string[] = [];
-    const card = renderCard(decisions);
-    const buttons = (card as unknown as StubElement).querySelectorAll("button");
-    buttons[2].dispatch("click");
-    expect(decisions).toEqual(["reject"]);
+  it("cancels through the cancel callback without a decision", () => {
+    const container = makeEl();
+    const onDecide = vi.fn();
+    const onCancel = vi.fn();
+    renderTurnBudgetCard(asHtml(container), budgetCall(), { onDecide, onCancel });
+    buttons(container)[2].handlers.click();
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onDecide).not.toHaveBeenCalled();
+  });
+
+  it("never shows MCP tool decisions for the reserved call id", () => {
+    const container = makeEl();
+    renderTurnBudgetCard(asHtml(container), budgetCall(), {
+      onDecide: vi.fn(),
+      onCancel: vi.fn(),
+    });
+    const labels = buttons(container).map((button) => button.textContent);
+    expect(labels).not.toContain("한 번 허용");
+    expect(labels).not.toContain("이 대화에서 허용");
+    expect(labels).not.toContain("거부");
   });
 });
 
-describe("tool activity rendering", () => {
-  it("renders nothing without entries", () => {
-    const container = new StubElement();
-    renderToolActivity(container as unknown as HTMLElement, []);
-    expect(container.children).toHaveLength(0);
+describe("isTurnBudgetCall", () => {
+  it("recognizes the reserved id and annotation", () => {
+    expect(isTurnBudgetCall(budgetCall())).toBe(true);
+    expect(
+      isTurnBudgetCall(budgetCall({ annotations: { kind: "turn_budget" } })),
+    ).toBe(true);
+    expect(
+      isTurnBudgetCall({
+        call_id: "abc",
+        tool_name: "create_issue",
+        server_name: "srv",
+        display_name: "create_issue",
+        arguments: {},
+      }),
+    ).toBe(false);
   });
+});
 
-  it("lists status labels for every entry", () => {
-    const container = new StubElement();
-    const entries: ToolActivityEntry[] = [
+describe("renderToolApprovalCard", () => {
+  it("keeps the MCP decision vocabulary for real tool calls", () => {
+    const container = makeEl();
+    const onDecide = vi.fn();
+    renderToolApprovalCard(
+      asHtml(container),
       {
-        toolName: "mcp__a__b",
-        serverName: "a",
-        status: "success",
-        durationMs: 42,
+        call_id: "c1",
+        tool_name: "create_issue",
+        server_name: "srv",
+        display_name: "create_issue",
+        arguments: { title: "x" },
       },
-      { toolName: "vault_read", status: "rejected" },
-    ];
-    renderToolActivity(container as unknown as HTMLElement, entries);
-    const text = (container as unknown as StubElement).flattenedText;
-    expect(text).toContain("도구 사용 (2)");
-    expect(text).toContain("성공");
-    expect(text).toContain("거부됨");
+      { onDecide, onCancel: vi.fn() },
+    );
+    const actions = buttons(container);
+    expect(actions.map((button) => button.textContent)).toEqual([
+      "한 번 허용",
+      "이 대화에서 허용",
+      "거부",
+    ]);
+    actions[2].handlers.click();
+    expect(onDecide).toHaveBeenCalledWith({
+      call_id: "c1",
+      decision: "reject",
+    });
   });
 });

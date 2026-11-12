@@ -15,8 +15,10 @@ from .protocol import ProtocolError, request
 from .runtime import default_data_dir, read_json, vault_id
 
 try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+    # TextIO.reconfigure exists on the concrete stream at runtime but not in
+    # the TextIO type, so the attribute access is ignored (behavior unchanged).
+    sys.stdout.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+    sys.stderr.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
 except Exception:
     pass
 

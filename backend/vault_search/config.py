@@ -88,6 +88,10 @@ class SearchConfig:
     llm_model: str = "gpt-5.6"
     reasoning_effort: str = ""
     llm_max_context_chars: int = 24000
+    # Agentic deep-answer budgets. The turn budget is one grant: hitting it
+    # pauses the run and asks the user whether to extend or answer now.
+    llm_deep_max_turns: int = 10
+    llm_deep_max_tool_calls_per_turn: int = 6
     llm_max_output_tokens: int = 4000
     llm_timeout_seconds: float = 45.0
     # --- API agent extensions (MCP / skills / project rules) ---
@@ -207,9 +211,7 @@ def _as_mcp_servers(
         problems.append("MCP servers ignored: expected a list")
         return []
     if len(raw) > MAX_MCP_SERVERS:
-        problems.append(
-            f"MCP servers beyond {MAX_MCP_SERVERS} entries are dropped"
-        )
+        problems.append(f"MCP servers beyond {MAX_MCP_SERVERS} entries are dropped")
         raw = raw[:MAX_MCP_SERVERS]
     servers: list[McpServerConfig] = []
     seen_ids: set[str] = set()
@@ -307,13 +309,12 @@ def _as_mcp_servers(
                         or not parsed.hostname
                         or any(ch.isspace() for ch in raw_url)
                     ):
-                        raise ValueError(
-                            "url must be an absolute http(s) endpoint"
-                        )
+                        raise ValueError("url must be an absolute http(s) endpoint")
                     port_part = f":{parsed.port}" if parsed.port is not None else ""
                     host = (
                         f"[{parsed.hostname}]"
-                        if ":" in parsed.hostname and not parsed.hostname.startswith("[")
+                        if ":" in parsed.hostname
+                        and not parsed.hostname.startswith("[")
                         else parsed.hostname
                     )
                     url = f"{parsed.scheme}://{host}{port_part}"
@@ -434,9 +435,7 @@ def load_config(
         else:
             problems.append("pluginPath ignored: directory does not exist")
     project_rules = _as_project_rules(raw.get("answerProjectRules"), problems)
-    mcp_servers = _as_mcp_servers(
-        raw.get("mcpServers"), plugin_path, problems
-    )
+    mcp_servers = _as_mcp_servers(raw.get("mcpServers"), plugin_path, problems)
     skill_roots = _as_skill_roots(raw.get("skillRoots"), problems)
     enabled_skills = _as_enabled_skills(raw.get("enabledSkills"), problems)
 
@@ -528,6 +527,14 @@ def load_config(
                     raw.get("answerTimeoutSeconds", raw.get("llmTimeoutSeconds")), 45.0
                 ),
             ),
+        ),
+        llm_deep_max_turns=max(
+            1,
+            min(30, _as_int(raw.get("answerDeepMaxTurns"), 10)),
+        ),
+        llm_deep_max_tool_calls_per_turn=max(
+            1,
+            min(16, _as_int(raw.get("answerDeepMaxToolCallsPerTurn"), 6)),
         ),
         project_rules=project_rules,
         mcp_enabled=bool(raw.get("mcpEnabled", False)),

@@ -29,7 +29,16 @@ from .agent_tools import (
 )
 from .config import McpServerConfig
 
-try:  # The MCP SDK is optional at import time so unit tests can stub it.
+# The MCP SDK is optional at import time so unit tests can stub it. These
+# names stay bound (as Any) even when the SDK is missing, so the guarded call
+# sites remain checkable; MCP_SDK_AVAILABLE gates every use at runtime.
+ClientSession: Any = None
+StdioServerParameters: Any = None
+get_default_environment: Any = None
+stdio_client: Any = None
+streamablehttp_client: Any = None
+
+try:
     import importlib.metadata
 
     if importlib.metadata.version("mcp") != "1.28.1":
@@ -155,6 +164,7 @@ class McpHost:
                 future.result(timeout=SHUTDOWN_PER_SERVER_SECONDS + 2.0)
             except Exception:
                 pass
+
         # Cancel any leftover tasks in the loop before shutting down
         def force_cancel_all() -> None:
             for task in asyncio.all_tasks(loop):
@@ -298,7 +308,9 @@ class McpHost:
                         f"server {config.id} is an HTTP transport server and cannot accept stdio env values"
                     )
                 if not isinstance(values, dict):
-                    raise ValueError(f"env values for server {config.id} must be an object")
+                    raise ValueError(
+                        f"env values for server {config.id} must be an object"
+                    )
                 for name, value in values.items():
                     if not isinstance(name, str) or not isinstance(value, str):
                         raise ValueError(f"invalid env mapping for server {config.id}")
@@ -310,9 +322,13 @@ class McpHost:
                         f"server {config.id} is a stdio transport server and cannot accept http url"
                     )
                 if not isinstance(url, str):
-                    raise ValueError(f"http url for server {config.id} must be a string")
+                    raise ValueError(
+                        f"http url for server {config.id} must be a string"
+                    )
 
-            stdio_decisions: list[tuple[_ServerRuntime, McpServerConfig, dict[str, str], bool]] = []
+            stdio_decisions: list[
+                tuple[_ServerRuntime, McpServerConfig, dict[str, str], bool]
+            ] = []
             for server_id, values in servers_dict.items():
                 config = configured[str(server_id)]
                 allowed = set(config.env_names)
@@ -329,9 +345,7 @@ class McpHost:
                 old = self._secrets.get(config.id)
                 self._secrets[config.id] = cleaned
                 runtime = self._servers[config.id]
-                stdio_decisions.append(
-                    (runtime, config, cleaned, old != cleaned)
-                )
+                stdio_decisions.append((runtime, config, cleaned, old != cleaned))
 
             http_decisions: list[tuple[_ServerRuntime, McpServerConfig, str, bool]] = []
             for server_id, url in http_urls_dict.items():
@@ -419,12 +433,16 @@ class McpHost:
     # ------------------------------------------------------------------
 
     def _child_env(self, config: McpServerConfig) -> dict[str, str] | None:
-        base = get_default_environment() if MCP_SDK_AVAILABLE else {
-            k: v
-            for k, v in os.environ.items()
-            if k.lower()
-            in {"path", "systemroot", "comspec", "pathext", "temp", "tmp"}
-        }
+        base = (
+            get_default_environment()
+            if MCP_SDK_AVAILABLE
+            else {
+                k: v
+                for k, v in os.environ.items()
+                if k.lower()
+                in {"path", "systemroot", "comspec", "pathext", "temp", "tmp"}
+            }
+        )
         env = dict(base)
         env.update(self._secrets.get(config.id, {}))
         return env
@@ -503,9 +521,7 @@ class McpHost:
         except Exception:
             pass
 
-    async def _session_main(
-        self, runtime: _ServerRuntime, generation: int
-    ) -> None:
+    async def _session_main(self, runtime: _ServerRuntime, generation: int) -> None:
         if runtime.generation != generation:
             return
         config = runtime.config
@@ -574,7 +590,10 @@ class McpHost:
             env=self._child_env(config),
         )
         if self._devnull is None:
-            self._devnull = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+            try:
+                self._devnull = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
+            except OSError as exc:
+                raise RuntimeError(f"cannot open the null device: {exc}") from exc
         # stderr of the child is discarded: a hostile/broken MCP server
         # could echo back the very env values we passed it (plan §15.4).
         return stdio_client(params, errlog=self._devnull)
@@ -600,9 +619,7 @@ class McpHost:
                 continue
             try:
                 # SDK 1.x exposes camelCase inputSchema; 2.x input_schema.
-                raw_schema = _result_attr(
-                    tool, "input_schema", "inputSchema", {}
-                )
+                raw_schema = _result_attr(tool, "input_schema", "inputSchema", {})
                 schema = validate_input_schema(raw_schema)
             except ValueError:
                 # Malformed schema isolates the single tool, not the server.
@@ -701,9 +718,7 @@ class McpHost:
             for runtime, session, generation in connected_snapshots:
                 server_id = runtime.config.id
                 try:
-                    await self._reload_tools(
-                        runtime, session, generation
-                    )
+                    await self._reload_tools(runtime, session, generation)
                 except Exception as exc:
                     if (
                         self._servers.get(server_id) is runtime
@@ -725,9 +740,7 @@ class McpHost:
             **self.status(),
         }
 
-    def build_alias_map(
-        self, max_tools: int = MAX_PROVIDER_TOOLS
-    ) -> ToolAliasMap:
+    def build_alias_map(self, max_tools: int = MAX_PROVIDER_TOOLS) -> ToolAliasMap:
         """Build the provider-facing alias map with a deterministic cap.
 
         Servers are visited in sorted-id order and tools in sorted-name order,
@@ -773,7 +786,9 @@ class McpHost:
         """Blocking call executed from the service worker thread."""
         runtime = self._servers.get(server_id)
         if runtime is None:
-            return tool_error_result("MCP_UNKNOWN_SERVER", f"unknown server {server_id}")
+            return tool_error_result(
+                "MCP_UNKNOWN_SERVER", f"unknown server {server_id}"
+            )
         if runtime.state != SERVER_STATE_CONNECTED or runtime.session is None:
             return tool_error_result(
                 "MCP_SERVER_NOT_CONNECTED",
@@ -784,9 +799,7 @@ class McpHost:
             return tool_error_result(
                 "MCP_UNKNOWN_TOOL", f"tool '{tool_name}' is not exposed by this server"
             )
-        bounded_timeout = min(
-            max(1.0, timeout_seconds), MAX_CALL_TIMEOUT_SECONDS
-        )
+        bounded_timeout = min(max(1.0, timeout_seconds), MAX_CALL_TIMEOUT_SECONDS)
         try:
             validate_tool_arguments(tool_name, arguments)
         except ToolArgumentError as exc:
@@ -846,7 +859,9 @@ class McpHost:
         try:
             return future.result(timeout=bounded_timeout + 15)
         except (asyncio.CancelledError, concurrent.futures.CancelledError):
-            return tool_error_result("MCP_CALL_CANCELLED", f"'{tool_name}' was cancelled")
+            return tool_error_result(
+                "MCP_CALL_CANCELLED", f"'{tool_name}' was cancelled"
+            )
         except concurrent.futures.TimeoutError:
             return tool_error_result(
                 "MCP_CALL_TIMEOUT", f"'{tool_name}' exceeded the transport budget"

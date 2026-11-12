@@ -15,7 +15,9 @@ import {
   type AnswerTransport,
 } from "./answer-session";
 import {
+  isTurnBudgetCall,
   renderToolApprovalCard,
+  renderTurnBudgetCard,
   renderToolRunning,
   renderToolActivity,
 } from "./tool-approval-renderer";
@@ -563,18 +565,34 @@ export class VaultSearchItemView extends ItemView {
   }
 
   private renderApprovalCards(calls: PendingToolCall[]): void {
+    const budgetCalls = calls.filter((call) => isTurnBudgetCall(call));
+    const toolCalls = calls.filter((call) => !isTurnBudgetCall(call));
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant",
     });
-    block.createDiv({
-      cls: "vault-ai-search-thought",
-      text: "도구 실행 승인 대기",
-    });
-    for (const call of calls) {
-      renderToolApprovalCard(block, call, {
-        onDecide: (decision) => this.session.decide([decision]),
-        onCancel: () => void this.session.cancelActive(),
+    if (budgetCalls.length) {
+      block.createDiv({
+        cls: "vault-ai-search-thought",
+        text: "조사 한도 도달",
       });
+      for (const call of budgetCalls) {
+        renderTurnBudgetCard(block, call, {
+          onDecide: (decision) => this.session.decide([decision]),
+          onCancel: () => void this.session.cancelActive(),
+        });
+      }
+    }
+    if (toolCalls.length) {
+      block.createDiv({
+        cls: "vault-ai-search-thought",
+        text: "도구 실행 승인 대기",
+      });
+      for (const call of toolCalls) {
+        renderToolApprovalCard(block, call, {
+          onDecide: (decision) => this.session.decide([decision]),
+          onCancel: () => void this.session.cancelActive(),
+        });
+      }
     }
     this.scrollToBottom();
   }

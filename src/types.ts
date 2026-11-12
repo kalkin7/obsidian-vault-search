@@ -99,6 +99,11 @@ export interface VaultSearchSettings {
   answerMaxContextChars: number;
   answerMaxOutputTokens: number;
   answerTimeoutSeconds: number;
+  /** Agentic deep-answer turn budget: one grant. Reaching it pauses the run
+   *  and asks whether to keep investigating or answer from what was gathered. */
+  answerDeepMaxTurns: number;
+  /** Tool calls executed per investigation turn (the rest are skipped). */
+  answerDeepMaxToolCallsPerTurn: number;
   /** Vault-relative folder where AI search history notes are saved. */
   historyFolder: string;
   /** Autosave each completed answer into the history folder. */
@@ -299,7 +304,13 @@ export type AnswerStartResponse =
       calls: PendingToolCall[];
     };
 
-export type ToolDecision = "allow_once" | "allow_session" | "reject";
+export type ToolDecision =
+  | "allow_once"
+  | "allow_session"
+  | "reject"
+  // Deep-answer turn-budget boundary choices (call_id "turn_budget").
+  | "extend"
+  | "answer_now";
 
 /** Live MCP host state reported by `mcp_status` (plan §9.1). */
 export interface McpServerStatus {

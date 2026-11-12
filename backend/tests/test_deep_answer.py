@@ -149,7 +149,7 @@ def test_engine_loops_over_tools_then_answers():
     assert read == ["Notes/a.md"]
     assert grepped == [("충전", "**/*.md")]
     assert outcome["text"] == "결론입니다. [S1] [S2]"
-    assert [s.id for s in outcome["sources"]] == ["S1", "S2", "S3", "S4"]
+    assert [s["id"] for s in outcome["sources"]] == ["S1", "S2", "S3", "S4"]
     assert outcome["turns"] == 2
     assert outcome["tool_calls"] == 4
 
@@ -186,7 +186,7 @@ def test_engine_answers_directly_from_seeded_search():
     outcome = engine.run(query="상태", conversation=[])
     assert searched == ["상태"]
     assert outcome["text"] == "초기 검색 기반 답변입니다. [S1]"
-    assert [s.id for s in outcome["sources"]] == ["S1"]
+    assert [s["id"] for s in outcome["sources"]] == ["S1"]
     assert outcome["turns"] == 0
 
 

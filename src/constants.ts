@@ -3,7 +3,7 @@ import type { LLMProviderId, VaultSearchSettings } from "./types";
 export const PLUGIN_ID = "obsidian-vault-search";
 export const PROTOCOL_VERSION = 1;
 export const VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-export const BACKEND_VERSION = "0.1.69";
+export const BACKEND_VERSION = "0.1.70";
 export const GITHUB_REPO = "kalkin7/obsidian-vault-search";
 
 /** Bounds mirrored by the Python side (plan §6.2/§6.3). */
@@ -96,6 +96,8 @@ export const DEFAULT_SETTINGS: VaultSearchSettings = {
   answerMaxContextChars: 24000,
   answerMaxOutputTokens: 4000,
   answerTimeoutSeconds: 60,
+  answerDeepMaxTurns: 10,
+  answerDeepMaxToolCallsPerTurn: 6,
   historyFolder: "AI Vault Search/history",
   historyAutosave: true,
   historyMaxEntries: 0,

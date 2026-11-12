@@ -115,7 +115,14 @@ unconditionally overwritten from the stored secrets).
   answers with `[S#]` citations. An automatic first search seeds the loop. The
   accumulated source budget follows `answerMaxContextChars`, and the output
   budget has a 4,000-token floor (reasoning models spend tokens on
-  chain-of-thought). Without any sources the answer falls back to
+  chain-of-thought). The investigation budget is user-configurable
+  (`answerDeepMaxTurns`, 1–30 turns, default 10; `answerDeepMaxToolCallsPerTurn`,
+  1–16 calls, default 6). Reaching the turn budget no longer fails with a
+  hardcoded message: the run pauses and the panel asks **계속 조사**(one more
+  budget of turns, capped at 40 in total) or **지금 답변**(answer from the
+  sources already gathered). The paused run keeps its messages and sources in
+  the sidecar for up to 10 minutes (`RUN_EXPIRED` afterwards), and 취소 still
+  ends it. Without any sources the answer falls back to
   "볼트에서 충분한 근거를 찾지 못했습니다." instead of general knowledge.
 - **Reasoning effort** — the composer shows a per-model **추론** selector
   (`auto` / `none` / `low` / `medium` / `high` / `xhigh` / `max`), restricted to

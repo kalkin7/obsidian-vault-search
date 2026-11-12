@@ -6,6 +6,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import patch
 
 
@@ -22,10 +23,10 @@ def make_service(tmp_path: Path):
     )
     service = SearchService(config, lambda e, d: None)
     service.state = "ready"
-    service.index = object()
+    service.index = object()  # type: ignore[assignment] — test double
     service.search_engine = SimpleNamespace(
         search_detailed=lambda *a, **kw: SimpleNamespace(results=[])
-    )
+    )  # type: ignore[assignment] — test double
     service.config.mcp_enabled = True
     service.config.mcp_servers = []
     return service
@@ -73,28 +74,35 @@ def test_continue_blocks_inside_resume_then_cancel_wins(tmp_path):
             self.state = new_run_state("hello")
             self.state.run_id = run_id
             self.state.fingerprint = "fp123"
-            self.state.pending = {
-                "c1": SimpleNamespace(
-                    call_id="c1",
-                    alias="tool",
-                    tool_name="tool",
-                    server_id="s",
-                    server_name="srv",
-                    display_name="tool",
-                    arguments={},
-                    annotations={},
-                    description="",
-                )
-            }
+            self.state.pending = cast(
+                "dict[str, Any]",
+                {
+                    "c1": SimpleNamespace(
+                        call_id="c1",
+                        alias="tool",
+                        tool_name="tool",
+                        server_id="s",
+                        server_name="srv",
+                        display_name="tool",
+                        arguments={},
+                        annotations={},
+                        description="",
+                    )
+                },
+            )
             self.state.provider = SimpleNamespace(provider_id="openai", model="test")
             # Required for registry: _call_descriptor
-            self._call_descriptor = lambda p: {
-                "call_id": p.call_id,
-                "tool_name": p.alias,
+            self._call_descriptor = lambda pending: {
+                "call_id": pending.call_id,
+                "tool_name": pending.alias,
             }
 
             # Make resume block
             self.resume_calls = 0
+
+        def advance(self):
+            # Only answer_continue drives this fake; advance is protocol surface.
+            return {"status": "running"}
 
         def resume(self, decisions):
             self.resume_calls += 1
@@ -214,24 +222,30 @@ def test_continue_complete_then_cancel_stays_complete(tmp_path):
             self.state = new_run_state("hello")
             self.state.run_id = run_id
             self.state.fingerprint = "fp123"
-            self.state.pending = {
-                "c1": SimpleNamespace(
-                    call_id="c1",
-                    alias="tool",
-                    tool_name="tool",
-                    server_id="s",
-                    server_name="srv",
-                    display_name="tool",
-                    arguments={},
-                    annotations={},
-                    description="",
-                )
-            }
+            self.state.pending = cast(
+                "dict[str, Any]",
+                {
+                    "c1": SimpleNamespace(
+                        call_id="c1",
+                        alias="tool",
+                        tool_name="tool",
+                        server_id="s",
+                        server_name="srv",
+                        display_name="tool",
+                        arguments={},
+                        annotations={},
+                        description="",
+                    )
+                },
+            )
             self.state.provider = SimpleNamespace(provider_id="openai", model="test")
-            self._call_descriptor = lambda p: {
-                "call_id": p.call_id,
-                "tool_name": p.alias,
+            self._call_descriptor = lambda pending: {
+                "call_id": pending.call_id,
+                "tool_name": pending.alias,
             }
+
+        def advance(self):
+            return {"status": "running"}
 
         def resume(self, decisions):
             return {
@@ -275,7 +289,9 @@ def test_continue_complete_then_cancel_stays_complete(tmp_path):
         assert term is not None
         payload, _ = term
         assert payload.get("status") == "complete"
-        assert payload.get("result")["answer"] == "final"
+        final_result = payload.get("result")
+        assert isinstance(final_result, dict)
+        assert final_result["answer"] == "final"
 
         # answer_status should still be complete
         st = service.call("answer_status", {"run_id": run_id})
@@ -315,12 +331,36 @@ def test_legacy_deep_cancel_then_success_returns_cancelled(tmp_path):
             "diagnostics": {},
         }
 
+    class FakeEngine:
+        """Blocks inside the loop like a slow provider call."""
+
+        turns = 0
+        tool_calls = 0
+        max_turns = 10
+        sources: list[dict] = []
+
+        def seed(self, **_kwargs):
+            return None
+
+        def loop(self, **_kwargs):
+            return fake_deep({})
+
+        def finalize_from_sources(self):
+            return fake_deep({})
+
+    class FakeProvider:
+        provider_id = "openai"
+        model = "test"
+
+    def build_engine(_params):
+        return FakeEngine(), FakeProvider()
+
     results = {}
     errors = {}
 
     def start_thread():
         try:
-            with patch.object(service, "_deep_answer", fake_deep):
+            with patch.object(service, "_build_deep_engine", build_engine):
                 res = service.call(
                     "answer_start",
                     {
@@ -393,12 +433,34 @@ def test_legacy_deep_cancel_then_exception_returns_cancelled(tmp_path):
         # Simulate provider timeout exception
         raise ServiceError("LLM_TIMEOUT", "timeout")
 
+    class FakeEngine:
+        turns = 0
+        tool_calls = 0
+        max_turns = 10
+        sources: list[dict] = []
+
+        def seed(self, **_kwargs):
+            return None
+
+        def loop(self, **_kwargs):
+            return fake_deep_raise({})
+
+        def finalize_from_sources(self):
+            return fake_deep_raise({})
+
+    class FakeProvider:
+        provider_id = "openai"
+        model = "test"
+
+    def build_engine(_params):
+        return FakeEngine(), FakeProvider()
+
     results = {}
     errors = {}
 
     def start_thread():
         try:
-            with patch.object(service, "_deep_answer", fake_deep_raise):
+            with patch.object(service, "_build_deep_engine", build_engine):
                 res = service.call(
                     "answer_start",
                     {

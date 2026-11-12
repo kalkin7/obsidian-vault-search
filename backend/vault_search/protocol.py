@@ -121,8 +121,19 @@ def validate_answer_continue_params(params: dict[str, Any]) -> dict[str, Any]:
         if call_id in seen:
             raise ProtocolError(f"duplicate call_id in decisions: {call_id}")
         seen.add(call_id)
-        if choice not in {"allow_once", "allow_session", "reject"}:
-            raise ProtocolError("decision must be allow_once, allow_session, or reject")
+        if choice not in {
+            "allow_once",
+            "allow_session",
+            "reject",
+            # Deep-answer turn-budget boundary: keep investigating with a fresh
+            # turn budget, or answer from the sources already gathered.
+            "extend",
+            "answer_now",
+        }:
+            raise ProtocolError(
+                "decision must be allow_once, allow_session, reject, extend, or "
+                "answer_now"
+            )
         decisions.append({"call_id": call_id, "decision": str(choice)})
     return {"run_id": run_id.strip(), "decisions": decisions}
 

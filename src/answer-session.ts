@@ -140,7 +140,10 @@ export class AnswerSession {
       const call = this.pendingCalls.find(
         (c) => c.call_id === decision.call_id,
       );
-      if (call) this.sessionAllowed.add(call.tool_name);
+      // The deep-answer turn-budget prompt is not a tool: never add its
+      // reserved id to the session tool allowlist.
+      if (call && call.call_id !== "turn_budget")
+        this.sessionAllowed.add(call.tool_name);
     }
     this.stateChanged({
       kind: "tool-running",

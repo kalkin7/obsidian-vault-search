@@ -3011,7 +3011,7 @@ var import_obsidian2 = require("obsidian");
 // src/constants.ts
 var PROTOCOL_VERSION = 1;
 var VIEW_TYPE_VAULT_AI_SEARCH = "vault-ai-search";
-var BACKEND_VERSION = "0.1.69";
+var BACKEND_VERSION = "0.1.70";
 var GITHUB_REPO = "kalkin7/obsidian-vault-search";
 var MAX_PROJECT_RULES_CHARS = 32e3;
 var MAX_MCP_SERVERS = 20;
@@ -3086,6 +3086,8 @@ var DEFAULT_SETTINGS = {
   answerMaxContextChars: 24e3,
   answerMaxOutputTokens: 4e3,
   answerTimeoutSeconds: 60,
+  answerDeepMaxTurns: 10,
+  answerDeepMaxToolCallsPerTurn: 6,
   historyFolder: "AI Vault Search/history",
   historyAutosave: true,
   historyMaxEntries: 0,
@@ -5030,6 +5032,8 @@ var HOT_KEYS = [
   "answerMaxContextChars",
   "answerMaxOutputTokens",
   "answerTimeoutSeconds",
+  "answerDeepMaxTurns",
+  "answerDeepMaxToolCallsPerTurn",
   // Project rules ride the hot config path (system-instruction section).
   "answerProjectRules",
   "answerProjectRulesSource"
@@ -5091,6 +5095,8 @@ function hotConfig(settings) {
     answerMaxContextChars: settings.answerMaxContextChars,
     answerMaxOutputTokens: settings.answerMaxOutputTokens,
     answerTimeoutSeconds: settings.answerTimeoutSeconds,
+    answerDeepMaxTurns: settings.answerDeepMaxTurns,
+    answerDeepMaxToolCallsPerTurn: settings.answerDeepMaxToolCallsPerTurn,
     answerProjectRules: settings.answerProjectRules
   };
 }
@@ -7153,6 +7159,33 @@ var VaultSearchSettingTab = class extends import_obsidian7.PluginSettingTab {
         );
       })
     );
+    new import_obsidian7.Setting(parent).setName("\uB525 \uB2F5\uBCC0 \uC870\uC0AC \uD69F\uC218").setDesc(
+      "1~30\uD68C. \uD55C\uB3C4\uC5D0 \uB3C4\uB2EC\uD558\uBA74 \uACC4\uC18D \uC870\uC0AC\uD560\uC9C0 \uC9C0\uAE08\uAE4C\uC9C0 \uBAA8\uC740 \uC790\uB8CC\uB85C \uB2F5\uBCC0\uD560\uC9C0 \uBB3B\uC2B5\uB2C8\uB2E4."
+    ).addText(
+      (text) => text.setValue(String(draft.answerDeepMaxTurns)).onChange((value) => {
+        draft.answerDeepMaxTurns = Math.max(
+          1,
+          Math.min(
+            30,
+            this.nonnegativeNumber(value, draft.answerDeepMaxTurns)
+          )
+        );
+      })
+    );
+    new import_obsidian7.Setting(parent).setName("\uD134\uB2F9 \uB3C4\uAD6C \uD638\uCD9C \uC218").setDesc("1~16\uAC1C. \uD55C \uC870\uC0AC \uD134\uC5D0\uC11C \uC2E4\uD589\uD560 \uCD5C\uB300 \uB3C4\uAD6C \uD638\uCD9C \uC218\uC785\uB2C8\uB2E4.").addText(
+      (text) => text.setValue(String(draft.answerDeepMaxToolCallsPerTurn)).onChange((value) => {
+        draft.answerDeepMaxToolCallsPerTurn = Math.max(
+          1,
+          Math.min(
+            16,
+            this.nonnegativeNumber(
+              value,
+              draft.answerDeepMaxToolCallsPerTurn
+            )
+          )
+        );
+      })
+    );
     this.heading(parent, "AI Vault \uD788\uC2A4\uD1A0\uB9AC");
     new import_obsidian7.Setting(parent).setName("\uD788\uC2A4\uD1A0\uB9AC \uD3F4\uB354").setDesc(
       "\uB300\uD654\uAC00 \uB9C8\uD06C\uB2E4\uC6B4 \uB178\uD2B8\uB85C \uC800\uC7A5\uB418\uB294 \uBCFC\uD2B8 \uB0B4 \uACBD\uB85C\uC785\uB2C8\uB2E4. \uB178\uD2B8\uB294 \uC5B8\uC81C\uB4E0 \uC9C1\uC811 \uC77D\uACE0 \uD3B8\uC9D1\uD560 \uC218 \uC788\uC2B5\uB2C8\uB2E4. \uCC38\uACE0: \uD788\uC2A4\uD1A0\uB9AC \uB178\uD2B8\uB3C4 \uAC80\uC0C9 \uC778\uB371\uC2A4\uC5D0 \uD3EC\uD568\uB420 \uC218 \uC788\uC73C\uBBC0\uB85C \uC81C\uC678\uD558\uB824\uBA74 \uC81C\uC678 \uBAA9\uB85D\uC5D0 \uC774 \uD3F4\uB354\uB97C \uCD94\uAC00\uD558\uC138\uC694."
@@ -9010,7 +9043,8 @@ var AnswerSession = class {
       const call = this.pendingCalls.find(
         (c) => c.call_id === decision.call_id
       );
-      if (call) this.sessionAllowed.add(call.tool_name);
+      if (call && call.call_id !== "turn_budget")
+        this.sessionAllowed.add(call.tool_name);
     }
     this.stateChanged({
       kind: "tool-running",
@@ -9774,6 +9808,78 @@ function renderToolApprovalCard(container, call, callbacks) {
     () => guard(reject, { call_id: call.call_id, decision: "reject" })
   );
 }
+function renderTurnBudgetCard(container, call, callbacks) {
+  const card = container.createDiv({ cls: "vault-tool-approval" });
+  const head = card.createDiv({ cls: "vault-tool-approval-head" });
+  const title = head.createDiv({ cls: "vault-tool-approval-title" });
+  title.createEl("span", {
+    text: "\uC870\uC0AC \uD55C\uB3C4 \uB3C4\uB2EC",
+    cls: "vault-tool-approval-name"
+  });
+  const badge = title.createEl("span", {
+    text: "\uC120\uD0DD \uD544\uC694",
+    cls: "vault-tool-approval-badge"
+  });
+  badge.setAttribute("aria-label", "\uC870\uC0AC \uACC4\uC18D \uC5EC\uBD80 \uC120\uD0DD \uB300\uAE30");
+  card.createDiv({
+    cls: "vault-tool-approval-description",
+    text: call.description || "\uC870\uC0AC \uD55C\uB3C4\uC5D0 \uB3C4\uB2EC\uD588\uC2B5\uB2C8\uB2E4. \uC870\uC0AC\uB97C \uB354 \uD560\uAE4C\uC694, \uC544\uB2C8\uBA74 \uC9C0\uAE08\uAE4C\uC9C0 \uBAA8\uC740 \uC790\uB8CC\uB85C \uB2F5\uBCC0\uD560\uAE4C\uC694?"
+  });
+  const turns = Number(call.arguments?.turns ?? 0);
+  const sources = Number(call.arguments?.sources ?? 0);
+  card.createDiv({
+    cls: "vault-tool-approval-description",
+    text: `\uC9C0\uAE08\uAE4C\uC9C0 \uC870\uC0AC ${turns}\uD134 \xB7 \uADFC\uAC70 ${sources}\uAC74`
+  });
+  const actions = card.createDiv({ cls: "vault-tool-approval-actions" });
+  let settled = false;
+  const guard = (button, decision) => {
+    if (settled) return;
+    settled = true;
+    for (const child of Array.from(actions.querySelectorAll("button"))) {
+      child.disabled = true;
+    }
+    callbacks.onDecide(decision);
+  };
+  const extend = actions.createEl("button", {
+    text: "\uACC4\uC18D \uC870\uC0AC",
+    cls: "mod-cta",
+    attr: {
+      type: "button",
+      "aria-label": "\uC870\uC0AC \uD69F\uC218\uB97C \uB298\uB824 \uACC4\uC18D \uC870\uC0AC\uD569\uB2C8\uB2E4"
+    }
+  });
+  extend.addEventListener(
+    "click",
+    () => guard(extend, { call_id: call.call_id, decision: "extend" })
+  );
+  const answerNow = actions.createEl("button", {
+    text: "\uC9C0\uAE08 \uB2F5\uBCC0",
+    attr: {
+      type: "button",
+      "aria-label": "\uC9C0\uAE08\uAE4C\uC9C0 \uBAA8\uC740 \uC790\uB8CC\uB85C \uB2F5\uBCC0\uD569\uB2C8\uB2E4"
+    }
+  });
+  answerNow.addEventListener(
+    "click",
+    () => guard(answerNow, { call_id: call.call_id, decision: "answer_now" })
+  );
+  const cancel = actions.createEl("button", {
+    text: "\uCDE8\uC18C",
+    attr: { type: "button", "aria-label": "\uC870\uC0AC\uC640 \uB2F5\uBCC0\uC744 \uCDE8\uC18C\uD569\uB2C8\uB2E4" }
+  });
+  cancel.addEventListener("click", () => {
+    if (settled) return;
+    settled = true;
+    for (const child of Array.from(actions.querySelectorAll("button"))) {
+      child.disabled = true;
+    }
+    callbacks.onCancel();
+  });
+}
+function isTurnBudgetCall(call) {
+  return call.call_id === "turn_budget" || call.annotations?.kind === "turn_budget";
+}
 function renderToolRunning(container, calls, onCancel) {
   const block = container.createDiv({ cls: "vault-tool-running" });
   const label = block.createDiv({ cls: "vault-ai-search-thinking" });
@@ -10248,18 +10354,34 @@ var VaultSearchItemView = class extends import_obsidian13.ItemView {
     this.renderUnavailable(state);
   }
   renderApprovalCards(calls) {
+    const budgetCalls = calls.filter((call) => isTurnBudgetCall(call));
+    const toolCalls = calls.filter((call) => !isTurnBudgetCall(call));
     const block = this.answerEl.createDiv({
       cls: "vault-ai-search-assistant"
     });
-    block.createDiv({
-      cls: "vault-ai-search-thought",
-      text: "\uB3C4\uAD6C \uC2E4\uD589 \uC2B9\uC778 \uB300\uAE30"
-    });
-    for (const call of calls) {
-      renderToolApprovalCard(block, call, {
-        onDecide: (decision) => this.session.decide([decision]),
-        onCancel: () => void this.session.cancelActive()
+    if (budgetCalls.length) {
+      block.createDiv({
+        cls: "vault-ai-search-thought",
+        text: "\uC870\uC0AC \uD55C\uB3C4 \uB3C4\uB2EC"
       });
+      for (const call of budgetCalls) {
+        renderTurnBudgetCard(block, call, {
+          onDecide: (decision) => this.session.decide([decision]),
+          onCancel: () => void this.session.cancelActive()
+        });
+      }
+    }
+    if (toolCalls.length) {
+      block.createDiv({
+        cls: "vault-ai-search-thought",
+        text: "\uB3C4\uAD6C \uC2E4\uD589 \uC2B9\uC778 \uB300\uAE30"
+      });
+      for (const call of toolCalls) {
+        renderToolApprovalCard(block, call, {
+          onDecide: (decision) => this.session.decide([decision]),
+          onCancel: () => void this.session.cancelActive()
+        });
+      }
     }
     this.scrollToBottom();
   }
@@ -10853,6 +10975,20 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
       Math.min(
         60,
         Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds
+      )
+    );
+    this.settings.answerDeepMaxTurns = Math.max(
+      1,
+      Math.min(
+        30,
+        Number(this.settings.answerDeepMaxTurns) || DEFAULT_SETTINGS.answerDeepMaxTurns
+      )
+    );
+    this.settings.answerDeepMaxToolCallsPerTurn = Math.max(
+      1,
+      Math.min(
+        16,
+        Number(this.settings.answerDeepMaxToolCallsPerTurn) || DEFAULT_SETTINGS.answerDeepMaxToolCallsPerTurn
       )
     );
     const mcpMigration = migrateMcpHttpUrls(this.app, this.settings);

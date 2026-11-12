@@ -57,6 +57,8 @@ const HOT_KEYS: (keyof VaultSearchSettings)[] = [
   "answerMaxContextChars",
   "answerMaxOutputTokens",
   "answerTimeoutSeconds",
+  "answerDeepMaxTurns",
+  "answerDeepMaxToolCallsPerTurn",
   // Project rules ride the hot config path (system-instruction section).
   "answerProjectRules",
   "answerProjectRulesSource",
@@ -138,6 +140,8 @@ export function hotConfig(
     answerMaxContextChars: settings.answerMaxContextChars,
     answerMaxOutputTokens: settings.answerMaxOutputTokens,
     answerTimeoutSeconds: settings.answerTimeoutSeconds,
+    answerDeepMaxTurns: settings.answerDeepMaxTurns,
+    answerDeepMaxToolCallsPerTurn: settings.answerDeepMaxToolCallsPerTurn,
     answerProjectRules: settings.answerProjectRules,
   };
 }
