@@ -162,7 +162,10 @@ zip.writeZip(zipPath);
     if (git tag --list $Tag) {
         $tagCommit = (git rev-list -n 1 $Tag).Trim()
     } else {
-        $remoteTag = git ls-remote --tags origin "refs/tags/$Tag"
+        # Exact ref match: a plain pattern would also match v0.1.70 when asking
+        # for v0.1.7 (this repo has both).
+        $remoteTag = @(git ls-remote --tags origin) |
+            Where-Object { $_ -match "\srefs/tags/$([regex]::Escape($Tag))$" }
         if ($remoteTag) {
             Invoke-Checked { git fetch origin "refs/tags/$Tag`:refs/tags/$Tag" } "git fetch tag"
             $tagCommit = (git rev-list -n 1 $Tag).Trim()
