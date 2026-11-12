@@ -20,7 +20,8 @@ $ErrorActionPreference = "Stop"
 #   1. Validate version consistency across manifest/package/pyproject/__init__/constants
 #   2. npm run build + npm test + backend pytest
 #   3. Build obsidian-vault-search-v<ver>.zip with backend/
-#   4. Create annotated tag v<ver> and push it
+#   4. Create annotated tag v<ver> and push it (resumes a tag whose release
+#      was never published, as long as the tag still points at HEAD)
 #   5. gh release create with zip + main.js + manifest.json + styles.css + versions.json
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
@@ -150,10 +151,32 @@ zip.writeZip(zipPath);
     if ($viewExit -eq 0) {
         throw "$Tag already exists on the remote; bump the version. Published assets are immutable."
     }
+
+    # A previous run may have pushed the tag and then failed before creating the
+    # release. Resume that run instead of aborting: publishing the missing
+    # assets is safe, re-tagging is not. The tag must already point at HEAD.
     Write-Host "==> Pushing commits and tagging $Tag" -ForegroundColor Cyan
     Invoke-Checked { git push origin main } "git push main"
-    Invoke-Checked { git tag -a $Tag -m "$Tag" } "git tag"
-    Invoke-Checked { git push origin $Tag } "git push tag"
+    $headCommit = (git rev-parse HEAD).Trim()
+    $tagCommit = $null
+    if (git tag --list $Tag) {
+        $tagCommit = (git rev-list -n 1 $Tag).Trim()
+    } else {
+        $remoteTag = git ls-remote --tags origin "refs/tags/$Tag"
+        if ($remoteTag) {
+            Invoke-Checked { git fetch origin "refs/tags/$Tag`:refs/tags/$Tag" } "git fetch tag"
+            $tagCommit = (git rev-list -n 1 $Tag).Trim()
+        }
+    }
+    if ($tagCommit) {
+        if ($tagCommit -ne $headCommit) {
+            throw "$Tag already points at $tagCommit, not HEAD ($headCommit). Bump the version instead of re-tagging."
+        }
+        Write-Host "    $Tag already exists; resuming release publication." -ForegroundColor Yellow
+    } else {
+        Invoke-Checked { git tag -a $Tag -m "$Tag" } "git tag"
+        Invoke-Checked { git push origin $Tag } "git push tag"
+    }
 
     # 5. Create release with all assets (zip + individual files)
     Write-Host "==> Creating GitHub release $Tag" -ForegroundColor Cyan
