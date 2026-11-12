@@ -2061,8 +2061,10 @@ class SearchService:
                     pass
         if "answerTimeoutSeconds" in params:
             try:  # noqa: SIM105 — ast-grep guard recognition prefers try/except
+                # Range matches the settings tab, load_config, and the plugin's
+                # load clamp: 5-120 seconds.
                 self.config.llm_timeout_seconds = max(
-                    5.0, min(60.0, float(params["answerTimeoutSeconds"]))
+                    5.0, min(120.0, float(params["answerTimeoutSeconds"]))
                 )
             except (TypeError, ValueError):
                 pass

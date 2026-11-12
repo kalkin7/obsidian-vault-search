@@ -26,6 +26,7 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 from .direct_onnx import DERIVED_REL, POOLING_DIM
 
@@ -53,6 +54,19 @@ def _require(config_name: str, path: Path, payload: dict) -> None:
     payload[config_name] = path
 
 
+def _read_json(path: Path, label: str) -> Any:
+    """Read one contract JSON file.
+
+    Validation is this function's whole purpose, so an unreadable or malformed
+    file must raise — but with the file name and the original reason instead of
+    a bare JSONDecodeError/OSError from deep inside the parse.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"invalid {label}: {exc}") from exc
+
+
 def validate_contract(model_dir: Path) -> dict[str, Path]:
     required: dict[str, Path] = {}
     _require("tokenizer.json", model_dir / "tokenizer.json", required)
@@ -61,7 +75,7 @@ def validate_contract(model_dir: Path) -> dict[str, Path]:
     _require("sentence_bert_config.json", model_dir / "sentence_bert_config.json", required)
     _require("onnx/model.onnx", model_dir / "onnx" / "model.onnx", required)
 
-    modules = json.loads(required["modules.json"].read_text(encoding="utf-8"))
+    modules = _read_json(required["modules.json"], "modules.json")
     if [m.get("type") for m in modules] != [
         "sentence_transformers.models.Transformer",
         "sentence_transformers.models.Pooling",
@@ -69,7 +83,9 @@ def validate_contract(model_dir: Path) -> dict[str, Path]:
     ]:
         raise ValueError(f"unexpected modules.json types: {modules}")
 
-    pooling = json.loads(required["1_Pooling/config.json"].read_text(encoding="utf-8"))
+    pooling = _read_json(
+        required["1_Pooling/config.json"], "1_Pooling/config.json"
+    )
     if int(pooling.get("word_embedding_dimension", 0)) != POOLING_DIM:
         raise ValueError(f"unexpected pooling dimension: {pooling}")
     if not (
@@ -80,7 +96,9 @@ def validate_contract(model_dir: Path) -> dict[str, Path]:
     ):
         raise ValueError(f"unsupported pooling config: {pooling}")
 
-    sbert = json.loads(required["sentence_bert_config.json"].read_text(encoding="utf-8"))
+    sbert = _read_json(
+        required["sentence_bert_config.json"], "sentence_bert_config.json"
+    )
     if int(sbert.get("max_seq_length", 0)) != 512:
         raise ValueError(f"unexpected max_seq_length: {sbert}")
     if sbert.get("do_lower_case") is not False:
@@ -89,7 +107,7 @@ def validate_contract(model_dir: Path) -> dict[str, Path]:
 
 
 def _append_pooling(model) -> None:
-    import onnx
+    import onnx  # pyright: ignore[reportMissingImports] — optional ONNX-engine dependency
 
     graph = model.graph
     output_names = [o.name for o in graph.output]
@@ -125,7 +143,7 @@ def _append_pooling(model) -> None:
 
 def verify(model_dir: Path, model) -> None:
     """Check the derived graph with onnxruntime against explicit numpy pooling."""
-    import onnx
+    import onnx  # pyright: ignore[reportMissingImports] — optional ONNX-engine dependency
     import numpy as np
     import onnxruntime as ort
 
@@ -141,9 +159,18 @@ def verify(model_dir: Path, model) -> None:
         derived_path = Path(tmp) / "derived.onnx"
         onnx.save(model, derived_path)
         session = ort.InferenceSession(str(derived_path), providers=["CPUExecutionProvider"])
-        emb = session.run(["sentence_embedding"], {"input_ids": seq, "attention_mask": mask})[0]
-        hidden = raw_session.run(
-            ["last_hidden_state"], {"input_ids": seq, "attention_mask": mask})[0]
+        # onnxruntime's run() return type is a union that includes SparseTensor;
+        # asarray is a no-op for the ndarray it actually returns.
+        emb = np.asarray(
+            session.run(
+                ["sentence_embedding"], {"input_ids": seq, "attention_mask": mask}
+            )[0]
+        )
+        hidden = np.asarray(
+            raw_session.run(
+                ["last_hidden_state"], {"input_ids": seq, "attention_mask": mask}
+            )[0]
+        )
 
     if hidden.shape[2] != POOLING_DIM or emb.shape != (4, POOLING_DIM):
         raise RuntimeError(f"unexpected shapes: hidden={hidden.shape} emb={emb.shape}")
@@ -170,7 +197,7 @@ def provision(model_dir: Path, verify_graph: bool = True) -> Path:
     returned unchanged. The graph is written to a temporary file, verified with
     onnxruntime (when requested), then atomically replaced.
     """
-    import onnx
+    import onnx  # pyright: ignore[reportMissingImports] — optional ONNX-engine dependency
 
     model_dir = Path(model_dir)
     validate_contract(model_dir)

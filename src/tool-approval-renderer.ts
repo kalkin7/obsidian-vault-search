@@ -131,9 +131,22 @@ export function renderTurnBudgetCard(
     text: `지금까지 조사 ${turns}턴 · 근거 ${sources}건`,
   });
 
+  // At the hard ceiling the backend treats "extend" as "answer now", so the
+  // card must not offer it as more research.
+  const atHardCap = call.arguments?.at_hard_cap === true;
+  if (atHardCap) {
+    const hardMax = Number(call.arguments?.hard_max_turns ?? 0);
+    card.createDiv({
+      cls: "vault-tool-approval-description",
+      text: hardMax
+        ? `조사 한도 상한(${hardMax}턴)에 도달해 더 늘릴 수 없습니다.`
+        : "조사 한도 상한에 도달해 더 늘릴 수 없습니다.",
+    });
+  }
+
   const actions = card.createDiv({ cls: "vault-tool-approval-actions" });
   let settled = false;
-  const guard = (button: HTMLButtonElement, decision: AnswerDecision) => {
+  const guard = (decision: AnswerDecision) => {
     if (settled) return;
     settled = true;
     for (const child of Array.from(actions.querySelectorAll("button"))) {
@@ -141,26 +154,29 @@ export function renderTurnBudgetCard(
     }
     callbacks.onDecide(decision);
   };
-  const extend = actions.createEl("button", {
-    text: "계속 조사",
-    cls: "mod-cta",
-    attr: {
-      type: "button",
-      "aria-label": "조사 횟수를 늘려 계속 조사합니다",
-    },
-  });
-  extend.addEventListener("click", () =>
-    guard(extend, { call_id: call.call_id, decision: "extend" }),
+  const extend = atHardCap
+    ? null
+    : actions.createEl("button", {
+        text: "계속 조사",
+        cls: "mod-cta",
+        attr: {
+          type: "button",
+          "aria-label": "조사 횟수를 늘려 계속 조사합니다",
+        },
+      });
+  extend?.addEventListener("click", () =>
+    guard({ call_id: call.call_id, decision: "extend" }),
   );
   const answerNow = actions.createEl("button", {
     text: "지금 답변",
+    cls: atHardCap ? "mod-cta" : undefined,
     attr: {
       type: "button",
       "aria-label": "지금까지 모은 자료로 답변합니다",
     },
   });
   answerNow.addEventListener("click", () =>
-    guard(answerNow, { call_id: call.call_id, decision: "answer_now" }),
+    guard({ call_id: call.call_id, decision: "answer_now" }),
   );
   const cancel = actions.createEl("button", {
     text: "취소",

@@ -122,7 +122,20 @@ def test_budget_call_descriptor_shape():
     assert call["annotations"]["kind"] == TURN_BUDGET_CALL_ID
     assert call["arguments"]["turns"] == 2
     assert call["arguments"]["sources"] >= 1
+    # The card must know whether "계속 조사" can still do anything.
+    assert call["arguments"]["hard_max_turns"] == 40
+    assert call["arguments"]["at_hard_cap"] is False
     assert "조사 한도" in call["description"]
+
+
+def test_budget_call_reports_hard_cap():
+    run, engine, _calls = make_legacy_run(["답변 [S1]"], max_turns=40)
+    engine._turns = 40  # noqa: SLF001 — deliberate cap probe
+    outcome = run.advance()
+    assert outcome["status"] == "approval_required"
+    # At the ceiling an extend request degrades to answering, so the UI is told
+    # not to offer more research.
+    assert outcome["calls"][0]["arguments"]["at_hard_cap"] is True
 
 
 def test_extend_grants_more_turns_and_keeps_state():
@@ -283,6 +296,18 @@ def test_apply_search_config_clamps_deep_budget(tmp_path):
     )
     assert service.config.llm_deep_max_turns == 30
     assert service.config.llm_deep_max_tool_calls_per_turn == 1
+
+
+def test_apply_search_config_timeout_range_matches_the_settings_tab(tmp_path):
+    # The settings tab advertises 5-120 seconds; hot apply and load_config must
+    # agree, otherwise a saved 90 silently becomes 60.
+    service = make_service(tmp_path)
+    service.call("apply_search_config", {"answerTimeoutSeconds": 999})
+    assert service.config.llm_timeout_seconds == 120.0
+    service.call("apply_search_config", {"answerTimeoutSeconds": 1})
+    assert service.config.llm_timeout_seconds == 5.0
+    service.call("apply_search_config", {"answerTimeoutSeconds": 90})
+    assert service.config.llm_timeout_seconds == 90.0
 
 
 def test_expired_paused_run_reports_run_expired(tmp_path):

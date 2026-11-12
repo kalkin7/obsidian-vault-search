@@ -91,7 +91,14 @@ function budgetCall(overrides: Partial<PendingToolCall> = {}): PendingToolCall {
     display_name: "조사 한도",
     description:
       "조사 한도에 도달했습니다. 조사를 더 할까요, 아니면 지금까지 모은 자료로 답변할까요?",
-    arguments: { turns: 10, max_turns: 10, tool_calls: 14, sources: 6 },
+    arguments: {
+      turns: 10,
+      max_turns: 10,
+      hard_max_turns: 40,
+      at_hard_cap: false,
+      tool_calls: 14,
+      sources: 6,
+    },
     annotations: { kind: "turn_budget" },
     ...overrides,
   };
@@ -129,8 +136,7 @@ describe("renderTurnBudgetCard", () => {
     expect(actions.every((button) => button.disabled)).toBe(true);
   });
 
-  it("answers now when the user declines more research", () => {
-    const container = makeEl();
+  it("answers now when the user declines more research", () => {    const container = makeEl();
     const onDecide = vi.fn();
     renderTurnBudgetCard(asHtml(container), budgetCall(), {
       onDecide,
@@ -163,6 +169,39 @@ describe("renderTurnBudgetCard", () => {
     expect(labels).not.toContain("한 번 허용");
     expect(labels).not.toContain("이 대화에서 허용");
     expect(labels).not.toContain("거부");
+  });
+
+  it("hides continue once the hard ceiling is reached", () => {
+    // At the ceiling the backend turns "extend" into "answer now", so the card
+    // must not offer it as more research.
+    const container = makeEl();
+    const onDecide = vi.fn();
+    renderTurnBudgetCard(
+      asHtml(container),
+      budgetCall({
+        arguments: {
+          turns: 40,
+          max_turns: 40,
+          hard_max_turns: 40,
+          at_hard_cap: true,
+          tool_calls: 120,
+          sources: 9,
+        },
+      }),
+      { onDecide, onCancel: vi.fn() },
+    );
+
+    const labels = buttons(container).map((button) => button.textContent);
+    expect(labels).toEqual(["지금 답변", "취소"]);
+    expect(collectText(container)).toContain(
+      "조사 한도 상한(40턴)에 도달해 더 늘릴 수 없습니다.",
+    );
+
+    buttons(container)[0].handlers.click();
+    expect(onDecide).toHaveBeenCalledWith({
+      call_id: "turn_budget",
+      decision: "answer_now",
+    });
   });
 });
 

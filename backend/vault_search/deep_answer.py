@@ -587,6 +587,10 @@ class LegacyDeepRun:
             arguments={
                 "turns": self.engine.turns,
                 "max_turns": self.engine.max_turns,
+                "hard_max_turns": HARD_MAX_TURNS,
+                # At the hard ceiling an extend request degrades to answering
+                # from sources, so the UI must not offer it as more research.
+                "at_hard_cap": self.engine.max_turns >= HARD_MAX_TURNS,
                 "tool_calls": self.engine.tool_calls,
                 "sources": len(self.engine.sources),
             },

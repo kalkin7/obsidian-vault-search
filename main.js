@@ -9831,9 +9831,17 @@ function renderTurnBudgetCard(container, call, callbacks) {
     cls: "vault-tool-approval-description",
     text: `\uC9C0\uAE08\uAE4C\uC9C0 \uC870\uC0AC ${turns}\uD134 \xB7 \uADFC\uAC70 ${sources}\uAC74`
   });
+  const atHardCap = call.arguments?.at_hard_cap === true;
+  if (atHardCap) {
+    const hardMax = Number(call.arguments?.hard_max_turns ?? 0);
+    card.createDiv({
+      cls: "vault-tool-approval-description",
+      text: hardMax ? `\uC870\uC0AC \uD55C\uB3C4 \uC0C1\uD55C(${hardMax}\uD134)\uC5D0 \uB3C4\uB2EC\uD574 \uB354 \uB298\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4.` : "\uC870\uC0AC \uD55C\uB3C4 \uC0C1\uD55C\uC5D0 \uB3C4\uB2EC\uD574 \uB354 \uB298\uB9B4 \uC218 \uC5C6\uC2B5\uB2C8\uB2E4."
+    });
+  }
   const actions = card.createDiv({ cls: "vault-tool-approval-actions" });
   let settled = false;
-  const guard = (button, decision) => {
+  const guard = (decision) => {
     if (settled) return;
     settled = true;
     for (const child of Array.from(actions.querySelectorAll("button"))) {
@@ -9841,7 +9849,7 @@ function renderTurnBudgetCard(container, call, callbacks) {
     }
     callbacks.onDecide(decision);
   };
-  const extend = actions.createEl("button", {
+  const extend = atHardCap ? null : actions.createEl("button", {
     text: "\uACC4\uC18D \uC870\uC0AC",
     cls: "mod-cta",
     attr: {
@@ -9849,12 +9857,13 @@ function renderTurnBudgetCard(container, call, callbacks) {
       "aria-label": "\uC870\uC0AC \uD69F\uC218\uB97C \uB298\uB824 \uACC4\uC18D \uC870\uC0AC\uD569\uB2C8\uB2E4"
     }
   });
-  extend.addEventListener(
+  extend?.addEventListener(
     "click",
-    () => guard(extend, { call_id: call.call_id, decision: "extend" })
+    () => guard({ call_id: call.call_id, decision: "extend" })
   );
   const answerNow = actions.createEl("button", {
     text: "\uC9C0\uAE08 \uB2F5\uBCC0",
+    cls: atHardCap ? "mod-cta" : void 0,
     attr: {
       type: "button",
       "aria-label": "\uC9C0\uAE08\uAE4C\uC9C0 \uBAA8\uC740 \uC790\uB8CC\uB85C \uB2F5\uBCC0\uD569\uB2C8\uB2E4"
@@ -9862,7 +9871,7 @@ function renderTurnBudgetCard(container, call, callbacks) {
   });
   answerNow.addEventListener(
     "click",
-    () => guard(answerNow, { call_id: call.call_id, decision: "answer_now" })
+    () => guard({ call_id: call.call_id, decision: "answer_now" })
   );
   const cancel = actions.createEl("button", {
     text: "\uCDE8\uC18C",
@@ -10973,7 +10982,7 @@ var VaultSearchPlugin = class extends import_obsidian14.Plugin {
     this.settings.answerTimeoutSeconds = Math.max(
       5,
       Math.min(
-        60,
+        120,
         Number(this.settings.answerTimeoutSeconds) || DEFAULT_SETTINGS.answerTimeoutSeconds
       )
     );

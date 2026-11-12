@@ -351,7 +351,7 @@ export default class VaultSearchPlugin extends Plugin {
     this.settings.answerTimeoutSeconds = Math.max(
       5,
       Math.min(
-        60,
+        120,
         Number(this.settings.answerTimeoutSeconds) ||
           DEFAULT_SETTINGS.answerTimeoutSeconds,
       ),
