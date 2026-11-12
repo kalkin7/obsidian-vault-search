@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, NoReturn
 
 from .agent_prompt import build_agent_system_prompt
 from .agent_run import (
@@ -897,6 +897,33 @@ class SearchService:
             bool(skills_registry),
         )
 
+    def _fail_live_run(
+        self,
+        run_id: str,
+        fingerprint: str,
+        code: str,
+        message: str,
+        *,
+        details: dict[str, object] | None = None,
+        cause: BaseException | None = None,
+    ) -> NoReturn:
+        """Publish a failed terminal for a live run, then raise.
+
+        First-terminal-wins still applies: when a cancel already published the
+        cancelled terminal, the caller sees ANSWER_CANCELLED instead of the
+        original failure.
+        """
+        payload = {
+            "status": "failed",
+            "run_id": run_id,
+            "code": code,
+            "message": message,
+        }
+        winner = self._publish_terminal_outcome(run_id, payload, fingerprint)
+        if winner.get("status") == "cancelled":
+            raise ServiceError("ANSWER_CANCELLED", "run was cancelled") from cause
+        raise ServiceError(code, message, details) from cause
+
     def _answer_start(self, params: dict[str, Any]) -> dict[str, Any]:
         # Idempotency: if client supplied run_id and it already exists (live or
         # terminal), return existing state instead of creating a new LLM call.
@@ -1061,87 +1088,42 @@ class SearchService:
                             client_run_id, payload_cancelled, fp
                         )
                         raise ServiceError("ANSWER_CANCELLED", exc.message) from exc
-                    payload_failed = {
-                        "status": "failed",
-                        "run_id": client_run_id,
-                        "code": exc.code,
-                        "message": exc.message,
-                    }
-                    winner = self._publish_terminal_outcome(
-                        client_run_id, payload_failed, fp
+                    self._fail_live_run(
+                        client_run_id, fp, exc.code, exc.message, cause=exc
                     )
-                    if winner.get("status") == "cancelled":
-                        raise ServiceError(
-                            "ANSWER_CANCELLED", "run was cancelled"
-                        ) from exc
-                    raise ServiceError(exc.code, exc.message) from exc
                 except ProviderError as exc:
                     # Keep the provider's own error code (LLM_TIMEOUT etc.) and
                     # hand back the evidence gathered so far, exactly like the
                     # one-shot deep path.
-                    payload_failed = {
-                        "status": "failed",
-                        "run_id": client_run_id,
-                        "code": exc.code,
-                        "message": exc.message,
-                    }
-                    winner = self._publish_terminal_outcome(
-                        client_run_id, payload_failed, fp
-                    )
-                    if winner.get("status") == "cancelled":
-                        raise ServiceError(
-                            "ANSWER_CANCELLED", "run was cancelled"
-                        ) from exc
-                    raise ServiceError(
+                    self._fail_live_run(
+                        client_run_id,
+                        fp,
                         exc.code,
                         exc.message,
-                        {
+                        details={
                             "evidence": [
                                 source.evidence()
                                 for source in legacy_run.engine.sources
                             ]
                         },
-                    ) from exc
+                        cause=exc,
+                    )
                 except ServiceError as exc:
                     if isinstance(client_run_id, str) and client_run_id:
-                        payload_failed = {
-                            "status": "failed",
-                            "run_id": client_run_id,
-                            "code": exc.code,
-                            "message": exc.message,
-                        }
-                        winner = self._publish_terminal_outcome(
-                            client_run_id, payload_failed, fp
+                        self._fail_live_run(
+                            client_run_id, fp, exc.code, exc.message, cause=exc
                         )
-                        if winner.get("status") == "cancelled":
-                            raise ServiceError(
-                                "ANSWER_CANCELLED", "run was cancelled"
-                            ) from exc
                     else:
                         self.run_registry.remove(client_run_id)
                     raise
                 except Exception as exc:
+                    message = f"{type(exc).__name__}: {exc}"
                     if isinstance(client_run_id, str) and client_run_id:
-                        payload_failed = {
-                            "status": "failed",
-                            "run_id": client_run_id,
-                            "code": "BACKEND_ERROR",
-                            "message": f"{type(exc).__name__}: {exc}",
-                        }
-                        winner = self._publish_terminal_outcome(
-                            client_run_id, payload_failed, fp
+                        self._fail_live_run(
+                            client_run_id, fp, "BACKEND_ERROR", message, cause=exc
                         )
-                        if winner.get("status") == "cancelled":
-                            raise ServiceError(
-                                "ANSWER_CANCELLED", "run was cancelled"
-                            ) from exc
-                        raise ServiceError(
-                            "BACKEND_ERROR", f"{type(exc).__name__}: {exc}"
-                        ) from exc
                     self.run_registry.remove(client_run_id)
-                    raise ServiceError(
-                        "BACKEND_ERROR", f"{type(exc).__name__}: {exc}"
-                    ) from exc
+                    raise ServiceError("BACKEND_ERROR", message) from exc
                 if outcome.get("status") == "approval_required":
                     # Turn budget reached: the run stays live (engine state and
                     # gathered sources intact) until the user chooses

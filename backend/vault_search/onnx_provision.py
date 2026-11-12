@@ -21,6 +21,7 @@ onnx checkers reject the opset-11 Clip min/max attributes. `onnx` and
 `onnxruntime` must be importable in the process that runs `provision()`; they
 are not imported by the embedding service itself.
 """
+
 from __future__ import annotations
 
 import json
@@ -72,7 +73,9 @@ def validate_contract(model_dir: Path) -> dict[str, Path]:
     _require("tokenizer.json", model_dir / "tokenizer.json", required)
     _require("modules.json", model_dir / "modules.json", required)
     _require("1_Pooling/config.json", model_dir / "1_Pooling" / "config.json", required)
-    _require("sentence_bert_config.json", model_dir / "sentence_bert_config.json", required)
+    _require(
+        "sentence_bert_config.json", model_dir / "sentence_bert_config.json", required
+    )
     _require("onnx/model.onnx", model_dir / "onnx" / "model.onnx", required)
 
     modules = _read_json(required["modules.json"], "modules.json")
@@ -83,9 +86,7 @@ def validate_contract(model_dir: Path) -> dict[str, Path]:
     ]:
         raise ValueError(f"unexpected modules.json types: {modules}")
 
-    pooling = _read_json(
-        required["1_Pooling/config.json"], "1_Pooling/config.json"
-    )
+    pooling = _read_json(required["1_Pooling/config.json"], "1_Pooling/config.json")
     if int(pooling.get("word_embedding_dimension", 0)) != POOLING_DIM:
         raise ValueError(f"unexpected pooling dimension: {pooling}")
     if not (
@@ -112,16 +113,24 @@ def _append_pooling(model) -> None:
     graph = model.graph
     output_names = [o.name for o in graph.output]
     if output_names != ["last_hidden_state"]:
-        raise ValueError(f"unexpected raw graph outputs; expected ['last_hidden_state'], got {output_names}")
+        raise ValueError(
+            f"unexpected raw graph outputs; expected ['last_hidden_state'], got {output_names}"
+        )
     graph.output.pop()
 
-    graph.initializer.extend([
-        onnx.helper.make_tensor(_EPS_COUNTS, onnx.TensorProto.FLOAT, [1, 1], [1e-9]),
-        onnx.helper.make_tensor(_EPS_NORM, onnx.TensorProto.FLOAT, [1], [1e-12]),
-    ])
+    graph.initializer.extend(
+        [
+            onnx.helper.make_tensor(
+                _EPS_COUNTS, onnx.TensorProto.FLOAT, [1, 1], [1e-9]
+            ),
+            onnx.helper.make_tensor(_EPS_NORM, onnx.TensorProto.FLOAT, [1], [1e-12]),
+        ]
+    )
 
     nodes = [
-        onnx.helper.make_node("Cast", ["attention_mask"], [_MASK_F], to=onnx.TensorProto.FLOAT),
+        onnx.helper.make_node(
+            "Cast", ["attention_mask"], [_MASK_F], to=onnx.TensorProto.FLOAT
+        ),
         onnx.helper.make_node("Unsqueeze", [_MASK_F], [_MASK_1], axes=[2]),
         onnx.helper.make_node("Mul", ["last_hidden_state", _MASK_1], [_MASKED]),
         onnx.helper.make_node("ReduceSum", [_MASKED], [_SUMMED], axes=[1], keepdims=0),
@@ -137,7 +146,10 @@ def _append_pooling(model) -> None:
     ]
     graph.node.extend(nodes)
     graph.output.append(
-        onnx.helper.make_tensor_value_info(_OUT, onnx.TensorProto.FLOAT, [None, POOLING_DIM]))
+        onnx.helper.make_tensor_value_info(
+            _OUT, onnx.TensorProto.FLOAT, [None, POOLING_DIM]
+        )
+    )
     onnx.checker.check_model(model)
 
 
@@ -148,17 +160,22 @@ def verify(model_dir: Path, model) -> None:
     import onnxruntime as ort
 
     raw_path = model_dir / "onnx" / "model.onnx"
-    raw_session = ort.InferenceSession(str(raw_path), providers=["CPUExecutionProvider"])
+    raw_session = ort.InferenceSession(
+        str(raw_path), providers=["CPUExecutionProvider"]
+    )
     rng = np.random.default_rng(7)
     seq = rng.integers(3, 500, size=(4, 64))
     mask = np.ones_like(seq)
     mask[:, -5:] = 0
 
     import tempfile
+
     with tempfile.TemporaryDirectory() as tmp:
         derived_path = Path(tmp) / "derived.onnx"
         onnx.save(model, derived_path)
-        session = ort.InferenceSession(str(derived_path), providers=["CPUExecutionProvider"])
+        session = ort.InferenceSession(
+            str(derived_path), providers=["CPUExecutionProvider"]
+        )
         # onnxruntime's run() return type is a union that includes SparseTensor;
         # asarray is a no-op for the ndarray it actually returns.
         emb = np.asarray(
@@ -181,7 +198,8 @@ def verify(model_dir: Path, model) -> None:
     m = mask[:, :, None].astype(np.float32)
     expected_mean = (hidden * m).sum(axis=1) / np.clip(m.sum(axis=1), 1e-9, None)
     expected = expected_mean / np.clip(
-        np.linalg.norm(expected_mean, axis=1, keepdims=True), 1e-12, None)
+        np.linalg.norm(expected_mean, axis=1, keepdims=True), 1e-12, None
+    )
     if float(np.abs(emb - expected).max()) > 1e-5:
         raise RuntimeError("derived vs explicit pooling max diff too large")
 
@@ -225,10 +243,16 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model-dir", required=True,
-                        help="exact local HF snapshot directory for intfloat/multilingual-e5-base")
-    parser.add_argument("--verify", action="store_true",
-                        help="run an onnxruntime parity check on the generated graph")
+    parser.add_argument(
+        "--model-dir",
+        required=True,
+        help="exact local HF snapshot directory for intfloat/multilingual-e5-base",
+    )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="run an onnxruntime parity check on the generated graph",
+    )
     args = parser.parse_args(argv)
 
     path = provision(Path(args.model_dir), verify_graph=bool(args.verify))

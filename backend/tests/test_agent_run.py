@@ -12,7 +12,7 @@ from vault_search.agent_run import (
     new_run_state,
 )
 from vault_search.agent_tools import NormalizedToolResult, ToolAliasMap
-from vault_search.llm import ProviderToolCall, ProviderTurn
+from vault_search.llm import ProviderToolCall, ProviderTurn, ToolDefinition
 
 
 class StubMcpHost:
@@ -58,7 +58,7 @@ def make_turn(text="", calls=()):
     )
 
 
-def build_run(turns, host=None, session_allowed=(), skills=None):
+def build_run(turns, host=None, session_allowed=(), skills=None, max_turns=None):
     state = new_run_state("질문")
     aliases = ToolAliasMap()
     aliases.register("srv-1", "github", "create_issue")
@@ -101,6 +101,7 @@ def build_run(turns, host=None, session_allowed=(), skills=None):
         max_context_chars=24000,
         max_output_tokens=4000,
         timeout_seconds=30,
+        max_turns=max_turns,
     )
     run.session_allowed = set(session_allowed)
     run.seed([])
@@ -275,19 +276,29 @@ def test_tool_budget_forces_error_results(monkeypatch):
     assert blocked
 
 
-def test_max_turns_triggers_forced_finalization(monkeypatch):
-    monkeypatch.setattr(agent_run_module, "MAX_TURNS", 2)
+def test_turn_budget_pauses_then_answers_on_request():
     seen_tools: list[int] = []
+    queue = [
+        make_turn(
+            calls=[
+                ProviderToolCall(
+                    id="c1", name="vault_search", arguments={"query": "q"}
+                )
+            ]
+        ),
+        make_turn(
+            calls=[
+                ProviderToolCall(
+                    id="c2", name="vault_search", arguments={"query": "q"}
+                )
+            ]
+        ),
+        make_turn(text="강제 마무리"),
+    ]
 
     def tracking_complete(**kwargs):
         seen_tools.append(len(kwargs.get("tools") or []))
-        if not hasattr(tracking_complete, "queue"):
-            tracking_complete.queue = [
-                make_turn(calls=[ProviderToolCall(id="c1", name="vault_search", arguments={"query": "q"})]),
-                make_turn(calls=[ProviderToolCall(id="c2", name="vault_search", arguments={"query": "q"})]),
-                make_turn(text="강제 마무리"),
-            ]
-        return tracking_complete.queue.pop(0)
+        return queue.pop(0)
 
     state = new_run_state("질문")
     from vault_search.agent_tools import ToolAliasMap
@@ -295,7 +306,9 @@ def test_max_turns_triggers_forced_finalization(monkeypatch):
     run = StructuredAgentRun(
         state=state,
         system_prompt="sys",
-        tools=[object()],
+        tools=[
+            ToolDefinition(name="vault_search", description="d", input_schema={})
+        ],
         aliases=ToolAliasMap(),
         complete_turn=tracking_complete,
         search_fn=lambda q: [],
@@ -306,13 +319,194 @@ def test_max_turns_triggers_forced_finalization(monkeypatch):
         max_context_chars=24000,
         max_output_tokens=4000,
         timeout_seconds=5,
+        max_turns=2,
     )
     run.seed([])
     outcome = run.advance()
-    assert outcome["status"] == "complete"
-    assert outcome["text"] == "강제 마무리"
+    # The budget is spent: the run pauses instead of answering on its own.
+    assert outcome["status"] == "approval_required"
+    descriptor = outcome["calls"][0]
+    assert descriptor["call_id"] == "turn_budget"
+    assert descriptor["annotations"]["kind"] == "turn_budget"
+    assert descriptor["arguments"]["turns"] == 2
+    assert descriptor["arguments"]["hard_max_turns"] == 40
+    assert descriptor["arguments"]["at_hard_cap"] is False
+    assert "조사 한도" in descriptor["description"]
+    # Only the two tool turns ran; the answering turn waits for the user.
+    assert seen_tools == [1, 1]
+
+    result = run.resume([{"call_id": "turn_budget", "decision": "answer_now"}])
+    assert result["status"] == "complete"
+    assert result["text"] == "강제 마무리"
     # The forced finalization turn must not offer any tools.
     assert seen_tools[-1] == 0
+
+
+def test_turn_budget_extend_grants_one_more_grant():
+    turns = [
+        make_turn(
+            calls=[
+                ProviderToolCall(id="c1", name="vault_search", arguments={"query": "q"})
+            ]
+        ),
+        make_turn(
+            calls=[
+                ProviderToolCall(id="c2", name="vault_search", arguments={"query": "q"})
+            ]
+        ),
+        make_turn(text="확장 후 답변 [S1]"),
+    ]
+    run = build_run(turns, max_turns=2)
+    assert run.advance()["status"] == "approval_required"
+    assert run.max_turns == 2
+    result = run.resume([{"call_id": "turn_budget", "decision": "extend"}])
+    assert result["status"] == "complete"
+    assert result["text"] == "확장 후 답변 [S1]"
+    assert run.max_turns == 4
+
+
+def test_turn_budget_at_hard_cap_hides_extend():
+    run = build_run([make_turn(text="상한 마무리 [S1]")], max_turns=40)
+    run.state.turns = 40
+    outcome = run.advance()
+    assert outcome["calls"][0]["arguments"]["at_hard_cap"] is True
+    # An extend request at the ceiling degrades to answering from sources.
+    result = run.resume([{"call_id": "turn_budget", "decision": "extend"}])
+    assert result["status"] == "complete"
+    assert result["text"] == "상한 마무리 [S1]"
+
+
+def test_turn_budget_rejects_tool_decisions():
+    run = build_run(
+        [
+            make_turn(
+                calls=[
+                    ProviderToolCall(
+                        id="c1", name="vault_search", arguments={"query": "q"}
+                    )
+                ]
+            )
+        ],
+        max_turns=1,
+    )
+    assert run.advance()["status"] == "approval_required"
+    with pytest.raises(AgentRunError) as exc:
+        run.resume([{"call_id": "turn_budget", "decision": "allow_once"}])
+    assert exc.value.code == "INVALID_DECISION"
+
+
+def test_tool_boundary_rejects_budget_decisions():
+    host = StubMcpHost(policy="ask")
+    call = ProviderToolCall(
+        id="c9", name="mcp__github__create_issue", arguments={"title": "t"}
+    )
+    run = build_run([make_turn(calls=[call]), make_turn(text="done")], host=host)
+    outcome = run.advance()
+    assert outcome["calls"][0]["call_id"] == "c9"
+    with pytest.raises(AgentRunError) as exc:
+        run.resume([{"call_id": "c9", "decision": "extend"}])
+    assert exc.value.code == "INVALID_DECISION"
+    assert host.calls == []
+
+
+def test_mcp_boundary_then_budget_boundary_are_sequential():
+    host = StubMcpHost(policy="ask")
+    call = ProviderToolCall(
+        id="c9", name="mcp__github__create_issue", arguments={"title": "t"}
+    )
+    run = build_run(
+        [make_turn(calls=[call]), make_turn(text="최종 답변")],
+        host=host,
+        max_turns=1,
+    )
+    first = run.advance()
+    assert first["calls"][0]["call_id"] == "c9"
+    # After the tool decision the spent turn budget is the next boundary; the
+    # two never share one pending map.
+    second = run.resume([{"call_id": "c9", "decision": "allow_once"}])
+    assert second["status"] == "approval_required"
+    assert second["calls"][0]["call_id"] == "turn_budget"
+    third = run.resume([{"call_id": "turn_budget", "decision": "answer_now"}])
+    assert third["status"] == "complete"
+    assert third["text"] == "최종 답변"
+    assert len(host.calls) == 1
+
+
+def test_extend_does_not_raise_the_tool_budget(monkeypatch):
+    monkeypatch.setattr(agent_run_module, "MAX_TOTAL_TOOL_CALLS", 2)
+    turns = [
+        make_turn(
+            calls=[
+                ProviderToolCall(id="c1", name="vault_search", arguments={"query": "q"})
+            ]
+        ),
+        make_turn(
+            calls=[
+                ProviderToolCall(id="c2", name="vault_search", arguments={"query": "q"})
+            ]
+        ),
+        make_turn(
+            calls=[
+                ProviderToolCall(id="c3", name="vault_search", arguments={"query": "q"})
+            ]
+        ),
+        make_turn(text="예산 소진 후 답변 [S1]"),
+    ]
+    run = build_run(turns, max_turns=2)
+    assert run.advance()["status"] == "approval_required"
+    result = run.resume([{"call_id": "turn_budget", "decision": "extend"}])
+    assert result["status"] == "complete"
+    assert result["text"] == "예산 소진 후 답변 [S1]"
+    # The seed search plus one turn spent the tool budget; extending grants
+    # turns only, so later tool calls keep being refused.
+    assert run.state.tool_call_count == 2
+    refused = [
+        m
+        for m in run.state.messages
+        if m["role"] == "tool" and "TOOL_BUDGET_EXHAUSTED" in m["content"]
+    ]
+    assert refused
+
+
+def test_budget_continue_after_decision_is_not_waiting():
+    run = build_run(
+        [
+            make_turn(
+                calls=[
+                    ProviderToolCall(
+                        id="c1", name="vault_search", arguments={"query": "q"}
+                    )
+                ]
+            ),
+            make_turn(text="답변 [S1]"),
+        ],
+        max_turns=1,
+    )
+    assert run.advance()["status"] == "approval_required"
+    run.resume([{"call_id": "turn_budget", "decision": "answer_now"}])
+    with pytest.raises(AgentRunError) as exc:
+        run.resume([{"call_id": "turn_budget", "decision": "answer_now"}])
+    assert exc.value.code == "RUN_NOT_WAITING"
+
+
+def test_cancel_while_budget_paused_wins():
+    run = build_run(
+        [
+            make_turn(
+                calls=[
+                    ProviderToolCall(
+                        id="c1", name="vault_search", arguments={"query": "q"}
+                    )
+                ]
+            )
+        ],
+        max_turns=1,
+    )
+    assert run.advance()["status"] == "approval_required"
+    run.state.cancelled = True
+    with pytest.raises(AgentRunError) as exc:
+        run.resume([{"call_id": "turn_budget", "decision": "extend"}])
+    assert exc.value.code == "RUN_CANCELLED"
 
 
 def test_cancelled_run_raises_coded_error():

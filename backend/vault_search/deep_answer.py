@@ -17,18 +17,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from .agent_run import AgentRunError, PendingCall, RunState
+from .agent_run import (
+    HARD_MAX_TURNS,
+    TURN_BUDGET_CALL_ID,
+    AgentRunError,
+    PendingCall,
+    RunState,
+)
 from .grounding import GroundingSource, _source_block
 from .llm import ProviderResponse
 
 MAX_TURNS = 10
 MAX_TOOL_CALLS_PER_TURN = 6
-# Hard ceiling for user-approved budget extensions: repeated "계속 조사" must
-# never turn one question into an unbounded provider bill.
-HARD_MAX_TURNS = 40
-# Reserved pending-call id for the "조사 한도 도달" prompt. It never maps to a
-# tool: answer_continue carries the user's choice (extend / answer_now).
-TURN_BUDGET_CALL_ID = "turn_budget"
+# HARD_MAX_TURNS and TURN_BUDGET_CALL_ID are shared with the structured loop and
+# re-exported here (imported above) so existing callers keep working.
 INSUFFICIENT_MESSAGE = "볼트에서 충분한 근거를 찾지 못했습니다."
 MAX_SOURCE_CHARS = 3000
 MAX_READ_CHARS = 40_000

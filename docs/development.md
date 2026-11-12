@@ -12,6 +12,36 @@ python -X utf8 -m pytest backend/tests
 
 Unit and integration tests use the deterministic `__fake__` embedding model and do not download a model. Real-model smoke tests are Windows-only manual checks.
 
+## Release
+
+Releases are published from the local machine. The tag-push GitHub workflow was
+removed: it re-created the release that `scripts/release.ps1` had already
+published, so every release left a failed run behind.
+
+1. Bump the version in all six places: `manifest.json`, `package.json`,
+   `versions.json` (add a `"<version>": "<minAppVersion>"` key),
+   `backend/pyproject.toml`, `backend/vault_search/__init__.py`, and
+   `src/constants.ts` (`BACKEND_VERSION`).
+2. `npm run build` — the bundle embeds `BACKEND_VERSION`.
+3. Commit and push.
+4. `.\scripts\release.ps1 -Version 0.x.y`
+
+The script validates the six version strings, rebuilds, runs `npm test` and the
+backend suite, and refuses to tag a dirty tree. It then tags, pushes, creates
+the GitHub release (zip + `main.js` + `manifest.json` + `styles.css` +
+`versions.json`), and verifies the asset list.
+
+A run that fails after the tag push (for example a network error in
+`gh release create`) is resumable: re-run the same command. The script detects
+an existing local or remote tag, requires it to still point at HEAD, and
+publishes only the missing assets. A tag that points at a different commit is
+still refused, so published versions stay immutable.
+
+`ci.yml` runs on every push to `main` and on pull requests: `npm ci`, build,
+plugin tests, then `pip install -r backend/requirements.txt` and the backend
+suite on a clean runner. That clean install is the part a local run cannot
+prove, so keep the two toolchains aligned (Node 24, Python 3.13).
+
 Runtime profiles are separate under `%LOCALAPPDATA%\ObsidianVaultSearch\runtime\<version>\cpu` and
 `...\cuda`. `auto` prefers a validated CUDA runtime when NVIDIA is available; otherwise it uses CPU and
 shows why. Never replace the active CPU runtime before a CUDA install has completed and passed

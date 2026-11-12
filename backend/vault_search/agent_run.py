@@ -34,6 +34,12 @@ from .llm import ProviderToolCall, ProviderTurn
 from .skills import RunResourceBudget, SkillError, SkillRegistry
 
 MAX_TURNS = 10
+# Hard ceiling for user-approved turn-budget extensions: repeated "계속 조사"
+# must never turn one question into an unbounded provider bill.
+HARD_MAX_TURNS = 40
+# Reserved pending-call id for the "조사 한도 도달" prompt. It never maps to a
+# tool: answer_continue carries the user's choice (extend / answer_now).
+TURN_BUDGET_CALL_ID = "turn_budget"
 MAX_TOTAL_TOOL_CALLS = 30
 MAX_TOOL_CALLS_PER_TURN = 6
 MAX_ACTIVE_RUNS = 4
@@ -161,8 +167,10 @@ class StructuredAgentRun:
         self.max_output_tokens = max_output_tokens
         self.timeout_seconds = timeout_seconds
         # User-configurable caps (defaults stay the module constants so tests
-        # that monkeypatch them keep working).
-        self.max_turns = max(1, MAX_TURNS if max_turns is None else int(max_turns))
+        # that monkeypatch them keep working). The turn budget is one grant: a
+        # user-approved extension adds exactly one more grant of the same size.
+        self._turn_budget = max(1, MAX_TURNS if max_turns is None else int(max_turns))
+        self.max_turns = self._turn_budget
         self.max_tool_calls_per_turn = max(
             1,
             (
@@ -472,13 +480,71 @@ class StructuredAgentRun:
             {"role": "user", "content": f"질문:\n{self.state.query}\n\n{context}"},
         ]
 
+    def extend_budget(self) -> None:
+        """Grant one more full turn budget (the user chose to keep looking).
+
+        Turns only: the tool-call budget stays where it is, so a spent tool
+        budget keeps returning TOOL_BUDGET_EXHAUSTED while the model can still
+        reason and answer in text.
+        """
+        self.max_turns = min(HARD_MAX_TURNS, self.max_turns + self._turn_budget)
+
+    def _budget_pending(self) -> PendingCall:
+        """The synthetic pending call of the turn-budget boundary.
+
+        Shape matches the legacy loop so the panel renders the same card.
+        """
+        return PendingCall(
+            call_id=TURN_BUDGET_CALL_ID,
+            alias=TURN_BUDGET_CALL_ID,
+            server_id="",
+            server_name="",
+            display_name="조사 한도",
+            arguments={
+                "turns": self.state.turns,
+                "max_turns": self.max_turns,
+                "hard_max_turns": HARD_MAX_TURNS,
+                # At the ceiling an extend request degrades to answering from
+                # sources, so the UI must not offer it as more research.
+                "at_hard_cap": self.max_turns >= HARD_MAX_TURNS,
+                "tool_calls": self.state.tool_call_count,
+                "sources": len(self.sources),
+            },
+            annotations={"kind": TURN_BUDGET_CALL_ID},
+            description=(
+                "조사 한도에 도달했습니다. 조사를 더 할까요, 아니면 지금까지 모은 "
+                "자료로 답변할까요?"
+            ),
+        )
+
+    @staticmethod
+    def _is_budget_pending(pending: PendingCall) -> bool:
+        """True only for the synthetic turn-budget call.
+
+        A provider MCP call whose id happens to be "turn_budget" must stay on
+        the tool path, so the annotation is required too.
+        """
+        return (
+            pending.call_id == TURN_BUDGET_CALL_ID
+            and pending.annotations.get("kind") == TURN_BUDGET_CALL_ID
+        )
+
     def advance(self) -> dict[str, Any]:
         """Drive the loop until final text, an approval boundary, or failure."""
         while True:
             if self.state.cancelled:
                 raise AgentRunError("ANSWER_CANCELLED", "run was cancelled")
             if self.state.turns >= self.max_turns:
-                return self._finalize_forced()
+                # Turn budget spent: pause and let the user decide between more
+                # research and answering from the gathered evidence. The MCP
+                # approval path is separate: this branch only runs with an
+                # empty pending map (a resumed MCP boundary clears it first).
+                budget = self._budget_pending()
+                self.state.pending = {budget.call_id: budget}
+                return {
+                    "status": "approval_required",
+                    "calls": [self._call_descriptor(budget)],
+                }
             try:
                 turn = self._complete_turn(
                     system=self.system_prompt,
@@ -586,6 +652,7 @@ class StructuredAgentRun:
 
     def resume(self, decisions: list[dict[str, Any]]) -> dict[str, Any]:
         """Apply approval decisions then continue the loop."""
+        budget_choice: str | None = None
         with self.state.lock:
             if self.state.cancelled:
                 raise AgentRunError("RUN_CANCELLED", "run is cancelled")
@@ -602,77 +669,113 @@ class StructuredAgentRun:
                     "DECISION_MISMATCH",
                     "decisions must cover exactly the pending calls",
                 )
-            results: list[tuple[ProviderToolCall, NormalizedToolResult]] = []
-            session_grants: list[str] = []
-            for decision in decisions:
-                call_id = str(decision["call_id"])
-                choice = str(decision.get("decision"))
-                pending = self.state.pending[call_id]
-                if pending.call_id in self.state.executed_call_ids:
-                    # Idempotency guard: never double-execute a side effect.
-                    results.append(
-                        (
-                            ProviderToolCall(id=call_id, name=pending.alias),
-                            tool_error_result(
-                                "CALL_ALREADY_EXECUTED",
-                                "this call was already processed",
-                            ),
-                        )
+            budget = next(
+                (
+                    pending
+                    for pending in self.state.pending.values()
+                    if self._is_budget_pending(pending)
+                ),
+                None,
+            )
+            if budget is not None:
+                # Turn-budget boundary: no tool ran, so only the choice matters.
+                if len(self.state.pending) != 1:
+                    raise AgentRunError(
+                        "DECISION_MISMATCH",
+                        "the turn-budget prompt cannot share a boundary with tools",
                     )
-                    continue
-                self.state.executed_call_ids.add(call_id)
-                call = ProviderToolCall(
-                    id=call_id,
-                    name=pending.alias,
-                    arguments=pending.arguments,
+                budget_choice = str(decisions[0].get("decision") or "")
+                if budget_choice not in {"extend", "answer_now"}:
+                    raise AgentRunError(
+                        "INVALID_DECISION", "decision must be extend or answer_now"
+                    )
+                self.state.pending.clear()
+            else:
+                self._apply_tool_decisions(decisions)
+        if budget_choice is not None:
+            # At the hard ceiling an extend request degrades to answering from
+            # the evidence already gathered.
+            if budget_choice == "extend" and self.state.turns < HARD_MAX_TURNS:
+                self.extend_budget()
+                return self.advance()
+            return self._finalize_forced()
+        return self.advance()
+
+    def _apply_tool_decisions(self, decisions: list[dict[str, Any]]) -> None:
+        """Execute approved MCP calls (or their rejection) for a tool boundary.
+
+        Caller holds ``state.lock`` and has already validated the decision ids.
+        """
+        results: list[tuple[ProviderToolCall, NormalizedToolResult]] = []
+        session_grants: list[str] = []
+        for decision in decisions:
+            call_id = str(decision["call_id"])
+            choice = str(decision.get("decision"))
+            pending = self.state.pending[call_id]
+            if pending.call_id in self.state.executed_call_ids:
+                # Idempotency guard: never double-execute a side effect.
+                results.append(
+                    (
+                        ProviderToolCall(id=call_id, name=pending.alias),
+                        tool_error_result(
+                            "CALL_ALREADY_EXECUTED",
+                            "this call was already processed",
+                        ),
+                    )
                 )
-                if choice == "reject":
-                    self.state.activity.append(
-                        ActivityEntry(
-                            tool_name=pending.alias,
-                            server_name=pending.server_name,
-                            status="rejected",
-                            duration_ms=0,
-                        )
+                continue
+            self.state.executed_call_ids.add(call_id)
+            call = ProviderToolCall(
+                id=call_id,
+                name=pending.alias,
+                arguments=pending.arguments,
+            )
+            if choice == "reject":
+                self.state.activity.append(
+                    ActivityEntry(
+                        tool_name=pending.alias,
+                        server_name=pending.server_name,
+                        status="rejected",
+                        duration_ms=0,
                     )
+                )
+                results.append(
+                    (
+                        call,
+                        tool_error_result(
+                            "USER_REJECTED_TOOL_CALL",
+                            "the user declined this tool call",
+                        ),
+                    )
+                )
+            elif choice in {"allow_once", "allow_session"}:
+                if choice == "allow_session":
+                    session_grants.append(pending.alias)
+                if self.state.tool_call_count >= MAX_TOTAL_TOOL_CALLS:
                     results.append(
                         (
                             call,
                             tool_error_result(
-                                "USER_REJECTED_TOOL_CALL",
-                                "the user declined this tool call",
+                                "TOOL_BUDGET_EXHAUSTED",
+                                "tool budget reached",
                             ),
                         )
                     )
-                elif choice in {"allow_once", "allow_session"}:
-                    if choice == "allow_session":
-                        session_grants.append(pending.alias)
-                    if self.state.tool_call_count >= MAX_TOTAL_TOOL_CALLS:
-                        results.append(
-                            (
-                                call,
-                                tool_error_result(
-                                    "TOOL_BUDGET_EXHAUSTED",
-                                    "tool budget reached",
-                                ),
-                            )
-                        )
-                        continue
-                    self.state.tool_call_count += 1
-                    results.append((call, self._execute_mcp(pending)))
-                else:
-                    raise AgentRunError(
-                        "INVALID_DECISION",
-                        "decision must be allow_once, allow_session, or reject",
-                    )
-            # The assistant message holding these tool_calls was appended when
-            # the boundary was hit; attach only the new tool results.
-            for call, result in results:
-                self.state.messages.append(self._result_message(call, result))
-            self.state.pending.clear()
-            for grant in session_grants:
-                self.session_allowed.add(grant)
-        return self.advance()
+                    continue
+                self.state.tool_call_count += 1
+                results.append((call, self._execute_mcp(pending)))
+            else:
+                raise AgentRunError(
+                    "INVALID_DECISION",
+                    "decision must be allow_once, allow_session, or reject",
+                )
+        # The assistant message holding these tool_calls was appended when
+        # the boundary was hit; attach only the new tool results.
+        for call, result in results:
+            self.state.messages.append(self._result_message(call, result))
+        self.state.pending.clear()
+        for grant in session_grants:
+            self.session_allowed.add(grant)
 
     # ------------------------------------------------------------------
     # Finalization
@@ -692,6 +795,8 @@ class StructuredAgentRun:
         }
 
     def _finalize_forced(self) -> dict[str, Any]:
+        if self.state.cancelled:
+            raise AgentRunError("ANSWER_CANCELLED", "run was cancelled")
         self.state.messages.append(
             {
                 "role": "user",
@@ -714,6 +819,10 @@ class StructuredAgentRun:
                 getattr(exc, "code", "LLM_BAD_RESPONSE"),
                 getattr(exc, "message", str(exc)),
             ) from exc
+        if self.state.cancelled:
+            # A cancel that landed while the answering call was in flight must
+            # not publish this text.
+            raise AgentRunError("ANSWER_CANCELLED", "run was cancelled")
         return self._complete_with_text(turn.text)
 
     def _call_descriptor(self, pending: PendingCall) -> dict[str, Any]:

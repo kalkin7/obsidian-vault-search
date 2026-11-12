@@ -45,6 +45,26 @@ const approval = (
   calls,
 });
 
+/** The deep-answer turn-budget prompt (reserved call id, never a real tool). */
+const budgetCall = (overrides: Partial<PendingToolCall> = {}): PendingToolCall => ({
+  call_id: "turn_budget",
+  tool_name: "turn_budget",
+  server_name: "",
+  display_name: "조사 한도",
+  description:
+    "조사 한도에 도달했습니다. 조사를 더 할까요, 아니면 지금까지 모은 자료로 답변할까요?",
+  arguments: {
+    turns: 10,
+    max_turns: 10,
+    hard_max_turns: 40,
+    at_hard_cap: false,
+    tool_calls: 12,
+    sources: 4,
+  },
+  annotations: { kind: "turn_budget" },
+  ...overrides,
+});
+
 interface Harness {
   session: AnswerSession;
   states: AnswerState[];
@@ -195,6 +215,35 @@ describe("AnswerSession", () => {
     expect(harness.starts.at(-1)?.session_allowed_tools).toContain(
       "mcp__srv__tool_c1",
     );
+  });
+
+  it("carries the deep-answer turn-budget choice through continue", async () => {
+    const harness = makeHarness();
+    harness.session.submit("전기차 상태");
+    harness.settleStart(approval("run-budget", [budgetCall()]));
+    await flush();
+
+    // The panel reuses the approval state; the renderer picks the budget card
+    // from the reserved call id.
+    const state = harness.states.at(-1);
+    expect(state?.kind).toBe("tool-approval");
+    expect(harness.session.pendingApprovalCalls[0].call_id).toBe("turn_budget");
+
+    harness.session.decide([{ call_id: "turn_budget", decision: "extend" }]);
+    await flush();
+
+    expect(harness.continues).toEqual([
+      {
+        runId: "run-budget",
+        decisions: [{ call_id: "turn_budget", decision: "extend" }],
+      },
+    ]);
+    expect(harness.states.at(-1)?.kind).toBe("answer");
+
+    // The synthetic id must never leak into the session tool allowlist, even
+    // if a client sent the tool-shaped decision by mistake.
+    harness.session.submit("다음 질문");
+    expect(harness.starts.at(-1)?.session_allowed_tools).toEqual([]);
   });
 
   it("reject passes the rejection through and keeps the run alive", async () => {
