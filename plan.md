@@ -281,7 +281,6 @@ obsidian-vault-search/
   .github/
     workflows/
       ci.yml
-      release.yml
 ```
 
 `src`의 TypeScript 파일이 너무 커지지 않게 프로세스 관리, 설정, 이벤트 큐, 프로토콜을 분리합니다. Python도 기존처럼 모든 기능을 `query.py` 한 파일에 합치지 않습니다.
