@@ -116,10 +116,10 @@ def test_direct_answer_completes_without_tools():
 
 
 def test_builtin_read_gathers_source_then_answers():
-    read_call = ProviderToolCall(id="c1", name="vault_read", arguments={"file": "notes/a.md"})
-    run = build_run(
-        [make_turn(calls=[read_call]), make_turn(text="결론 [S1]")]
+    read_call = ProviderToolCall(
+        id="c1", name="vault_read", arguments={"file": "notes/a.md"}
     )
+    run = build_run([make_turn(calls=[read_call]), make_turn(text="결론 [S1]")])
     outcome = run.advance()
     assert outcome["status"] == "complete"
     # S1 comes from the seeded initial search, S2 from the explicit read.
@@ -137,7 +137,9 @@ def test_builtin_read_gathers_source_then_answers():
 
 def test_ask_tool_waits_for_approval_with_zero_side_effects():
     host = StubMcpHost(policy="ask")
-    call = ProviderToolCall(id="c9", name="mcp__github__create_issue", arguments={"title": "t"})
+    call = ProviderToolCall(
+        id="c9", name="mcp__github__create_issue", arguments={"title": "t"}
+    )
     run = build_run([make_turn(calls=[call]), make_turn(text="done")], host=host)
     outcome = run.advance()
     assert outcome["status"] == "approval_required"
@@ -151,10 +153,10 @@ def test_ask_tool_waits_for_approval_with_zero_side_effects():
 
 def test_allow_once_executes_exactly_once_then_completes():
     host = StubMcpHost(policy="ask")
-    call = ProviderToolCall(id="c9", name="mcp__github__create_issue", arguments={"title": "t"})
-    run = build_run(
-        [make_turn(calls=[call]), make_turn(text="완료")], host=host
+    call = ProviderToolCall(
+        id="c9", name="mcp__github__create_issue", arguments={"title": "t"}
     )
+    run = build_run([make_turn(calls=[call]), make_turn(text="완료")], host=host)
     first = run.advance()
     assert first["status"] == "approval_required"
     second = run.resume([{"call_id": "c9", "decision": "allow_once"}])
@@ -175,9 +177,7 @@ def test_reject_never_touches_server_and_informs_model():
     outcome = run.resume([{"call_id": "c9", "decision": "reject"}])
     assert outcome["status"] == "complete"
     assert host.calls == []
-    rejection = next(
-        m for m in run.state.messages if m["role"] == "tool"
-    )
+    rejection = next(m for m in run.state.messages if m["role"] == "tool")
     assert "[USER_REJECTED_TOOL_CALL]" in rejection["content"]
     activity = [entry for entry in outcome["activity"]]
     assert activity and activity[0]["status"] == "rejected"
@@ -246,11 +246,11 @@ def test_malformed_arguments_reported_to_model():
 
 def test_mixed_batch_executes_builtin_and_holds_ask():
     host = StubMcpHost(policy="ask")
-    builtin = ProviderToolCall(id="b1", name="vault_read", arguments={"file": "notes/a.md"})
-    ask = ProviderToolCall(id="a1", name="mcp__github__create_issue", arguments={})
-    run = build_run(
-        [make_turn(calls=[builtin, ask]), make_turn(text="ok")], host=host
+    builtin = ProviderToolCall(
+        id="b1", name="vault_read", arguments={"file": "notes/a.md"}
     )
+    ask = ProviderToolCall(id="a1", name="mcp__github__create_issue", arguments={})
+    run = build_run([make_turn(calls=[builtin, ask]), make_turn(text="ok")], host=host)
     outcome = run.advance()
     assert outcome["status"] == "approval_required"
     assert len(outcome["calls"]) == 1
@@ -261,7 +261,9 @@ def test_mixed_batch_executes_builtin_and_holds_ask():
 def test_tool_budget_forces_error_results(monkeypatch):
     monkeypatch.setattr(agent_run_module, "MAX_TOTAL_TOOL_CALLS", 2)
     calls = [
-        ProviderToolCall(id=f"c{i}", name="vault_read", arguments={"file": "notes/a.md"})
+        ProviderToolCall(
+            id=f"c{i}", name="vault_read", arguments={"file": "notes/a.md"}
+        )
         for i in range(4)
     ]
     turns = [make_turn(calls=[call]) for call in calls]
@@ -270,7 +272,8 @@ def test_tool_budget_forces_error_results(monkeypatch):
     outcome = run.advance()
     assert outcome["status"] == "complete"
     blocked = [
-        m for m in run.state.messages
+        m
+        for m in run.state.messages
         if m["role"] == "tool" and "TOOL_BUDGET_EXHAUSTED" in m["content"]
     ]
     assert blocked
@@ -281,16 +284,12 @@ def test_turn_budget_pauses_then_answers_on_request():
     queue = [
         make_turn(
             calls=[
-                ProviderToolCall(
-                    id="c1", name="vault_search", arguments={"query": "q"}
-                )
+                ProviderToolCall(id="c1", name="vault_search", arguments={"query": "q"})
             ]
         ),
         make_turn(
             calls=[
-                ProviderToolCall(
-                    id="c2", name="vault_search", arguments={"query": "q"}
-                )
+                ProviderToolCall(id="c2", name="vault_search", arguments={"query": "q"})
             ]
         ),
         make_turn(text="강제 마무리"),
@@ -306,9 +305,7 @@ def test_turn_budget_pauses_then_answers_on_request():
     run = StructuredAgentRun(
         state=state,
         system_prompt="sys",
-        tools=[
-            ToolDefinition(name="vault_search", description="d", input_schema={})
-        ],
+        tools=[ToolDefinition(name="vault_search", description="d", input_schema={})],
         aliases=ToolAliasMap(),
         complete_turn=tracking_complete,
         search_fn=lambda q: [],
@@ -589,12 +586,15 @@ def test_mcp_result_over_context_budget_withheld(monkeypatch):
 
 def test_vault_read_over_context_budget_returns_coded_error(monkeypatch):
     monkeypatch.setattr(agent_run_module, "MAX_RUN_CONTEXT_BUDGET_BYTES", 64)
-    call = ProviderToolCall(id="c1", name="vault_read", arguments={"file": "notes/a.md"})
+    call = ProviderToolCall(
+        id="c1", name="vault_read", arguments={"file": "notes/a.md"}
+    )
     run = build_run([make_turn(calls=[call]), make_turn(text="ok")])
     run._read_file = lambda rel: "# 제목\n" + "x" * 500
     outcome = run.advance()
     feedback = [
-        m for m in run.state.messages
+        m
+        for m in run.state.messages
         if m["role"] == "tool" and m["tool_call_id"] == "c1"
     ]
     assert "[CONTEXT_BUDGET_EXHAUSTED]" in feedback[0]["content"]
@@ -614,7 +614,8 @@ def test_skill_body_over_context_budget_withheld(monkeypatch, tmp_path):
     skills = SkillRegistry(tmp_path)
     skills.refresh(user_roots=[("project:.claude", ".claude/skills", True)])
     call = ProviderToolCall(
-        id="c1", name="skill_load",
+        id="c1",
+        name="skill_load",
         arguments={"skill_id": "project:.claude:big"},
     )
     run = build_run([make_turn(calls=[call]), make_turn(text="ok")], skills=skills)
@@ -630,11 +631,7 @@ def test_skill_body_over_context_budget_withheld(monkeypatch, tmp_path):
 
 
 def _tool_message_ids(run) -> list[str]:
-    return [
-        m["tool_call_id"]
-        for m in run.state.messages
-        if m["role"] == "tool"
-    ]
+    return [m["tool_call_id"] for m in run.state.messages if m["role"] == "tool"]
 
 
 def test_overflow_tool_calls_get_budget_error_results(monkeypatch):
@@ -643,14 +640,10 @@ def test_overflow_tool_calls_get_budget_error_results(monkeypatch):
         ProviderToolCall(id=f"c{i}", name="vault_search", arguments={"query": "q"})
         for i in range(4)
     ]
-    run = build_run(
-        [make_turn(calls=calls), make_turn(text="마무리 [S1]")]
-    )
+    run = build_run([make_turn(calls=calls), make_turn(text="마무리 [S1]")])
     outcome = run.advance()
     assert outcome["status"] == "complete"
-    assistant = next(
-        m for m in run.state.messages if m.get("role") == "assistant"
-    )
+    assistant = next(m for m in run.state.messages if m.get("role") == "assistant")
     assistant_ids = [c.id for c in assistant["tool_calls"]]
     assert assistant_ids == ["c0", "c1", "c2", "c3"]
     # Every assistant tool call has EXACTLY one matching tool result.
@@ -658,9 +651,9 @@ def test_overflow_tool_calls_get_budget_error_results(monkeypatch):
     for call_id in assistant_ids:
         assert result_ids.count(call_id) == 1
     overflow = [
-        m for m in run.state.messages
-        if m["role"] == "tool"
-        and m["tool_call_id"] in {"c2", "c3"}
+        m
+        for m in run.state.messages
+        if m["role"] == "tool" and m["tool_call_id"] in {"c2", "c3"}
     ]
     assert all("TOOL_BUDGET_EXHAUSTED" in m["content"] for m in overflow)
 
@@ -673,8 +666,9 @@ def test_overflow_tool_calls_get_budget_error_results(monkeypatch):
 def _completed_transcript() -> list[dict]:
     from vault_search.llm import ProviderToolCall as C
 
-    calls = [C(id=f"c{i}", name="vault_search", arguments={"query": "q"})
-             for i in range(3)]
+    calls = [
+        C(id=f"c{i}", name="vault_search", arguments={"query": "q"}) for i in range(3)
+    ]
     return [
         {"role": "user", "content": "질문"},
         {
@@ -683,7 +677,11 @@ def _completed_transcript() -> list[dict]:
             "tool_calls": calls,
         },
         *[
-            {"role": "tool", "tool_call_id": c.id, "content": f"[TOOL_BUDGET_EXHAUSTED] {c.id}"}
+            {
+                "role": "tool",
+                "tool_call_id": c.id,
+                "content": f"[TOOL_BUDGET_EXHAUSTED] {c.id}",
+            }
             for c in calls[-1:]
         ],
         *[
@@ -712,9 +710,7 @@ def test_chat_completions_payload_pairs_every_tool_call():
         for tc in entry["tool_calls"]
     ]
     outputs = [
-        entry["tool_call_id"]
-        for entry in converted
-        if entry.get("role") == "tool"
+        entry["tool_call_id"] for entry in converted if entry.get("role") == "tool"
     ]
     for call_id in calls:
         assert outputs.count(call_id) == 1
@@ -729,9 +725,7 @@ def test_responses_payload_pairs_every_function_call():
         item["call_id"] for item in items if item.get("type") == "function_call"
     ]
     function_outputs = [
-        item["call_id"]
-        for item in items
-        if item.get("type") == "function_call_output"
+        item["call_id"] for item in items if item.get("type") == "function_call_output"
     ]
     for call_id in function_calls:
         assert function_outputs.count(call_id) == 1

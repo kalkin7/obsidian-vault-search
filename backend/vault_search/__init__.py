@@ -1,3 +1,3 @@
 """Obsidian Vault Search backend."""
 
-__version__ = "0.1.71"
+__version__ = "0.1.72"
